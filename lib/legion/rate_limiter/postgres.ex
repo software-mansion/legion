@@ -45,8 +45,9 @@ defmodule Legion.RateLimiter.Postgres do
   call back, leaving metadata only for allowed calls.
 
   Limits are evaluated when a turn starts; a turn that is already running is
-  never interrupted, so one turn can carry the recorded total past
-  `:max_tokens` before the next call is denied.
+  never interrupted, so it can carry the recorded total past `:max_tokens`.
+  Usage lands after each LLM request, so a call made while that turn runs is
+  denied as soon as the total is reached.
 
   ## Identity matching
 
