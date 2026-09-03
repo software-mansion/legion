@@ -283,7 +283,18 @@ defmodule Legion.AgentServer do
         end
       end
 
-    executor_config = Map.put(state.config, :checkpoint, checkpoint)
+    # Written after every LLM response rather than at turn end, so a rate
+    # limiter sees a running turn's spend and a crashed turn keeps it.
+    record_usage =
+      if state.track_usage do
+        fn turn_usage ->
+          persist(state, usage: state.usage ++ Enum.map(turn_usage, &stored_usage/1))
+          :ok
+        end
+      end
+
+    executor_config =
+      Map.merge(state.config, %{checkpoint: checkpoint, record_usage: record_usage})
 
     {status, value, final_messages, final_bindings, turn_usage} =
       Telemetry.span(
