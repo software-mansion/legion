@@ -5,6 +5,7 @@
 ### Changes
 
 - Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
+- Rate limiting - `:max_running_agents` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps matching agents mid-turn at once; the Postgres adapter counts live agents and marks the caller running inside its transaction
 - LLM usage tracking - each usage entry carries a `"message_index"` pointing at the assistant message its request produced; see [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
 
 ## v0.5.0 - 2026-09-01

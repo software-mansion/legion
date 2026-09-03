@@ -337,6 +337,101 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert recorded == Enum.count(outcomes, &(&1 == :ok))
   end
 
+  describe "max_running_agents" do
+    test "allows exactly max_running_agents live agents mid-turn" do
+      rules = [rule(@ip_key, policy(max_running_agents: 2))]
+      for agent_id <- ~w(running-1 running-2 running-3), do: start_live_agent(agent_id)
+
+      assert :ok = RateLimiter.enforce!("running-1", rules)
+      assert :ok = RateLimiter.enforce!("running-2", rules)
+
+      error = assert_raise(ExceededError, fn -> RateLimiter.enforce!("running-3", rules) end)
+      assert error.violations == [:max_running_agents]
+      assert error.usage.running == 3
+    end
+
+    test "frees the slot once the agent's turn ends" do
+      rules = [rule(@ip_key, policy(max_running_agents: 1))]
+      for agent_id <- ~w(finished next), do: start_live_agent(agent_id)
+
+      assert :ok = RateLimiter.enforce!("finished", rules)
+      Repo.query!("UPDATE legion_agents SET status = 'idle' WHERE agent_id = $1", ["finished"])
+
+      assert :ok = RateLimiter.enforce!("next", rules)
+    end
+
+    test "does not count a running row whose agent is gone" do
+      insert_agent("crashed", @ip_key, status: "running")
+      start_live_agent("new")
+
+      assert :ok = RateLimiter.enforce!("new", [rule(@ip_key, policy(max_running_agents: 1))])
+    end
+
+    test "does not count a running row untouched since before the window" do
+      start_live_agent("stale")
+      insert_agent("stale", @ip_key, status: "running", updated_at: milliseconds_ago(2_000))
+      start_live_agent("new")
+
+      assert :ok =
+               RateLimiter.enforce!(
+                 "new",
+                 [rule(@ip_key, policy(window_ms: 1_000, max_running_agents: 1))]
+               )
+    end
+
+    test "leaves the status alone when no rule limits running agents" do
+      assert :ok = RateLimiter.enforce!("agent", [rule(@ip_key, policy())])
+
+      assert %{rows: [["idle"]]} =
+               Repo.query!("SELECT status FROM legion_agents WHERE agent_id = $1", ["agent"])
+    end
+
+    # The caller is marked running inside the locked transaction, so
+    # simultaneous starts count each other rather than all seeing zero.
+    test "allows exactly max_running_agents under concurrent calls" do
+      rules = [rule(@ip_key, policy(max_running_agents: 1))]
+      test_pid = self()
+
+      tasks =
+        for index <- 1..20 do
+          Task.async(fn ->
+            agent_id = "running-concurrent-#{index}"
+            :yes = Legion.AgentIndex.register_name(agent_id, self())
+            send(test_pid, {:ready, self()})
+
+            receive do
+              :enforce -> :ok
+            end
+
+            outcome =
+              try do
+                RateLimiter.enforce!(agent_id, rules)
+              rescue
+                ExceededError -> :exceeded
+              end
+
+            # A real agent stays alive for its whole turn, so hold the slot
+            # until every call has its verdict.
+            send(test_pid, {:outcome, self(), outcome})
+
+            receive do
+              :stop -> outcome
+            end
+          end)
+        end
+
+      for _ <- tasks, do: assert_receive({:ready, _})
+      Enum.each(tasks, &send(&1.pid, :enforce))
+      for _ <- tasks, do: assert_receive({:outcome, _, _}, 5_000)
+      Enum.each(tasks, &send(&1.pid, :stop))
+
+      outcomes = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(outcomes, &(&1 == :ok)) == 1
+      assert Enum.count(outcomes, &(&1 == :exceeded)) == 19
+    end
+  end
+
   test "migration can be rolled back, reapplied, and rerun safely" do
     version = LegionAgentsMigration.version()
 
@@ -370,16 +465,25 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     started_at = Keyword.get(opts, :started_at, NaiveDateTime.utc_now())
     usage = Keyword.get(opts, :usage, [])
     updated_at = Keyword.get(opts, :updated_at, NaiveDateTime.utc_now())
+    status = Keyword.get(opts, :status, "idle")
 
     Repo.query!(
       """
       INSERT INTO legion_agents (
-        agent_id, ratelimit_metadata, started_at, usage, updated_at
+        agent_id, ratelimit_metadata, started_at, usage, updated_at, status
       )
-      VALUES ($1, $2::jsonb, $3, $4::jsonb[], $5)
+      VALUES ($1, $2::jsonb, $3, $4::jsonb[], $5, $6)
       """,
-      [agent_id, key, started_at, usage, updated_at]
+      [agent_id, key, started_at, usage, updated_at, status]
     )
+  end
+
+  # The running limit only counts agents whose process is alive, so stand in
+  # for one under the id the way AgentServer registers itself.
+  defp start_live_agent(agent_id) do
+    pid = start_supervised!({Task, fn -> Process.sleep(:infinity) end}, id: agent_id)
+    :yes = Legion.AgentIndex.register_name(agent_id, pid)
+    pid
   end
 
   defp milliseconds_ago(milliseconds) do
