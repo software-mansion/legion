@@ -386,8 +386,6 @@ defmodule Legion.RateLimiter.PostgresDbTest do
                Repo.query!("SELECT status FROM legion_agents WHERE agent_id = $1", ["agent"])
     end
 
-    # The caller is marked running inside the locked transaction, so
-    # simultaneous starts count each other rather than all seeing zero.
     test "allows exactly max_running_agents under concurrent calls" do
       rules = [rule(@ip_key, policy(max_running_agents: 1))]
       test_pid = self()
@@ -478,8 +476,6 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     )
   end
 
-  # The running limit only counts agents whose process is alive, so stand in
-  # for one under the id the way AgentServer registers itself.
   defp start_live_agent(agent_id) do
     pid = start_supervised!({Task, fn -> Process.sleep(:infinity) end}, id: agent_id)
     :yes = Legion.AgentIndex.register_name(agent_id, pid)

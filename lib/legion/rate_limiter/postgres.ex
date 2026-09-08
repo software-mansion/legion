@@ -141,9 +141,6 @@ defmodule Legion.RateLimiter.Postgres do
     :ok
   end
 
-  # A running limit needs the caller's turn visible to the counts that follow
-  # in this transaction, so the row is marked before the lock is released.
-  # Without one the row is only touched when its identity changed.
   defp upsert_metadata(repo, record, agent_id, metadata_identity, mark_running?) do
     import Ecto.Query
 
@@ -208,8 +205,6 @@ defmodule Legion.RateLimiter.Postgres do
   defp count_running(_repo, _record, _metadata_identity, %{max_running_agents: nil}, _now),
     do: nil
 
-  # The stored status is a hint: an agent killed mid-turn never writes `idle`
-  # back, so only rows whose process is still alive count.
   defp count_running(repo, record, metadata_identity, policy, now) do
     import Ecto.Query
 
