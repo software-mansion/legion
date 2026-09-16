@@ -12,8 +12,6 @@ defmodule Legion.AgentServer do
 
   use GenServer
 
-  require Logger
-
   alias Legion.{Executor, Store, Telemetry}
   alias Legion.RateLimiter
   alias Legion.RateLimiter.ExceededError
@@ -78,7 +76,7 @@ defmodule Legion.AgentServer do
 
     rate_limit = RateLimiter.resolve!(rate_limit_opts)
     gen_opts = [name: Legion.AgentIndex.name(agent_id)]
-    config = agent_module |> resolve_config(opts) |> Map.put(:rate_limit, rate_limit)
+    config = agent_module |> Legion.Agent.resolve_config(opts) |> Map.put(:rate_limit, rate_limit)
 
     {{agent_module, config, store, agent_id, persistence_frequency, track_usage}, gen_opts}
   end
@@ -110,10 +108,7 @@ defmodule Legion.AgentServer do
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
     if store, do: Vault.unsafe_put(:store, store)
 
-    for tool <- agent_module.tools() do
-      Vault.unsafe_put(tool, agent_module.tool_config(tool))
-    end
-
+    Legion.Agent.seed_tool_configs(agent_module)
     Vault.unsafe_put(:rate_limit, config.rate_limit)
 
     system_prompt = Legion.AgentPrompt.system_prompt(agent_module, config)
@@ -416,39 +411,4 @@ defmodule Legion.AgentServer do
   end
 
   defp truncate_text_part(part, _max_length), do: part
-
-  @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
-
-  defp resolve_config(agent_module, opts) do
-    app_config = Application.get_env(:legion, :config, %{})
-    call_config = Map.new(opts)
-
-    merged =
-      Executor.default_config()
-      |> Map.merge(app_config)
-      |> Map.merge(agent_module.config())
-      |> Map.merge(call_config)
-
-    unknown = Map.keys(merged) -- @known_config_keys
-
-    if unknown != [] do
-      Logger.warning("Unknown Legion config keys: #{inspect(unknown)}")
-    end
-
-    validate_max_message_length(merged)
-
-    merged
-  end
-
-  defp validate_max_message_length(%{max_message_length: :infinity}), do: :ok
-
-  defp validate_max_message_length(%{max_message_length: n}) when is_integer(n) and n > 0,
-    do: :ok
-
-  defp validate_max_message_length(%{max_message_length: other}) do
-    raise ArgumentError,
-          "expected :max_message_length to be a positive integer or :infinity, got: #{inspect(other)}"
-  end
-
-  defp validate_max_message_length(_config), do: :ok
 end
