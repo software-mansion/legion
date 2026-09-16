@@ -97,6 +97,8 @@ defmodule Legion.Agent do
                       config: 0,
                       action_types: 0
 
+  require Logger
+
   defmacro __using__(_opts) do
     quote do
       @behaviour Legion.Agent
@@ -121,6 +123,57 @@ defmodule Legion.Agent do
                      action_types: 0
     end
   end
+
+  @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
+
+  @doc false
+  # Resolves the effective config for `agent_module`: Executor defaults, then the
+  # `:legion, :config` app env, then `agent_module.config/0`, then `opts`. Warns
+  # about unknown keys and validates `:max_message_length`. Shared by every
+  # driver that runs the agent (AgentServer, Legion.MCP.Server).
+  def resolve_config(agent_module, opts \\ []) do
+    app_config = Application.get_env(:legion, :config, %{})
+    call_config = Map.new(opts)
+
+    merged =
+      Legion.Executor.default_config()
+      |> Map.merge(app_config)
+      |> Map.merge(agent_module.config())
+      |> Map.merge(call_config)
+
+    unknown = Map.keys(merged) -- @known_config_keys
+
+    if unknown != [] do
+      Logger.warning("Unknown Legion config keys: #{inspect(unknown)}")
+    end
+
+    validate_max_message_length(merged)
+
+    merged
+  end
+
+  @doc false
+  # Seeds the calling process's Vault with each tool's `tool_config/1`, so tools
+  # can read their options via `Vault.get(__MODULE__)` from sandboxed code.
+  def seed_tool_configs(agent_module) do
+    for tool <- agent_module.tools() do
+      Vault.unsafe_put(tool, agent_module.tool_config(tool))
+    end
+
+    :ok
+  end
+
+  defp validate_max_message_length(%{max_message_length: :infinity}), do: :ok
+
+  defp validate_max_message_length(%{max_message_length: n}) when is_integer(n) and n > 0,
+    do: :ok
+
+  defp validate_max_message_length(%{max_message_length: other}) do
+    raise ArgumentError,
+          "expected :max_message_length to be a positive integer or :infinity, got: #{inspect(other)}"
+  end
+
+  defp validate_max_message_length(_config), do: :ok
 
   defmacro __before_compile__(env) do
     moduledoc = Module.get_attribute(env.module, :moduledoc)

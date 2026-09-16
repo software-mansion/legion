@@ -8,6 +8,8 @@
     add_if_not_exists: 2,
     add_if_not_exists: 3,
     alter: 2,
+    component: 1,
+    component: 2,
     create: 1,
     create: 2,
     create_if_not_exists: 1,
