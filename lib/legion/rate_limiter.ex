@@ -92,6 +92,12 @@ defmodule Legion.RateLimiter do
   Rules are not persisted either, so a resumed agent's later turns are checked
   only when `:rate_limit` is passed to `Legion.resume/2` again.
 
+  A `Legion.MCP.Server` has no turns. It enforces once per `repl` call, before
+  the code runs, with the rules its `rate_limit_rules/1` gives for that
+  request. A denied call runs nothing and records nothing: the host's model
+  gets a tool error naming the limits that were reached, and Legion emits the
+  same telemetry event.
+
   ## Calling it yourself
 
   `resolve!/1` and `enforce!/2` are public, so an application can rate-limit its
@@ -144,9 +150,10 @@ defmodule Legion.RateLimiter do
   and where that state lives is up to the adapter.
 
   Raises `Legion.RateLimiter.ExceededError` for the first rule, in list order,
-  that is exceeded. Legion catches that exception and cancels the turn; any
-  other error propagates, so an adapter that cannot reach its backing store
-  fails the agent rather than silently allowing the call.
+  that is exceeded. Legion catches that exception and cancels the turn, or
+  denies the `repl` call of a `Legion.MCP.Server`; any other error
+  propagates, so an adapter that cannot reach its backing store fails the
+  agent or the call rather than silently allowing it.
   """
   @callback enforce!(
               agent_id :: Store.agent_id(),

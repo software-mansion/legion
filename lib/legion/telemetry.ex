@@ -61,30 +61,37 @@ defmodule Legion.Telemetry do
   ## Rate Limit Events
 
   - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn before
-    it started; metadata carries the identity and policy of the rule that
-    denied it, the usage measured for it, and the violations
+    it started, or a `repl` call of a `Legion.MCP.Server` before its code ran;
+    metadata carries the identity and policy of the rule that denied it, the
+    usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
-      Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
+      Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}` (plus
+      `session_id: String.t()` when a `repl` call was denied)
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
 
   ## MCP Events
 
-  Emitted by servers built with `Legion.MCP.Server`. `agent_id` is the MCP
-  session id.
+  Emitted by servers built with `Legion.MCP.Server`. `session_id` is the MCP
+  session id. `agent_id` is the id the server's `agent_id/1` gave the session,
+  or the one Legion generated for it. The `:call` events carry it. The two
+  session events do not: join them to an `agent_id` through `session_id`.
 
   - `[:legion, :mcp, :session, :started]` — a client completed the MCP handshake
     - Measurements: `%{system_time: NaiveDateTime.t()}`
-    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), client_info: map}`
+    - Metadata: `%{agent: module, session_id: String.t(), client_info: map}`
 
   - `[:legion, :mcp, :session, :stopped]` — the session process terminated
     - Measurements: `%{system_time: NaiveDateTime.t()}`
-    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), reason: term}`
+    - Metadata: `%{agent: module, session_id: String.t(), reason: term}`
 
   - `[:legion, :mcp, :call, :start | :stop | :exception]` — one `repl` tool call
-    (wraps a `[:legion, :sandbox, :eval]` span)
+    (wraps a `[:legion, :sandbox, :eval]` span with the same `agent_id`; a
+    denied call has no eval span)
     - Metadata includes: `agent`, `agent_id`, `session_id`, `code`
-    - Stop adds: `success` and `result` or `error`.
+    - Stop adds: `success` and `result` or `error`. `error` is the text the
+      host's model was given, also when the call was denied by a rate limiter
+      or its session could not be saved.
 
   ## Default Logger
 

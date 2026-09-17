@@ -5,6 +5,7 @@
 ### Changes
 
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps recorded code evaluations per window; usage entries carry `"evals" => 1` when the request's action ran code
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent's tools and sandbox to MCP hosts as a single `repl` tool (optional `:anubis_mcp` dependency); sessions are recorded in a [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) under the id from `agent_id/1` and rate limited per call through `rate_limit_rules/1`, with `[:legion, :mcp, :session | :call]` [telemetry](https://hexdocs.pm/legion/Legion.Telemetry.html)
 
 ## v0.5.1 - 2026-09-25
 
