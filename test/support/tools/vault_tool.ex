@@ -9,4 +9,7 @@ defmodule Legion.Test.Support.VaultTool do
 
   @doc "The store this code runs under."
   def store, do: inspect(Vault.get(:store))
+
+  @doc "The rate limit this code runs under."
+  def rate_limit, do: inspect(Vault.get(:rate_limit))
 end

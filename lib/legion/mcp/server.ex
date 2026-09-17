@@ -117,7 +117,13 @@ if Code.ensure_loaded?(Anubis.Server) do
 
         def agent_id(_frame), do: nil
 
-        defoverridable init: 2, server_instructions: 0, terminate: 2, agent_id: 1
+        def rate_limit_rules(_frame), do: nil
+
+        defoverridable init: 2,
+                       server_instructions: 0,
+                       terminate: 2,
+                       agent_id: 1,
+                       rate_limit_rules: 1
       end
     end
 
