@@ -3,27 +3,54 @@ defmodule Legion.MCP.HTTPTest do
   use ExUnit.Case, async: false
 
   alias Anubis.Client
-  alias Legion.Test.Support.{MathAgent, MemoryStore}
+  alias Legion.RateLimiter.{Policy, Rule}
+  alias Legion.Test.Support.{MathAgent, MemoryStore, PostgresRepo}
 
   defmodule HTTPMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "math-http", version: "1.0.0"
   end
 
+  defmodule PgStore do
+    use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo
+  end
+
+  defmodule PgLimiter do
+    use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
+  end
+
+  defmodule LimitedMCP do
+    use Legion.MCP.Server,
+      agent: MathAgent,
+      name: "math-limited",
+      version: "1.0.0",
+      store: PgStore
+
+    def rate_limit_rules(frame) do
+      ip = frame.context.remote_ip |> :inet.ntoa() |> to_string()
+      [%Rule{identity: %{"ip" => ip}, policy: %Policy{window_ms: 60_000, max_evals: 2}}]
+    end
+  end
+
   setup do
-    start_supervised!({HTTPMCP, transport: :streamable_http})
+    start_supervised!({Finch, name: Anubis.Finch})
+
+    {:ok, url: serve(HTTPMCP)}
+  end
+
+  defp serve(server) do
+    start_supervised!({server, transport: :streamable_http})
 
     bandit =
       start_supervised!(
         {Bandit,
-         plug: {Anubis.Server.Transport.StreamableHTTP.Plug, server: HTTPMCP},
+         plug: {Anubis.Server.Transport.StreamableHTTP.Plug, server: server},
          ip: :loopback,
-         port: 0}
+         port: 0},
+        id: {Bandit, server}
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-    start_supervised!({Finch, name: Anubis.Finch})
-
-    {:ok, url: "http://127.0.0.1:#{port}"}
+    "http://127.0.0.1:#{port}"
   end
 
   # Anubis keeps a per-client-name cache, so each client needs its own name.
@@ -145,6 +172,24 @@ defmodule Legion.MCP.HTTPTest do
              MemoryStore.list(10)
 
     assert length(messages) == 4
+  end
+
+  test "rules built from the request deny the call after the limit, across sessions" do
+    PostgresRepo.query!("TRUNCATE legion_agents", [])
+    Application.put_env(:legion, :rate_limit, limiter: PgLimiter)
+    on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
+
+    url = serve(LimitedMCP)
+
+    first = connect(url, :limited_first)
+    {false, _} = repl(first, "return 1")
+    {false, _} = repl(first, "return 2")
+
+    second = connect(url, :limited_second)
+    {error?, text} = repl(second, "return 3")
+
+    assert error?
+    assert text == "Rate limited: max_evals (2 per 60s). Try again later."
   end
 
   test "sessions do not share variables", %{url: url} do
