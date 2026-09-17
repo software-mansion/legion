@@ -3,7 +3,7 @@ defmodule Legion.MCP.HTTPTest do
   use ExUnit.Case, async: false
 
   alias Anubis.Client
-  alias Legion.Test.Support.MathAgent
+  alias Legion.Test.Support.{MathAgent, MemoryStore}
 
   defmodule HTTPMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "math-http", version: "1.0.0"
@@ -130,6 +130,21 @@ defmodule Legion.MCP.HTTPTest do
     refute result["isError"]
     assert [%{"text" => text}] = result["content"]
     assert text =~ "2"
+  end
+
+  test "a session is recorded in the configured store", %{url: url} do
+    start_supervised!(MemoryStore)
+    Application.put_env(:legion, :store, MemoryStore)
+    on_exit(fn -> Application.delete_env(:legion, :store) end)
+
+    client = connect(url, :stored_client)
+    {false, _} = repl(client, "x = 1")
+    {false, _} = repl(client, "return x + 1")
+
+    assert [%{agent_id: "mcp:" <> _, conversation_state: %{messages: messages}}] =
+             MemoryStore.list(10)
+
+    assert length(messages) == 4
   end
 
   test "sessions do not share variables", %{url: url} do

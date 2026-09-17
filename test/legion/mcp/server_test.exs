@@ -100,10 +100,9 @@ defmodule Legion.MCP.ServerTest do
   end
 
   describe "init/2" do
-    test "makes the session id the agent id and seeds the tool configs for the session process" do
+    test "seeds the tool configs for the session process" do
       assert {:ok, %Frame{}} = ConfiguredMCP.init(%{}, frame("session-42"))
 
-      assert Vault.get(:agent_id) == "session-42"
       assert Vault.get(MathTool) == [precision: 2]
     end
 

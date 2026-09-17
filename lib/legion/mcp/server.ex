@@ -32,6 +32,8 @@ if Code.ensure_loaded?(Anubis.Server) do
 
       - `:agent` — the `Legion.Agent` module to expose (required)
       - `:name`, `:version` — MCP `serverInfo`, shown by hosts (required)
+      - `:store` — a `Legion.Store` that records each session; defaults to
+        `config :legion, :store`. Without one nothing is persisted.
 
     Any option accepted by `Anubis.Server.Supervisor.start_link/2` can be passed
     in the child spec. `:request_timeout` defaults to the agent's
@@ -74,6 +76,8 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     defmacro __using__(opts) do
       agent = Keyword.fetch!(opts, :agent)
+      store = Keyword.get(opts, :store)
+
       name = Keyword.fetch!(opts, :name)
       version = Keyword.fetch!(opts, :version)
 
@@ -85,34 +89,35 @@ if Code.ensure_loaded?(Anubis.Server) do
 
         component Legion.MCP.Repl, name: "repl"
 
-        @legion_agent unquote(agent)
-
-        @doc false
-        def __legion_agent__, do: @legion_agent
-
         def child_spec(opts) do
-          config = Legion.Agent.resolve_config(@legion_agent)
+          config = Legion.Agent.resolve_config(unquote(agent))
           timeout = Legion.MCP.Server.request_timeout(config)
           super(Keyword.put_new(opts, :request_timeout, timeout))
         end
 
         @impl Anubis.Server
         def init(_client_info, frame) do
-          Legion.MCP.Server.init_session(@legion_agent, frame)
+          Legion.MCP.Server.init_session(frame,
+            server: __MODULE__,
+            agent: unquote(agent),
+            store: unquote(store)
+          )
         end
 
         @impl Anubis.Server
         def server_instructions do
-          config = Legion.Agent.resolve_config(@legion_agent)
-          Legion.AgentPrompt.system_prompt(@legion_agent, config, mode: :mcp)
+          config = Legion.Agent.resolve_config(unquote(agent))
+          Legion.AgentPrompt.system_prompt(unquote(agent), config, mode: :mcp)
         end
 
         @impl Anubis.Server
         def terminate(reason, frame) do
-          Legion.MCP.Server.stop_session(@legion_agent, reason, frame)
+          Legion.MCP.Server.stop_session(unquote(agent), reason, frame)
         end
 
-        defoverridable init: 2, server_instructions: 0, terminate: 2
+        def agent_id(_frame), do: nil
+
+        defoverridable init: 2, server_instructions: 0, terminate: 2, agent_id: 1
       end
     end
 
@@ -120,15 +125,15 @@ if Code.ensure_loaded?(Anubis.Server) do
     alias Legion.{Agent, Telemetry}
 
     @doc false
-    # Runs inside the Anubis Session process: seeds the Vault the sandbox and
-    # tools read through `$ancestors`, announces the session, and assigns the
-    # agent and its resolved config for `Repl` to read. Called by the generated
-    # `init/2`.
-    def init_session(agent, frame) do
+    # Runs inside the Anubis Session process: seeds the tool configs the sandbox
+    # and tools read through `$ancestors`, announces the session, and assigns
+    # what `Repl` reads on every call. Called by the generated `init/2`.
+    def init_session(frame, opts) do
+      agent = Keyword.fetch!(opts, :agent)
       config = Agent.resolve_config(agent)
+      store = opts[:store] || Application.get_env(:legion, :store)
       session_id = frame.context.session_id
 
-      Vault.unsafe_put(:agent_id, session_id)
       Agent.seed_tool_configs(agent)
 
       Telemetry.emit(
@@ -137,7 +142,8 @@ if Code.ensure_loaded?(Anubis.Server) do
         %{agent: agent, session_id: session_id, client_info: frame.context.client_info}
       )
 
-      {:ok, Frame.assign(frame, agent: agent, config: config)}
+      {:ok,
+       Frame.assign(frame, server: opts[:server], agent: agent, config: config, store: store)}
     end
 
     @doc false

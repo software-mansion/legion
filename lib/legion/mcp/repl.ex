@@ -10,7 +10,8 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
 
     alias Anubis.Server.Frame
     alias Anubis.Server.Response
-    alias Legion.{Eval, Telemetry}
+    alias Legion.{Eval, Executor, Telemetry}
+    alias Legion.Store.Payload
 
     schema do
       field :code, :string, required: true, description: "Code to execute in the sandbox"
@@ -18,6 +19,11 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
 
     @impl true
     def execute(%{code: code}, %Frame{assigns: %{agent: agent}} = frame) do
+      frame = frame |> resolve_agent_id() |> load_row()
+
+      Vault.unsafe_put(:agent_id, frame.assigns.agent_id)
+      if store = frame.assigns.store, do: Vault.unsafe_put(:store, store)
+
       meta = %{agent: agent, session_id: frame.context.session_id, code: code}
       Telemetry.span([:legion, :mcp, :call], meta, fn -> run(code, frame) end)
     end
@@ -27,22 +33,127 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
       {:reply, Response.error(Response.tool(), message), frame}
     end
 
-    # Returns `{tool reply, span stop metadata}`. `agent` and `config` are assigned
-    # by `Legion.MCP.Server` at session start; `bindings` is this tool's own state
-    # and starts empty on the first call.
-    defp run(code, %Frame{assigns: %{agent: agent, config: config} = assigns} = frame) do
-      case Eval.run(agent, code, config, Map.get(assigns, :bindings, [])) do
-        {:ok, {value, bindings}} ->
-          bindings = if config.binding_scope == :iteration, do: [], else: bindings
-          text = Eval.format_result(value, bindings, config)
-          frame = Frame.assign(frame, :bindings, bindings)
-          {{:reply, Response.text(Response.tool(), text), frame}, %{success: true, result: value}}
+    defp resolve_agent_id(%Frame{assigns: %{agent_id: _}} = frame), do: frame
 
-        {:error, reason} ->
-          error = Eval.format_error(reason)
+    defp resolve_agent_id(%Frame{assigns: %{server: server}} = frame) do
+      agent_id =
+        case server.agent_id(frame) do
+          nil ->
+            "mcp:" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+
+          id when is_binary(id) ->
+            if String.valid?(id), do: id, else: raise_agent_id(server, id)
+
+          other ->
+            raise_agent_id(server, other)
+        end
+
+      Frame.assign(frame, :agent_id, agent_id)
+    end
+
+    defp raise_agent_id(server, value) do
+      raise ArgumentError,
+            "#{inspect(server)}.agent_id/1 must return a valid UTF-8 string or nil, " <>
+              "got: #{inspect(value)}"
+    end
+
+    # The Store is read once, on the first call of a fresh frame; after that the
+    # frame is the cache. `usage: nil` means usage is not tracked.
+    defp load_row(%Frame{assigns: %{messages: _}} = frame), do: frame
+
+    defp load_row(%Frame{assigns: %{store: store, agent_id: agent_id}} = frame) do
+      track_usage = Application.get_env(:legion, :track_usage, true)
+
+      {messages, bindings, usage} =
+        case store && store.get(agent_id) do
+          {:ok,
+           %Payload{
+             conversation_state: %{messages: messages, bindings: bindings},
+             usage: usage
+           }} ->
+            {messages, bindings, usage || []}
+
+          _no_state ->
+            {[], [], []}
+        end
+
+      Frame.assign(frame,
+        messages: messages,
+        bindings: bindings,
+        usage: if(track_usage, do: usage),
+        started_at: NaiveDateTime.utc_now()
+      )
+    end
+
+    # Returns `{tool reply, span stop metadata}`.
+    defp run(code, %Frame{assigns: %{agent: agent, config: config, bindings: bindings}} = frame) do
+      call =
+        Executor.message(
+          :assistant,
+          Jason.encode!(%{"action" => "eval_and_continue", "code" => code})
+        )
+
+      {response, outcome, bindings, stop} =
+        case Eval.run(agent, code, config, bindings) do
+          {:ok, {value, bindings}} ->
+            bindings = if config.binding_scope == :iteration, do: [], else: bindings
+            text = Eval.format_result(value, bindings, config)
+
+            {Response.text(Response.tool(), text), Executor.message(:eval_result, text), bindings,
+             %{success: true, result: value}}
+
+          {:error, reason} ->
+            error =
+              reason
+              |> Eval.format_error()
+              |> Executor.truncate_content(config.max_message_length)
+
+            {Response.error(Response.tool(), error), Executor.message(:error, error), bindings,
+             %{success: false, error: error}}
+        end
+
+      case record(frame, call, outcome, bindings) do
+        {:ok, frame} ->
+          {{:reply, response, frame}, stop}
+
+        :error ->
+          error = "The code ran, but the session could not be saved. Try again."
 
           {{:reply, Response.error(Response.tool(), error), frame},
            %{success: false, error: error}}
+      end
+    end
+
+    # Appends the call the way the Executor records an eval, so a stored session
+    # reads like an agent's conversation, and saves the whole row.
+    defp record(%Frame{assigns: assigns} = frame, call, outcome, bindings) do
+      entry = %{
+        "at" => System.system_time(:millisecond),
+        "evals" => 1,
+        "message_index" => length(assigns.messages)
+      }
+
+      messages = assigns.messages ++ [call, outcome]
+      usage = assigns.usage && assigns.usage ++ [entry]
+
+      payload = %Payload{
+        agent_id: assigns.agent_id,
+        agent_module: assigns.agent,
+        started_at: assigns.started_at,
+        conversation_state: %{
+          messages: messages,
+          bindings: bindings,
+          executor_state: :nonexistent
+        },
+        usage: usage
+      }
+
+      case assigns.store && assigns.store.save(payload) do
+        result when result in [nil, :ok] ->
+          {:ok, Frame.assign(frame, messages: messages, usage: usage, bindings: bindings)}
+
+        :error ->
+          :error
       end
     end
   end
