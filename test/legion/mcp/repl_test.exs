@@ -73,6 +73,16 @@ defmodule Legion.MCP.ReplTest do
       assert text == "refused by Legion.MCP.ReplTest.NoGuard: not here"
     end
 
+    test "a session that never completed initialization gets a tool error saying so" do
+      frame = %Frame{context: %Context{session_id: "session-1"}}
+
+      {error?, text, _frame} = call(frame, "return 1")
+
+      assert error?
+      assert text =~ "not initialized"
+      assert text =~ "notifications/initialized"
+    end
+
     test "wraps each call in a [:legion, :mcp, :call] span carrying the session" do
       ref = make_ref()
       test_pid = self()
