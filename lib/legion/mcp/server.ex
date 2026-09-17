@@ -41,16 +41,25 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     ## Callbacks
 
-    `init/2`, `server_instructions/0` and `terminate/2` are overridable; call
-    `super` to keep the Legion behaviour. `init/2` runs inside the session
-    process, so it is the place to seed the Vault with anything your tools need
-    for that session (a tenant, a user, a page):
+    `init/2`, `server_instructions/0` and `terminate/2` are overridable.
+
+    `init/2` runs inside the session process when the client sends
+    `notifications/initialized`. It does not see the HTTP request:
+    `frame.context.auth`, `remote_ip` and `headers` are empty there. They are
+    filled in per tool call, because every call is its own request.
+
+    To hand your tools something derived from the request (a user, a tenant),
+    seed the Vault per call. Each call runs in its own process, and the sandbox
+    and tools started under it read that Vault:
 
         @impl Anubis.Server
-        def init(client_info, frame) do
+        def handle_request(request, frame) do
           Vault.unsafe_put(:current_user, MyApp.Users.from_claims!(frame.context.auth))
-          super(client_info, frame)
+          Anubis.Server.Handlers.handle(request, __MODULE__, frame)
         end
+
+    `handle_request/2` has no `super`; the `Handlers.handle/3` line is what
+    Anubis's default does.
 
     Authentication is not a server callback. On HTTP transports MCP uses OAuth
     2.1 bearer tokens, rejected with 401 before `initialize`: configure it with

@@ -22,6 +22,11 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
       Telemetry.span([:legion, :mcp, :call], meta, fn -> run(code, frame) end)
     end
 
+    def execute(_params, %Frame{} = frame) do
+      message = "Session is not initialized: send notifications/initialized before calling tools."
+      {:reply, Response.error(Response.tool(), message), frame}
+    end
+
     # Returns `{tool reply, span stop metadata}`. `agent` and `config` are assigned
     # by `Legion.MCP.Server` at session start; `bindings` is this tool's own state
     # and starts empty on the first call.

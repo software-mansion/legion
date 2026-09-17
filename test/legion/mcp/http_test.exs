@@ -92,6 +92,46 @@ defmodule Legion.MCP.HTTPTest do
     assert text != ""
   end
 
+  test "a client that skips notifications/initialized gets a tool error until it sends it",
+       %{url: url} do
+    post = fn body, headers ->
+      Req.post!(url,
+        json: Map.put(body, "jsonrpc", "2.0"),
+        headers: [accept: "application/json"] ++ headers
+      )
+    end
+
+    initialize = %{
+      "id" => 1,
+      "method" => "initialize",
+      "params" => %{
+        "protocolVersion" => "2025-06-18",
+        "capabilities" => %{},
+        "clientInfo" => %{"name" => "skipper", "version" => "1"}
+      }
+    }
+
+    call = %{
+      "id" => 2,
+      "method" => "tools/call",
+      "params" => %{"name" => "repl", "arguments" => %{"code" => "return 1 + 1"}}
+    }
+
+    [session_id] = initialize |> post.([]) |> Req.Response.get_header("mcp-session-id")
+    session = [{"mcp-session-id", session_id}]
+
+    %{body: %{"result" => result}} = post.(call, session)
+    assert result["isError"]
+    assert [%{"text" => "Session is not initialized" <> _}] = result["content"]
+
+    post.(%{"method" => "notifications/initialized"}, session)
+
+    %{body: %{"result" => result}} = post.(call, session)
+    refute result["isError"]
+    assert [%{"text" => text}] = result["content"]
+    assert text =~ "2"
+  end
+
   test "sessions do not share variables", %{url: url} do
     first = connect(url, :first_client)
     second = connect(url, :second_client)
