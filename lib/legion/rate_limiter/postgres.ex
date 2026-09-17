@@ -82,9 +82,12 @@ defmodule Legion.RateLimiter.Postgres do
   timestamp falls inside the policy's window; once that total reaches the
   configured maximum, later calls raise.
 
-  Token limits require Legion usage tracking, which is enabled by default. If
-  your application configures `config :legion, :track_usage, false`, leave
-  `:max_tokens` as `nil`; agent limits do not require usage tracking.
+  `:max_evals` is evaluated the same way from recorded `"evals"` usage.
+
+  Token and eval limits require Legion usage tracking, which is enabled by
+  default. If your application configures `config :legion, :track_usage, false`,
+  leave `:max_tokens` and `:max_evals` as `nil`; agent limits do not require
+  usage tracking.
 
   ## Options
 
@@ -180,7 +183,10 @@ defmodule Legion.RateLimiter.Postgres do
     %{
       agents: count_agents(repo, record, metadata_identity, policy, now),
       running: count_running(repo, record, metadata_identity, policy),
-      tokens: sum_tokens(repo, record, metadata_identity, policy, now)
+      tokens:
+        policy.max_tokens &&
+          sum_usage(repo, record, metadata_identity, policy, now, "total_tokens"),
+      evals: policy.max_evals && sum_usage(repo, record, metadata_identity, policy, now, "evals")
     }
   end
 
@@ -228,9 +234,9 @@ defmodule Legion.RateLimiter.Postgres do
     end
   end
 
-  defp sum_tokens(_repo, _record, _metadata_identity, %{max_tokens: nil}, _now), do: nil
-
-  defp sum_tokens(repo, record, metadata_identity, policy, now) do
+  # Sums one key over the usage entries recorded inside the window. Entries
+  # without the key add nothing.
+  defp sum_usage(repo, record, metadata_identity, policy, now, key) do
     import Ecto.Query
 
     cutoff = DateTime.to_unix(now, :millisecond) - policy.window_ms
@@ -248,8 +254,9 @@ defmodule Legion.RateLimiter.Postgres do
       where: agent.updated_at >= ^naive_cutoff(now, policy),
       select:
         fragment(
-          "coalesce(sum((?->>'total_tokens')::bigint), 0)::bigint",
-          field(entry, :value)
+          "coalesce(sum((?->>?)::bigint), 0)::bigint",
+          field(entry, :value),
+          ^key
         )
     )
     |> repo.one()
@@ -261,13 +268,14 @@ defmodule Legion.RateLimiter.Postgres do
     |> DateTime.to_naive()
   end
 
-  # The agent counts include the caller's own row, hence `>`; tokens are
-  # consumed before this check, hence `>=`.
+  # The agent count includes the caller's own row, hence `>`; tokens and evals
+  # are consumed before this check, hence `>=`.
   defp find_violations(usage, policy) do
     for {name, true} <- %{
           max_agents: usage.agents != nil and usage.agents > policy.max_agents,
           max_running_agents: usage.running != nil and usage.running > policy.max_running_agents,
-          max_tokens: usage.tokens != nil and usage.tokens >= policy.max_tokens
+          max_tokens: usage.tokens != nil and usage.tokens >= policy.max_tokens,
+          max_evals: usage.evals != nil and usage.evals >= policy.max_evals
         },
         do: name
   end

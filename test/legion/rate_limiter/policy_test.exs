@@ -22,6 +22,21 @@ defmodule Legion.RateLimiter.PolicyTest do
       assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_agents: 0, max_tokens: 0})
     end
 
+    test "accepts max_evals, zero included" do
+      assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_evals: 30})
+      assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_evals: 0})
+    end
+
+    test "rejects a max_evals that is not a non-negative integer" do
+      assert_raise ArgumentError, ~r/:max_evals/, fn ->
+        Policy.validate!(%Policy{window_ms: 1_000, max_evals: -1})
+      end
+
+      assert_raise ArgumentError, ~r/:max_evals/, fn ->
+        Policy.validate!(%Policy{window_ms: 1_000, max_evals: "30"})
+      end
+    end
+
     test "rejects a non-positive window" do
       assert_raise ArgumentError, ~r/:window_ms/, fn ->
         Policy.validate!(%Policy{window_ms: 0})
