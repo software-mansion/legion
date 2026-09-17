@@ -109,6 +109,56 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     end
   end
 
+  test "allows calls while recorded evals stay below max_evals" do
+    insert_agent("session", @ip_key, usage: evals(2))
+
+    assert :ok = RateLimiter.enforce!("session", [rule(@ip_key, policy(max_evals: 3))])
+  end
+
+  test "rejects when recorded evals reach max_evals, reporting the count" do
+    insert_agent("session", @ip_key, usage: evals(3))
+
+    error =
+      assert_raise ExceededError, fn ->
+        RateLimiter.enforce!("session", [rule(@ip_key, policy(max_evals: 3))])
+      end
+
+    assert error.violations == [:max_evals]
+    assert error.usage.evals == 3
+  end
+
+  test "counts evals across every row of the identity" do
+    insert_agent("first-session", @ip_key, usage: evals(2))
+    insert_agent("second-session", @ip_key, usage: evals(1))
+
+    assert_raise ExceededError, fn ->
+      RateLimiter.enforce!("third-session", [rule(@ip_key, policy(max_evals: 3))])
+    end
+  end
+
+  test "does not count evals outside the window" do
+    insert_agent("session", @ip_key, usage: evals(3, at: timestamp_milliseconds_ago(2_000)))
+
+    assert :ok =
+             RateLimiter.enforce!(
+               "session",
+               [rule(@ip_key, policy(window_ms: 1_000, max_evals: 3))]
+             )
+  end
+
+  test "does not count another identity's evals" do
+    insert_agent("other", @other_ip_key, usage: evals(3))
+
+    assert :ok = RateLimiter.enforce!("session", [rule(@ip_key, policy(max_evals: 3))])
+  end
+
+  test "evals are not tokens and tokens are not evals" do
+    insert_agent("mixed", @ip_key, usage: [usage(total_tokens: 10) | evals(1)])
+
+    assert :ok =
+             RateLimiter.enforce!("next", [rule(@ip_key, policy(max_tokens: 11, max_evals: 2))])
+  end
+
   test "reports every active violation of a rule without requiring an order" do
     insert_agent("first", @ip_key, usage: [usage(total_tokens: 10)])
 
@@ -127,6 +177,10 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
     assert_raise ExceededError, fn ->
       RateLimiter.enforce!("token-limit", [rule(@other_ip_key, policy(max_tokens: 0))])
+    end
+
+    assert_raise ExceededError, fn ->
+      RateLimiter.enforce!("eval-limit", [rule(@email_key, policy(max_evals: 0))])
     end
   end
 
@@ -458,7 +512,10 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   defp rule(identity, policy), do: %Rule{identity: identity, policy: policy}
 
   defp policy(opts \\ []) do
-    struct!(Policy, Keyword.merge([window_ms: 60_000, max_agents: nil, max_tokens: nil], opts))
+    struct!(
+      Policy,
+      Keyword.merge([window_ms: 60_000, max_agents: nil, max_tokens: nil, max_evals: nil], opts)
+    )
   end
 
   defp usage(opts) do
@@ -466,6 +523,12 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     at = Keyword.get(opts, :at, System.system_time(:millisecond))
 
     %{"total_tokens" => total_tokens, "at" => at}
+  end
+
+  defp evals(count, opts \\ []) do
+    at = Keyword.get(opts, :at, System.system_time(:millisecond))
+
+    List.duplicate(%{"evals" => 1, "at" => at}, count)
   end
 
   defp insert_agent(agent_id, key, opts \\ []) do
