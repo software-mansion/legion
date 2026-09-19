@@ -67,6 +67,14 @@ defmodule Legion.EvalTest do
   end
 
   describe "run/4" do
+    test "fails an execution whose variables would exceed max_bindings_bytes, keeping the old ones" do
+      config = config(%{max_bindings_bytes: 30})
+
+      assert {:ok, {_value, bindings}} = Eval.run(ExtraAgent, "x", config, [])
+      assert {:error, error} = Eval.run(ExtraAgent, String.duplicate("y", 100), config, bindings)
+      assert error =~ "over the 30 byte limit"
+    end
+
     test "checks and executes the code with the agent's tools and their extra modules allowed" do
       assert {:ok, _} = Eval.run(ExtraAgent, "x = 1", config(), [])
 

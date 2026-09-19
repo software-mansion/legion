@@ -4,6 +4,7 @@ defmodule Legion.AgentServerTest do
 
   import ExUnit.CaptureLog
 
+  alias Legion.AgentServer
   alias Legion.RateLimiter.ExceededError
   alias Legion.RateLimiter.Policy
   alias Legion.RateLimiter.Rule
@@ -47,6 +48,13 @@ defmodule Legion.AgentServerTest do
 
     def config, do: %{model: "agent-model"}
     def tools, do: [Legion.Test.Support.MathTool]
+  end
+
+  defmodule VaultAgent do
+    @moduledoc "Agent whose tool reports what its process was seeded with."
+    use Legion.Agent
+
+    def tools, do: [Legion.Test.Support.VaultTool]
   end
 
   defmodule ChildAgent do
@@ -1565,6 +1573,99 @@ defmodule Legion.AgentServerTest do
     {rate_limit, opts} = Keyword.pop(opts, :rate_limit, [])
 
     Keyword.put(opts, :rate_limit, Keyword.merge([limiter: TestRateLimiter], rate_limit))
+  end
+
+  describe "eval/2" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "runs code without an LLM and keeps variables between calls" do
+      reject(&ReqLLM.generate_object/3)
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      assert {:ok, _text} = AgentServer.eval(pid, "x = MathTool.random_add(1, 0)")
+      assert {:ok, text} = AgentServer.eval(pid, "return x + 1")
+
+      assert text =~ "984"
+      assert text =~ "Available variables: `x`"
+    end
+
+    test "saves every step - the code, then its result or error - and never as running" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-steps")
+
+      {:ok, result} = AgentServer.eval(pid, "return 1 + 1")
+      {:error, error} = AgentServer.eval(pid, "return (")
+
+      {:ok, %{messages: messages}} = MemoryStore.load("eval-steps")
+
+      assert [
+               %{type: :assistant, content: first_action},
+               %{type: :eval_result, content: ^result},
+               %{type: :assistant, content: second_action},
+               %{type: :error, content: ^error}
+             ] = messages
+
+      assert Jason.decode!(first_action) ==
+               %{"action" => "eval_and_continue", "code" => "return 1 + 1"}
+
+      assert Jason.decode!(second_action)["code"] == "return ("
+      assert MemoryStore.statuses("eval-steps") == [:idle, :idle]
+    end
+
+    test "records one eval per call in usage, for :max_evals to count" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-usage")
+
+      {:ok, _result} = AgentServer.eval(pid, "return 1")
+      {:error, _error} = AgentServer.eval(pid, "return (")
+
+      assert {:ok, %Payload{usage: usage}} = MemoryStore.get("eval-usage")
+
+      assert [
+               %{"evals" => 1, "message_index" => 0, "at" => _},
+               %{"evals" => 1, "message_index" => 2, "at" => _}
+             ] = usage
+    end
+
+    test "reads :vault from the agent process, where tools look it up" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
+      assert text =~ "alice"
+    end
+
+    test "a rejected call runs nothing and saves nothing" do
+      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, [store: MemoryStore, agent_id: "eval-denied"] ++ opts)
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = AgentServer.eval(pid, "return 1")
+      assert_received {:enforced, "eval-denied", _identity, _policy}
+      assert MemoryStore.load("eval-denied") == :error
+    end
+  end
+
+  describe "idle_timeout" do
+    test "stops the agent once nobody has called for that long" do
+      reject(&ReqLLM.generate_object/3)
+      {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 50)
+      ref = Process.monitor(pid)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
+    end
+
+    test "every call starts the wait over" do
+      reject(&ReqLLM.generate_object/3)
+      {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 100)
+
+      Process.sleep(60)
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+      Process.sleep(60)
+
+      assert Process.alive?(pid)
+    end
   end
 
   describe "rate limiting" do
