@@ -68,16 +68,15 @@ defmodule Legion.Store do
   The setting is read when an agent starts. Disabled agents neither restore nor
   update usage; existing usage in a store is preserved.
 
-  A session of a `Legion.MCP.Server` makes no LLM requests of its own. It
-  records one map per `repl` call instead, without token counts:
+  A `Legion.eval/3` call, the step of an agent driven by an MCP host, makes
+  no LLM request. It records one map instead, without token counts:
 
       %{"at" => 1_789_654_321_000, "evals" => 1, "message_index" => 4}
 
   `"at"` is when the call finished. `"message_index"` is the position of the
   call's code among the stored messages, counting from zero, so an entry can
   be matched to its message. These are the evaluations `:max_evals` in a
-  `Legion.RateLimiter.Policy` limits. The same setting applies to sessions,
-  read when a session runs its first call.
+  `Legion.RateLimiter.Policy` limits.
 
   ## Identifying a conversation
 

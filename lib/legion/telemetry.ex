@@ -60,38 +60,26 @@ defmodule Legion.Telemetry do
 
   ## Rate Limit Events
 
-  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn before
-    it started, or a `repl` call of a `Legion.MCP.Server` before its code ran;
-    metadata carries the identity and policy of the rule that denied it, the
-    usage measured for it, and the violations
+  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn, or a
+    `Legion.eval/3` call, before it started; metadata carries the identity and policy of the rule that
+    denied it, the usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
-      Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}` (plus
-      `session_id: String.t()` when a `repl` call was denied)
+      Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
 
   ## MCP Events
 
-  Emitted by servers built with `Legion.MCP.Server`. `session_id` is the MCP
-  session id. `agent_id` is the id the server's `agent_id/1` gave the session,
-  or the one Legion generated for it. The `:call` events carry it. The two
-  session events do not: join them to an `agent_id` through `session_id`.
-
-  - `[:legion, :mcp, :session, :started]` — a client completed the MCP handshake
-    - Measurements: `%{system_time: NaiveDateTime.t()}`
-    - Metadata: `%{agent: module, session_id: String.t(), client_info: map}`
-
-  - `[:legion, :mcp, :session, :stopped]` — the session process terminated
-    - Measurements: `%{system_time: NaiveDateTime.t()}`
-    - Metadata: `%{agent: module, session_id: String.t(), reason: term}`
+  A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
+  sandbox and rate limit events above. On top of those, every `repl` call is
+  a span that ties them to the MCP session:
 
   - `[:legion, :mcp, :call, :start | :stop | :exception]` — one `repl` tool call
-    (wraps a `[:legion, :sandbox, :eval]` span with the same `agent_id`; a
+    (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
     denied call has no eval span)
-    - Metadata includes: `agent`, `agent_id`, `session_id`, `code`
-    - Stop adds: `success` and `result` or `error`. `error` is the text the
-      host's model was given, also when the call was denied by a rate limiter
-      or its session could not be saved.
+    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
+    - Stop adds: `success`, and `error` with the text the host's model was
+      given when the code failed or the call was rate limited.
 
   ## Default Logger
 
@@ -141,8 +129,6 @@ defmodule Legion.Telemetry do
               [:legion, :sandbox, :eval, :exception]
             ],
             mcp: [
-              [:legion, :mcp, :session, :started],
-              [:legion, :mcp, :session, :stopped],
               [:legion, :mcp, :call, :start],
               [:legion, :mcp, :call, :stop],
               [:legion, :mcp, :call, :exception]
@@ -326,14 +312,6 @@ defmodule Legion.Telemetry do
   def handle_event([:legion, :sandbox, :eval, :exception], measurements, meta, opts) do
     ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
     log(opts, meta, "    eval:exception #{inspect(meta.reason)} #{ms}ms", :error)
-  end
-
-  def handle_event([:legion, :mcp, :session, :started], _measurements, meta, opts) do
-    log(opts, meta, "mcp:session:started #{short(meta.agent)} #{meta.session_id}")
-  end
-
-  def handle_event([:legion, :mcp, :session, :stopped], _measurements, meta, opts) do
-    log(opts, meta, "mcp:session:stopped #{short(meta.agent)} #{meta.session_id}")
   end
 
   def handle_event([:legion, :mcp, :call, :start], _measurements, meta, opts) do

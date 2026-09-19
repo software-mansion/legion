@@ -10,6 +10,8 @@ defmodule Legion.Eval do
     2. The optional `Legion.EvalGuard` review.
     3. Evaluation via `c:Legion.Sandbox.execute/5`, with the timeout, heap,
        reduction and priority limits taken from `config`.
+    4. A size check of the variables the code leaves behind against
+       `:max_bindings_bytes`.
 
   The whole pipeline runs inside a `[:legion, :sandbox, :eval]` telemetry span,
   so callers get timing and success metadata for free. `bindings` is the
@@ -23,7 +25,9 @@ defmodule Legion.Eval do
   `bindings`.
 
   Returns `{:ok, {value, new_bindings}}` on success, or `{:error, reason}`
-  when the static check, the eval guard, or the evaluation itself fails.
+  when the static check, the eval guard, or the evaluation itself fails, or
+  when the variables it leaves behind would exceed `:max_bindings_bytes`; the
+  previous bindings stand in that case, as after any error.
   A guard refusal is reported as `{:error, "refused by <guard>: <reason>"}`.
   """
   def run(agent_module, code, config, bindings) do
@@ -49,7 +53,8 @@ defmodule Legion.Eval do
                allowed,
                bindings,
                sandbox_limits
-             ) do
+             ),
+           :ok <- check_bindings_size(new_bindings, config) do
         {{:ok, {value, new_bindings}}, %{success: true, result: value}}
       else
         {:deny, reason} ->
@@ -93,6 +98,20 @@ defmodule Legion.Eval do
   def format_error(%{message: message}) when is_binary(message), do: message
   def format_error(error) when is_exception(error), do: Exception.message(error)
   def format_error(error), do: inspect(error, pretty: true, limit: 50)
+
+  defp check_bindings_size(bindings, %{max_bindings_bytes: max}) when is_integer(max) do
+    size = :erlang.external_size(bindings)
+
+    if size > max do
+      {:error,
+       "variables would take #{size} bytes, over the #{max} byte limit; " <>
+         "the result was discarded, keep less in variables"}
+    else
+      :ok
+    end
+  end
+
+  defp check_bindings_size(_bindings, _config), do: :ok
 
   defp extra_allowed_modules(tool) do
     if function_exported?(tool, :extra_allowed_modules, 0) do

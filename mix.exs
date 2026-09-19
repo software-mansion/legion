@@ -70,6 +70,7 @@ defmodule Legion.MixProject do
         Legion.Recovery,
         Legion.Telemetry
       ],
+      MCP: [~r/^Legion\.MCP/],
       Tools: [~r/^Legion\.Tools\./]
     ]
   end

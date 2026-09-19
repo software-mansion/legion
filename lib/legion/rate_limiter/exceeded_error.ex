@@ -5,8 +5,8 @@ defmodule Legion.RateLimiter.ExceededError do
   Carries the `:agent_id`, the `:identity` and `:policy` of the rule that
   denied it, the `:usage` the adapter measured for it, and the `:violations` -
   the policy fields that were exceeded, e.g. `[:max_agents]`. Legion rescues it
-  to cancel the turn with `{:rate_limited, violations}`, or to answer an MCP
-  `repl` call with a tool error.
+  to cancel the turn, or the `Legion.eval/3` call, with
+  `{:rate_limited, violations}`.
   """
 
   defexception [:agent_id, :identity, :policy, :usage, :violations]

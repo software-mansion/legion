@@ -77,6 +77,13 @@ defmodule Legion.Agent do
         Applies to text content only: each text part of a multipart message is
         truncated individually, while image data and URLs pass through untouched.
         Defaults to `20_000`. Set to `:infinity` to disable truncation.
+      - `max_bindings_bytes` — max size, as `:erlang.external_size/1` measures
+        it, of the variables a code execution leaves behind. An execution that
+        would exceed it fails with an error the agent reads, and the previous
+        variables stand. Bounds what a conversation holds in memory and, with
+        a store, on disk. Set to `:infinity` to disable (default: `:infinity`)
+      - `idle_timeout` — milliseconds without a call after which the agent
+        process stops normally; see `Legion.start_link/2` (default: `:infinity`)
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.
@@ -124,7 +131,7 @@ defmodule Legion.Agent do
     end
   end
 
-  @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
+  @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
 
   @doc false
   # Resolves the effective config for `agent_module`: Executor defaults, then the
