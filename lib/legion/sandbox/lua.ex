@@ -112,6 +112,7 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp eval(code, tools, bindings, max_heap_bytes) do
+    tools = Enum.filter(tools, &elixir_module?/1)
     lua = init(tools, max_heap_bytes)
     baseline = global_names(lua)
     lua = restore(lua, bindings, baseline)
@@ -184,6 +185,8 @@ defmodule Legion.Sandbox.Lua do
     do: Lua.new(max_string_bytes: min(div(max_heap_bytes, 2), Limits.max_string_bytes()))
 
   defp module_refs(tools), do: Map.new(tools, &{Atom.to_string(&1), &1})
+
+  defp elixir_module?(module), do: String.starts_with?(Atom.to_string(module), "Elixir.")
 
   defp register_tools(lua, tools) do
     module_refs = module_refs(tools)

@@ -506,7 +506,9 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
       {:ok, ast} ->
         tools = {
           MapSet.new(allowed_modules),
-          MapSet.new(Enum.map(allowed_modules, &alias_tail/1))
+          MapSet.new(
+            for module <- allowed_modules, elixir_module?(module), do: alias_tail(module)
+          )
         }
 
         {_ast, result} = Macro.prewalk(ast, :ok, &check_node(&1, &2, tools))
@@ -518,18 +520,10 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
     end
   end
 
-  # Non-Elixir module atoms (e.g. `:erlang`, `:math`) have no alias tail to
-  # match against; return the atom itself so the tool-aliases MapSet just
-  # contains a non-matching entry.
-  defp alias_tail(module) do
-    case Atom.to_string(module) do
-      "Elixir." <> _ ->
-        module |> Module.split() |> List.last() |> List.wrap() |> Module.concat()
+  defp alias_tail(module),
+    do: module |> Module.split() |> List.last() |> List.wrap() |> Module.concat()
 
-      _ ->
-        module
-    end
-  end
+  defp elixir_module?(module), do: String.starts_with?(Atom.to_string(module), "Elixir.")
 
   # AST walker. Clause order is load-bearing: the capture clause must precede
   # the variable clause, and the `:__struct__` / binary-literal leaf clauses

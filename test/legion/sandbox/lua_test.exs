@@ -267,6 +267,15 @@ defmodule Legion.Sandbox.LuaTest do
     assert value == %{"is_atom" => true, "name" => "Legion.Sandbox.LuaTest.FakeSubAgent"}
   end
 
+  test "non-Elixir modules in the tools list are left out instead of crashing" do
+    # `extra_allowed_modules/0` may list Erlang modules for the Elixir
+    # sandbox; they have no short name to register a Lua table under.
+    assert {:ok, {3, _}} =
+             Lua.execute("return EchoTool.add(1, 2)", 15_000, [:erlang, EchoTool, :math])
+
+    assert {:ok, {nil, _}} = Lua.execute("return erlang", 15_000, [:erlang])
+  end
+
   test "meta functions from Legion.Tool are not bridged" do
     assert {:error, _message} = Lua.execute("return EchoTool.description()", 15_000, [EchoTool])
   end

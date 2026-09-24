@@ -86,12 +86,14 @@ defmodule Legion.Sandbox.Elixir do
   # lines, so error positions in diagnostics match the code the model wrote.
   defp env_with_aliases(allowed_modules) do
     aliases =
-      for module <- allowed_modules, String.starts_with?(Atom.to_string(module), "Elixir.") do
+      for module <- allowed_modules, elixir_module?(module) do
         {Module.concat([module |> Module.split() |> List.last()]), module}
       end
 
     %{Code.env_for_eval([]) | aliases: aliases}
   end
+
+  defp elixir_module?(module), do: String.starts_with?(Atom.to_string(module), "Elixir.")
 
   # sobelow_skip ["RCE.CodeModule"]
   defp eval(code_string, bindings, env) do
