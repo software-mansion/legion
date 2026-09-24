@@ -560,6 +560,31 @@ defmodule Legion.ExecutorTest do
     end
   end
 
+  describe "usage message index" do
+    test "stamps each entry with the position of the message it produced" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(nil, 7)
+          2 -> response(%{"action" => "return", "code" => "", "result" => "done"}, 11)
+        end
+      end)
+
+      # executor_messages/1 is [system, user]; the persisted list drops system,
+      # so the first request lands at 1, its error prompt fills 1, the retry at 2.
+      assert {:ok, "done", _messages, [], usage} =
+               Legion.Executor.run(MathAgent, executor_messages("compute"), %{})
+
+      assert [
+               %{"turn_usage" => 7, "message_index" => 1},
+               %{"turn_usage" => 11, "message_index" => 2}
+             ] = usage
+    end
+  end
+
   describe "result formatting" do
     test "available variables are listed in the result message" do
       {:ok, counter} = Agent.start_link(fn -> 0 end)

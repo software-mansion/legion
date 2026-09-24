@@ -42,7 +42,7 @@ defmodule Legion.Telemetry do
   - `[:legion, :llm, :request, :start | :stop | :exception]`
     - Metadata includes: `agent`, `agent_id`, `model`, `message_count`, `iteration`
     - Stop adds: `object` or `error`, and `usage` (the string-keyed usage map
-      with its `"at"` timestamp, when a response was received)
+      with its `"at"` timestamp and `"message_index"`, when a response was received)
 
   ## Sandbox Eval Events (spans)
 

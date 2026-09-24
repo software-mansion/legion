@@ -250,6 +250,8 @@ defmodule Legion.Executor do
       (response.usage || %{})
       |> normalize_usage()
       |> Map.put("at", System.system_time(:millisecond))
+      # system message skipped in persist
+      |> Map.put("message_index", length(messages) - 1)
 
     turn_usage = turn_usage ++ [usage]
 

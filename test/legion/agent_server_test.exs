@@ -667,6 +667,34 @@ defmodule Legion.AgentServerTest do
       assert first_timestamp <= second_timestamp
     end
 
+    test "usage entries name the persisted assistant message their request produced" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_eval_continue_response("x = 1", 7)
+          2 -> llm_response("first", 11)
+          3 -> llm_response("second", 13)
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-index")
+      assert {:ok, "first"} = Legion.call(pid, "first turn")
+      assert {:ok, "second"} = Legion.call(pid, "second turn")
+
+      assert {:ok, %Payload{usage: usage, conversation_state: %{messages: messages}}} =
+               MemoryStore.get("usage-index")
+
+      # [user, assistant, eval_result, assistant, user, assistant]
+      assert [%{"message_index" => 1}, %{"message_index" => 3}, %{"message_index" => 5}] = usage
+
+      for %{"message_index" => index} <- usage do
+        assert %{type: :assistant} = Enum.at(messages, index)
+      end
+    end
+
     test "restored conversations add only new invocation usage" do
       assert :ok =
                MemoryStore.save(%Payload{
