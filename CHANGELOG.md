@@ -12,6 +12,7 @@
 - Tool discovery - `tool_docs: :discovery` in [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) lists tools in the system prompt by name and one-line summary instead of embedding their descriptions; the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) tool returns a tool's full description on demand with `Help.help("Name")`; tools gain an overridable [`Legion.Tool.summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), by default the first sentence of the `@moduledoc`
 - MCP server - `tool_docs` defaults to `:discovery` over MCP, so the [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) instructions carry the agent's `@moduledoc` and list its tools by name and one-line summary; a second tool, `help`, evaluates `Help.help/1` on the session's agent and returns a tool's full description, so a lookup is saved and counted like a `repl` call; each server's `repl` tool description carries its own sandbox's language and rules, and the `:instructions_budget` warning covers that description too
 - `use Legion.Agent` warns at compile time when two of an agent's tools share a short name, the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) included
+- LLM usage tracking - `:step` stores now persist usage with every step checkpoint instead of only at turn end
 
 ## v0.5.1 - 2026-09-25
 
