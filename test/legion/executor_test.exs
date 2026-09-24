@@ -211,7 +211,13 @@ defmodule Legion.ExecutorTest do
 
       assert %{
                object: %{"action" => "return"},
-               usage: %{"input_tokens" => 12, "output_tokens" => 5, "at" => timestamp}
+               usage: %{
+                 "input_tokens" => 12,
+                 "output_tokens" => 5,
+                 "at" => timestamp,
+                 "message_index" => index
+               },
+               message_count: index
              } = metadata
 
       assert timestamp in before..System.system_time(:millisecond)
@@ -238,7 +244,7 @@ defmodule Legion.ExecutorTest do
       assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
                       %{error: _, usage: usage}}
 
-      assert %{"turn_usage" => 7, "at" => at} = usage
+      assert %{"turn_usage" => 7, "at" => at, "message_index" => nil} = usage
       assert is_integer(at)
 
       assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
@@ -573,15 +579,28 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      # executor_messages/1 is [system, user]; the persisted list drops system,
-      # so the first request lands at 1, its error prompt fills 1, the retry at 2.
-      assert {:ok, "done", _messages, [], usage} =
+      # executor_messages/1 is [system, user]. The invalid first response
+      # stores nothing, its error prompt fills 2, the retry's assistant
+      # message lands at 3.
+      assert {:ok, "done", messages, [], usage} =
                Legion.Executor.run(MathAgent, executor_messages("compute"), %{})
 
       assert [
-               %{"turn_usage" => 7, "message_index" => 1},
-               %{"turn_usage" => 11, "message_index" => 2}
+               %{"turn_usage" => 7, "message_index" => nil},
+               %{"turn_usage" => 11, "message_index" => 3}
              ] = usage
+
+      assert %{type: :assistant} = Enum.at(messages, 3)
+    end
+
+    test "an entry names no message when retries run out" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> response(nil, 7) end)
+
+      assert {:cancel, :reached_max_retries, messages, [], usage} =
+               Legion.Executor.run(MathAgent, executor_messages("compute"), %{max_retries: 0})
+
+      assert [%{"turn_usage" => 7, "message_index" => nil}] = usage
+      assert [%{type: :system}, %{type: :user}] = messages
     end
   end
 

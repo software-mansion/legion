@@ -674,9 +674,10 @@ defmodule Legion.AgentServerTest do
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
-          1 -> llm_eval_continue_response("x = 1", 7)
-          2 -> llm_response("first", 11)
-          3 -> llm_response("second", 13)
+          1 -> llm_object(nil, 5)
+          2 -> llm_eval_continue_response("x = 1", 7)
+          3 -> llm_response("first", 11)
+          4 -> llm_response("second", 13)
         end
       end)
 
@@ -687,12 +688,47 @@ defmodule Legion.AgentServerTest do
       assert {:ok, %Payload{usage: usage, conversation_state: %{messages: messages}}} =
                MemoryStore.get("usage-index")
 
-      # [user, assistant, eval_result, assistant, user, assistant]
-      assert [%{"message_index" => 1}, %{"message_index" => 3}, %{"message_index" => 5}] = usage
+      # [user, error, assistant, eval_result, assistant, user, assistant]
+      assert [
+               %{"message_index" => nil},
+               %{"message_index" => 2},
+               %{"message_index" => 4},
+               %{"message_index" => 6}
+             ] = usage
 
-      for %{"message_index" => index} <- usage do
+      for %{"message_index" => index} when is_integer(index) <- usage do
         assert %{type: :assistant} = Enum.at(messages, index)
       end
+    end
+
+    test "usage of a cancelled turn names no message, so the next turn's user message stays unnamed" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_object(nil, 7)
+          2 -> llm_response("second", 11)
+        end
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "usage-cancelled",
+          max_retries: 0
+        )
+
+      assert {:cancel, :reached_max_retries} = Legion.call(pid, "first turn")
+      assert {:ok, "second"} = Legion.call(pid, "second turn")
+
+      assert {:ok, %Payload{usage: usage, conversation_state: %{messages: messages}}} =
+               MemoryStore.get("usage-cancelled")
+
+      # [user, user, assistant]
+      assert [%{"message_index" => nil}, %{"message_index" => 2}] = usage
+      assert %{type: :assistant} = Enum.at(messages, 2)
     end
 
     test "restored conversations add only new invocation usage" do
@@ -711,8 +747,12 @@ defmodule Legion.AgentServerTest do
       assert {:ok, "new work"} = Legion.call(pid, "continue")
 
       assert {:ok,
-              %Payload{usage: [%{turn_usage: 100}, %{"turn_usage" => 20, "at" => timestamp}]}} =
-               MemoryStore.get("usage-restore")
+              %Payload{
+                usage: [
+                  %{turn_usage: 100},
+                  %{"turn_usage" => 20, "at" => timestamp, "message_index" => 1}
+                ]
+              }} = MemoryStore.get("usage-restore")
 
       assert is_integer(timestamp)
     end

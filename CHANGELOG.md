@@ -5,7 +5,7 @@
 ### Changes
 
 - Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
-- Usage entries carry `"message_index"`, the position in the stored conversation of the message their request produced
+- LLM usage tracking - each usage entry carries a `"message_index"` pointing at the assistant message its request produced; see [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
 
 ## v0.5.0 - 2026-09-01
 
