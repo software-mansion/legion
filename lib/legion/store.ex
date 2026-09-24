@@ -61,6 +61,8 @@ defmodule Legion.Store do
   the system prompt) of the assistant message it produced, or `nil` when the
   response had no usable object.
   Entries saved by Legion 0.5.0 have no `"message_index"`.
+  Usage is saved with the turn's final snapshot, and with every step
+  checkpoint under `:step` persistence.
   Tracking is enabled by default. Disable it globally before starting an agent:
 
       config :legion, :track_usage, false

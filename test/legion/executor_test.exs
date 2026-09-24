@@ -469,7 +469,8 @@ defmodule Legion.ExecutorTest do
                        %{
                          messages: continuing_messages,
                          bindings: [x: 10],
-                         executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                         executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0},
+                         turn_usage: [%{"turn_usage" => 0}]
                        }}
 
       assert List.last(continuing_messages).type == :eval_result
@@ -566,65 +567,7 @@ defmodule Legion.ExecutorTest do
     end
   end
 
-  describe "usage recording" do
-    test "hands the turn's usage so far to the callback after every LLM response" do
-      test_pid = self()
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 ->
-            response(
-              %{"action" => "eval_and_continue", "code" => "return 1", "result" => ""},
-              7
-            )
-
-          2 ->
-            response(%{"action" => "return", "code" => "", "result" => "done"}, 11)
-        end
-      end)
-
-      record_usage = fn turn_usage ->
-        send(test_pid, {:usage, turn_usage})
-        :ok
-      end
-
-      assert {:ok, "done", _messages, _bindings, _turn_usage} =
-               Legion.Executor.run(
-                 MathAgent,
-                 executor_messages("compute"),
-                 %{record_usage: record_usage}
-               )
-
-      assert_received {:usage, [%{"turn_usage" => 7, "at" => _}]}
-
-      assert_received {:usage,
-                       [%{"turn_usage" => 7, "at" => _}, %{"turn_usage" => 11, "at" => _}]}
-    end
-
-    test "usage recording failure exits before the next LLM request" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-        response(%{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""})
-      end)
-
-      reason =
-        catch_exit(
-          Legion.Executor.run(
-            MathAgent,
-            executor_messages("compute"),
-            %{record_usage: fn _turn_usage -> :error end}
-          )
-        )
-
-      assert {:usage_persistence_failed, %MatchError{term: :error}} = reason
-      assert :counters.get(call_count, 1) == 1
-    end
-
+  describe "usage message index" do
     test "stamps each entry with the position of the message it produced" do
       call_count = :counters.new(1, [:atomics])
 

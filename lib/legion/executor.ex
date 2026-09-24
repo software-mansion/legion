@@ -240,7 +240,7 @@ defmodule Legion.Executor do
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
-            handle_llm_response(response, messages, message_count, config, turn_usage)
+            handle_llm_response(response, messages, message_count, turn_usage)
 
           {:error, reason} ->
             {{:error, "LLM request failed: #{inspect(reason)}", turn_usage}, %{error: reason}}
@@ -249,7 +249,7 @@ defmodule Legion.Executor do
     )
   end
 
-  defp handle_llm_response(response, messages, message_count, config, turn_usage) do
+  defp handle_llm_response(response, messages, message_count, turn_usage) do
     usage =
       (response.usage || %{})
       |> normalize_usage()
@@ -258,19 +258,15 @@ defmodule Legion.Executor do
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
         usage = Map.put(usage, "message_index", message_count)
-        turn_usage = turn_usage ++ [usage]
-        record_usage!(config, turn_usage)
         messages = messages ++ [message(:assistant, Jason.encode!(action))]
-        {{:ok, action, messages, turn_usage}, %{object: action, usage: usage}}
+        {{:ok, action, messages, turn_usage ++ [usage]}, %{object: action, usage: usage}}
 
       {:error, reason} ->
         # No message stored for this request: its slot goes to the retry
         # prompt, or stays empty when retries run out.
         usage = Map.put(usage, "message_index", nil)
-        turn_usage = turn_usage ++ [usage]
-        record_usage!(config, turn_usage)
 
-        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage},
+        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage ++ [usage]},
          %{error: reason, usage: usage}}
     end
   end
@@ -287,7 +283,7 @@ defmodule Legion.Executor do
   defp normalize_usage_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_usage_key(key), do: key
 
-  defp checkpoint!(config, messages, bindings, executor_state) do
+  defp checkpoint!(config, messages, bindings, executor_state, turn_usage) do
     case config[:checkpoint] do
       nil ->
         :ok
@@ -298,28 +294,11 @@ defmodule Legion.Executor do
             callback.(%{
               messages: messages,
               bindings: bindings,
-              executor_state: executor_state
+              executor_state: executor_state,
+              turn_usage: turn_usage
             })
         rescue
           error -> exit({:checkpoint_persistence_failed, error})
-        end
-    end
-  end
-
-  # Hands the turn's usage so far to the caller after every LLM response, so
-  # it can be persisted while the turn is still running. A failure exits like
-  # a checkpoint failure: the rescue around call_llm would otherwise turn it
-  # into a retried LLM error.
-  defp record_usage!(config, turn_usage) do
-    case config[:record_usage] do
-      nil ->
-        :ok
-
-      callback ->
-        try do
-          :ok = callback.(turn_usage)
-        rescue
-          error -> exit({:usage_persistence_failed, error})
         end
     end
   end
@@ -377,7 +356,7 @@ defmodule Legion.Executor do
             %{phase: :completing, iteration: i, retries: 0}
           end
 
-        checkpoint!(config, messages, new_bindings, executor_state)
+        checkpoint!(config, messages, new_bindings, executor_state, turn_usage)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings, turn_usage),
@@ -471,11 +450,13 @@ defmodule Legion.Executor do
 
       next_retries = retries + 1
 
-      checkpoint!(config, messages, bindings, %{
-        phase: :awaiting_llm,
-        iteration: iteration,
-        retries: next_retries
-      })
+      checkpoint!(
+        config,
+        messages,
+        bindings,
+        %{phase: :awaiting_llm, iteration: iteration, retries: next_retries},
+        turn_usage
+      )
 
       loop(agent_module, messages, config, iteration, next_retries, bindings, turn_usage)
     end
