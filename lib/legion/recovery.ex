@@ -57,7 +57,12 @@ defmodule Legion.Recovery do
     end)
     |> Enum.filter(fn {_store, payload} -> running_root?(payload) end)
     |> Task.async_stream(
-      fn {store, %Payload{agent_id: agent_id}} -> Legion.recover(agent_id, store: store) end,
+      fn {store, %Payload{agent_id: agent_id}} ->
+        # A recovered run only finishes its interrupted turn and stops, so
+        # there is nothing to rate-limit. Opt out explicitly to keep a
+        # globally configured limiter from warning once per recovered agent.
+        Legion.recover(agent_id, store: store, rate_limit: [rules: []])
+      end,
       max_concurrency: concurrent_request_limit,
       ordered: false,
       timeout: :infinity

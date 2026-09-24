@@ -253,7 +253,9 @@ defmodule Legion do
   saved checkpoint when one exists; otherwise it starts a new executor loop
   with the restored history.
 
-  `opts` are passed through to `start_link/2`.
+  `opts` are passed through to `start_link/2`. Rate-limit rules are not
+  persisted, so the resumed agent is checked on its later turns only when
+  `:rate_limit` is passed here again; otherwise it runs without rate limiting.
 
   Pass `:store` or configure one globally. Returns:
 
@@ -308,7 +310,9 @@ defmodule Legion do
   only that the temporary agent process stopped normally.
 
   Pass `:store` or configure one globally. Other options are passed through to
-  `start_link/2`. Returns:
+  `start_link/2`. Rate-limit rules are not persisted and the recovered run only
+  finishes the interrupted turn before stopping, so it is never rate-limited.
+  Returns:
 
     - `:ok` when the temporary process stops normally
     - `{:error, reason}` when the temporary process stops abnormally
