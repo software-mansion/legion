@@ -322,7 +322,7 @@ defmodule Legion.AgentServer do
 
     kept_bindings = if conversation_scope?, do: final_bindings, else: []
 
-    usage = if state.track_usage, do: state.usage ++ turn_usage
+    usage = if state.track_usage, do: state.usage ++ Enum.map(turn_usage, &stored_usage/1)
 
     state =
       %{
@@ -375,6 +375,14 @@ defmodule Legion.AgentServer do
        }) do
     %{messages: messages, bindings: bindings, executor_state: executor_state}
   end
+
+  # The executor indexes the list it was given, which starts with the system
+  # prompt. persisted_conversation_state/1 drops that prompt, so stored
+  # entries point one earlier.
+  defp stored_usage(%{"message_index" => index} = usage) when is_integer(index),
+    do: %{usage | "message_index" => index - 1}
+
+  defp stored_usage(usage), do: usage
 
   defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 

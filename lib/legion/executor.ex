@@ -130,7 +130,9 @@ defmodule Legion.Executor do
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
   Pass `:nonexistent` (the default) to start a new loop. `:turn_usage` is the complete, ordered list
-  of usage maps returned by LLM requests in the current turn.
+  of usage maps returned by LLM requests in the current turn. Each map's `"message_index"` is the
+  position in the returned `messages` of the assistant message it produced, or `nil` when the
+  response had no usable object.
 
   Returns `{:ok, result, messages, bindings, turn_usage}` or
   `{:cancel, reason, messages, bindings, turn_usage}`.
@@ -225,18 +227,20 @@ defmodule Legion.Executor do
   end
 
   defp call_llm(agent_module, messages, config, iteration, turn_usage) do
+    message_count = length(messages)
+
     Telemetry.span(
       [:legion, :llm, :request],
       %{
         agent: agent_module,
         model: config.model,
-        message_count: length(messages),
+        message_count: message_count,
         iteration: iteration
       },
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
-            handle_llm_response(response, messages, turn_usage)
+            handle_llm_response(response, messages, message_count, turn_usage)
 
           {:error, reason} ->
             {{:error, "LLM request failed: #{inspect(reason)}", turn_usage}, %{error: reason}}
@@ -245,21 +249,24 @@ defmodule Legion.Executor do
     )
   end
 
-  defp handle_llm_response(response, messages, turn_usage) do
+  defp handle_llm_response(response, messages, message_count, turn_usage) do
     usage =
       (response.usage || %{})
       |> normalize_usage()
       |> Map.put("at", System.system_time(:millisecond))
 
-    turn_usage = turn_usage ++ [usage]
-
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
+        usage = Map.put(usage, "message_index", message_count)
         messages = messages ++ [message(:assistant, Jason.encode!(action))]
-        {{:ok, action, messages, turn_usage}, %{object: action, usage: usage}}
+        {{:ok, action, messages, turn_usage ++ [usage]}, %{object: action, usage: usage}}
 
       {:error, reason} ->
-        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage},
+        # No message stored for this request: its slot goes to the retry
+        # prompt, or stays empty when retries run out.
+        usage = Map.put(usage, "message_index", nil)
+
+        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage ++ [usage]},
          %{error: reason, usage: usage}}
     end
   end
