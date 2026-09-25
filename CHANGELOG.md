@@ -1,13 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 - 2026-09-25
 
 ### Changes
 
-- Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
-- Rate limiting - `:max_running_agents` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps matching agents mid-turn at once; the Postgres adapter counts live agents and marks the caller running inside its transaction
-- LLM usage tracking - each usage entry carries a `"message_index"` pointing at the assistant message its request produced; see [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
-- Recovery - [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) opts out of rate limiting by default, so a globally configured limiter no longer logs a "no rules" warning per recovered agent; it and [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) document that rules are not persisted
+- Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises or warns on invalid or incomplete configuration; `rules:` no longer read from `config :legion, :rate_limit`
+- Rate limiting - `:max_running_agents` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps how many matching agents run a turn at once
+- Recovery - recovered runs skip rate limiting; rules are not persisted, so [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) takes `:rate_limit` again
+- Usage tracking - `"message_index"` links usage to its assistant message, see [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
+- Persistence - [`Legion.Store.Payload`](https://hexdocs.pm/legion/Legion.Store.Payload.html) exposes the agent's rate-limit identity as `:ratelimit_metadata`
+- [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) skips Erlang modules in the tool list instead of crashing
+- Guides - [Adding Legion to an existing app](https://hexdocs.pm/legion/integrating.html), [Using Legion with Ash](https://hexdocs.pm/legion/ash.html), [Using local LLMs](https://hexdocs.pm/legion/local_llms.html)
 
 ## v0.5.0 - 2026-09-01
 
