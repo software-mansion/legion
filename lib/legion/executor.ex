@@ -129,8 +129,9 @@ defmodule Legion.Executor do
   `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
-  Pass `:nonexistent` (the default) to start a new loop. `:turn_usage` is the complete, ordered list
-  of usage maps returned by LLM requests in the current turn. Each map's `"message_index"` is the
+  Pass `:nonexistent` (the default) to start a new loop. `:turn_usage` is the turn's combined
+  usage: one map per LLM request, in order, holding the tokens the response reported and
+  `"evals" => 1` when the request's action ran code. Each map's `"message_index"` is the
   position in the returned `messages` of the assistant message it produced, or `nil` when the
   response had no usable object.
 
@@ -340,6 +341,10 @@ defmodule Legion.Executor do
     # Tools that must see the answer come back to the model (e.g. HumanTool)
     # read this to reject running under a turn-ending action.
     Vault.unsafe_put(:current_action, eval)
+
+    # Flags the request whose action ran code: this is what `:max_evals`
+    # counts. Set before the run so a failed evaluation counts too.
+    turn_usage = List.update_at(turn_usage, -1, &Map.put(&1, "evals", 1))
 
     case eval_in_span(agent, code, config, bindings) do
       {:ok, {result, new_bindings}} ->

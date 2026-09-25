@@ -3,8 +3,8 @@ defmodule Legion.RateLimiter.Policy do
   Defines the limits enforced by a `Legion.RateLimiter`.
 
   Every policy has a rolling `:window_ms`. Within that window, it can
-  limit new agents matching an identity, how many of them run a turn at
-  once, recorded token usage for those agents, or any combination:
+  limit new agents matching an identity, and the token usage and code
+  evaluations recorded for those agents:
 
       %Legion.RateLimiter.Policy{
         window_ms: :timer.minutes(1),
@@ -30,6 +30,9 @@ defmodule Legion.RateLimiter.Policy do
       a running turn, so one turn can carry the recorded total past the
       maximum before the next one is denied. `0` accepts no tokens and so
       denies every turn; `nil` disables this limit.
+    * `:max_evals` - maximum recorded code evaluations for matching agents
+      during the window. Checked when a turn starts, like `:max_tokens`.
+      `0` denies every turn; `nil` disables this limit.
 
   A policy with every optional limit set to `nil` is unrestricted. See
   `Legion.RateLimiter` for the adapter interface and
@@ -37,13 +40,14 @@ defmodule Legion.RateLimiter.Policy do
   """
 
   @enforce_keys [:window_ms]
-  defstruct [:window_ms, :max_agents, :max_running_agents, :max_tokens]
+  defstruct [:window_ms, :max_agents, :max_running_agents, :max_tokens, :max_evals]
 
   @type t :: %__MODULE__{
           window_ms: pos_integer(),
           max_agents: non_neg_integer() | nil,
           max_running_agents: non_neg_integer() | nil,
-          max_tokens: non_neg_integer() | nil
+          max_tokens: non_neg_integer() | nil,
+          max_evals: non_neg_integer() | nil
         }
 
   @doc """
@@ -58,6 +62,7 @@ defmodule Legion.RateLimiter.Policy do
     validate_limit!(:max_agents, policy.max_agents)
     validate_limit!(:max_running_agents, policy.max_running_agents)
     validate_limit!(:max_tokens, policy.max_tokens)
+    validate_limit!(:max_evals, policy.max_evals)
 
     :ok
   end
