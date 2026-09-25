@@ -292,7 +292,7 @@ config :legion, :config, %{model: "openai:gpt-5.4", max_iterations: 10}
 
 | Option                   | Default              | Description                                                                                                                                             |
 | ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`                  | `"openai:gpt-5.4"`   | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm).                                                                                        |
+| `model`                  | `"openai:gpt-5.4"`   | `provider:model` string passed to [ReqLLM](https://hexdocs.pm/req_llm) - any provider it supports works here, hosted or local.                          |
 | `sandbox`                | `Legion.Sandbox.Lua` | Module validating and evaluating generated code. See [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox).                           |
 | `max_iterations`         | `10`                 | Successful execution steps before the turn is stopped.                                                                                                  |
 | `max_retries`            | `3`                  | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                                               |
@@ -316,7 +316,7 @@ defmodule MyApp.DataAgent do
 end
 ```
 
-Writing code is the one thing models keep getting better at - update the `model` string and every agent in your app gets smarter, for free.
+Writing code is the one thing models keep getting better at - update the `model` string and every agent in your app gets smarter, for free. Works with local models too (see the [Local LLMs guide](https://hexdocs.pm/legion/local_llms.html)).
 
 ## Telemetry
 
