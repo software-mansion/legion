@@ -234,7 +234,12 @@ defmodule Legion.Executor do
         iteration: iteration
       },
       fn ->
-        case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
+        case ReqLLM.generate_object(
+               config.model,
+               messages,
+               action_schema(agent_module, config),
+               telemetry: telemetry_opts()
+             ) do
           {:ok, response} ->
             handle_llm_response(response, messages, turn_usage)
 
@@ -243,6 +248,18 @@ defmodule Legion.Executor do
         end
       end
     )
+  end
+
+  # A per-call `:telemetry` option replaces `config :req_llm, telemetry:` in
+  # ReqLLM, so the app config is merged in rather than overridden.
+  defp telemetry_opts do
+    env = Application.get_env(:req_llm, :telemetry, [])
+
+    case Vault.get(:agent_id) do
+      nil -> env
+      agent_id when is_map(env) -> Map.put(env, :conversation_id, agent_id)
+      agent_id -> Keyword.put(env, :conversation_id, agent_id)
+    end
   end
 
   defp handle_llm_response(response, messages, turn_usage) do

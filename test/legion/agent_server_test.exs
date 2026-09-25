@@ -95,7 +95,7 @@ defmodule Legion.AgentServerTest do
 
   describe "get_messages/1" do
     test "returns conversation history from a running agent" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -127,7 +127,7 @@ defmodule Legion.AgentServerTest do
 
   describe "config validation" do
     test "warns about unknown config keys" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("ok")
       end)
 
@@ -145,7 +145,7 @@ defmodule Legion.AgentServerTest do
     test "call-time opts override agent config" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn model, _messages, _schema, _opts ->
         send(test_pid, {:model_used, model})
         llm_response("ok")
       end)
@@ -163,7 +163,7 @@ defmodule Legion.AgentServerTest do
 
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn model, _messages, _schema, _opts ->
         send(test_pid, {:model_used, model})
         llm_response("ok")
       end)
@@ -177,7 +177,7 @@ defmodule Legion.AgentServerTest do
 
   describe "terminate/2" do
     test "emits stopped event when agent terminates" do
-      stub(ReqLLM, :generate_object, fn _, _, _ -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _, _, _, _opts -> llm_response("ok") end)
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :agent, :stopped]])
       on_exit(fn -> :telemetry.detach(ref) end)
@@ -191,7 +191,7 @@ defmodule Legion.AgentServerTest do
   end
 
   defp capture_user_content(test_pid) do
-    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
       user_msg = Enum.find(messages, &(&1[:role] == "user"))
       send(test_pid, {:user_content, user_msg[:content]})
       llm_response("ok")
@@ -270,7 +270,7 @@ defmodule Legion.AgentServerTest do
     test "structs are rendered via inspect" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         user_msg = Enum.find(messages, &(&1[:role] == "user"))
         send(test_pid, {:user_content, user_msg[:content]})
         llm_response("ok")
@@ -285,7 +285,7 @@ defmodule Legion.AgentServerTest do
     test "maps are rendered via inspect" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         user_msg = Enum.find(messages, &(&1[:role] == "user"))
         send(test_pid, {:user_content, user_msg[:content]})
         llm_response("ok")
@@ -300,7 +300,7 @@ defmodule Legion.AgentServerTest do
     test "terms containing PIDs do not crash the GenServer" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         user_msg = Enum.find(messages, &(&1[:role] == "user"))
         send(test_pid, {:user_content, user_msg[:content]})
         llm_response("ok")
@@ -424,7 +424,7 @@ defmodule Legion.AgentServerTest do
 
   describe "cast/2" do
     test "processes message and updates state without blocking" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -583,7 +583,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "brackets each turn with :running and :idle status writes" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -597,7 +597,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "writes the new Store payloads for a completed message" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -644,7 +644,7 @@ defmodule Legion.AgentServerTest do
     test "accumulates timestamped, string-keyed usage across turns" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -675,7 +675,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("new work", 20)
       end)
 
@@ -706,7 +706,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("new work", 20)
       end)
 
@@ -718,7 +718,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "saves a snapshot before the caller receives its reply" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -738,7 +738,7 @@ defmodule Legion.AgentServerTest do
     test "persists the user message before the turn runs" do
       test_process = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         send(test_process, {:snapshot_during_turn, MemoryStore.load("early-save")})
         llm_response("Paris")
       end)
@@ -751,7 +751,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a one-off execute/3 persists its snapshot before stopping" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -766,7 +766,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "does not persist bindings under the default :turn scope" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_eval_response("x = 42\nreturn x")
       end)
 
@@ -777,7 +777,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "persists conversation-scoped bindings in the completed payload" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_eval_response("x = 42")
       end)
 
@@ -799,7 +799,7 @@ defmodule Legion.AgentServerTest do
     test "a :step store persists a complete eval_and_continue checkpoint" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -843,7 +843,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_eval_response("return 1 + 1")
       end)
 
@@ -868,7 +868,7 @@ defmodule Legion.AgentServerTest do
     test "a :step store persists retry state after an error message" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -895,7 +895,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a :step store retains conversation bindings in the final snapshot" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_eval_response("x = 42")
       end)
 
@@ -916,7 +916,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a :step store persists empty iteration-scoped bindings" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_eval_response("x = 42\nreturn x")
       end)
 
@@ -937,7 +937,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a :step store does not add a checkpoint for return" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("done")
       end)
 
@@ -948,7 +948,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "restores the conversation under a fresh system prompt after a restart" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -966,7 +966,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "restores conversation-scoped bindings after a restart" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
@@ -989,7 +989,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "generates an agent_id when a store is given without one" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -1006,7 +1006,7 @@ defmodule Legion.AgentServerTest do
       Application.put_env(:legion, :store, MemoryStore)
       on_exit(fn -> Application.delete_env(:legion, :store) end)
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -1126,7 +1126,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "resume/2 restarts a stopped conversation from its run metadata" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         llm_response("Paris")
       end)
 
@@ -1163,7 +1163,7 @@ defmodule Legion.AgentServerTest do
       MemoryStore.watch_saves(self())
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         send(test_pid, :llm_requested)
         llm_response("done")
       end)
@@ -1194,7 +1194,7 @@ defmodule Legion.AgentServerTest do
       MemoryStore.watch_saves(self())
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         send(test_pid, :llm_requested)
         llm_response("unexpected")
       end)
@@ -1267,7 +1267,7 @@ defmodule Legion.AgentServerTest do
       test_pid = self()
       request_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(request_count, 1, 1)
 
         case :counters.get(request_count, 1) do
@@ -1383,7 +1383,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "sub-agents inherit the parent store and link to the parent conversation" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         if Enum.any?(messages, &(&1[:content] == "child task")) do
           llm_response("child done")
         else
@@ -1404,7 +1404,7 @@ defmodule Legion.AgentServerTest do
 
   describe "binding_scope" do
     test "bindings do not persist across turns by default (:turn)" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
@@ -1423,7 +1423,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "bindings persist across turns with :conversation" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
@@ -1439,7 +1439,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "Elixir bindings persist across turns with :conversation" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
@@ -1506,7 +1506,9 @@ defmodule Legion.AgentServerTest do
     end
 
     test "cancels the turn when the limiter rejects it" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("ok")
+      end)
 
       {:ok, pid} =
         Legion.start_link(
@@ -1520,7 +1522,7 @@ defmodule Legion.AgentServerTest do
     test "leaves the conversation untouched when the limiter rejects the turn" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         send(test_pid, :llm_called)
         llm_response("ok")
       end)
@@ -1543,7 +1545,10 @@ defmodule Legion.AgentServerTest do
     end
 
     test "enforces rules in order and cancels at the first rejection" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("ok")
+      end)
+
       allowing = allowing_identity(self())
       rejecting = rejecting_identity(self())
 
@@ -1566,7 +1571,9 @@ defmodule Legion.AgentServerTest do
     end
 
     test "runs the turn unlimited, with a warning, when a limiter is configured without rules" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("ok")
+      end)
 
       {pid, log} =
         with_log(fn ->
@@ -1583,7 +1590,10 @@ defmodule Legion.AgentServerTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :rate_limit, :exceeded]])
       on_exit(fn -> :telemetry.detach(ref) end)
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("ok")
+      end)
+
       rejecting = rejecting_identity(self())
 
       {:ok, pid} =
@@ -1609,7 +1619,7 @@ defmodule Legion.AgentServerTest do
       tenant_identity = Map.put(allowing_identity(self()), "tenant", "acme")
       tenant_policy = %Policy{window_ms: 1_000, max_agents: 1}
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         if Enum.any?(messages, &(&1[:role] == "assistant")) do
           llm_response("child done")
         else
@@ -1646,7 +1656,7 @@ defmodule Legion.AgentServerTest do
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         if Enum.any?(messages, &(&1[:role] == "assistant")) do
           llm_response("child done")
         else
@@ -1693,7 +1703,10 @@ defmodule Legion.AgentServerTest do
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("ok")
+      end)
+
       rejecting = rejecting_identity(self())
 
       {:ok, pid} =

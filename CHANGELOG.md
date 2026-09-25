@@ -4,6 +4,7 @@
 
 ### Changes
 
+- OpenTelemetry - [`Legion.OpenTelemetry.attach/1`](https://hexdocs.pm/legion/Legion.OpenTelemetry.html#attach/1) attaches ReqLLM's GenAI `chat` spans under Legion's handler with content and adapter configured in one place, tags them with `gen_ai.conversation.id` = agent id, and carries the caller's OpenTelemetry context through [`Legion.call/3`](https://hexdocs.pm/legion/Legion.html#call/3) and [`Legion.cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) so spans nest under the host's own; `opentelemetry_api` is an optional dependency, see the [Observability guide](https://hexdocs.pm/legion/observability.html)
 - Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
 
 ## v0.5.0 - 2026-09-01

@@ -84,11 +84,11 @@ defmodule Legion.AgentServer do
   end
 
   def call(agent, message, timeout \\ :infinity) do
-    GenServer.call(agent, {:message, message}, timeout)
+    GenServer.call(agent, {:message, message, Telemetry.capture_context()}, timeout)
   end
 
   def cast(agent, message) do
-    GenServer.cast(agent, {:message, message})
+    GenServer.cast(agent, {:message, message, Telemetry.capture_context()})
   end
 
   def get_messages(agent) do
@@ -201,16 +201,27 @@ defmodule Legion.AgentServer do
     {:reply, state.agent_id, state}
   end
 
+  # The third element carries the caller's OpenTelemetry context, so spans
+  # emitted during the turn nest under the caller's span. The two-element
+  # shape is still accepted for mailboxes filled before an upgrade.
   @impl true
-  def handle_call({:message, message}, _from, state) do
-    {reply, state} = handle_message(message, state)
+  def handle_call({:message, message, ctx}, _from, state) do
+    {reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:reply, reply, state}
   end
 
+  def handle_call({:message, message}, from, state) do
+    handle_call({:message, message, nil}, from, state)
+  end
+
   @impl true
-  def handle_cast({:message, message}, state) do
-    {_reply, state} = handle_message(message, state)
+  def handle_cast({:message, message, ctx}, state) do
+    {_reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:noreply, state}
+  end
+
+  def handle_cast({:message, message}, state) do
+    handle_cast({:message, message, nil}, state)
   end
 
   @doc """

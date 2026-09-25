@@ -185,6 +185,44 @@ defmodule Legion.Telemetry do
     :telemetry.execute(event, measurements, with_agent_id(metadata))
   end
 
+  # -- OpenTelemetry context carry --
+
+  @otel? Code.ensure_loaded?(OpenTelemetry.Ctx)
+
+  @doc """
+  Captures the calling process's OpenTelemetry context so it can be restored in
+  another process with `with_context/2`. Returns `nil` when `opentelemetry_api`
+  is not available.
+  """
+  @spec capture_context() :: term() | nil
+  if @otel? do
+    def capture_context, do: OpenTelemetry.Ctx.get_current()
+  else
+    def capture_context, do: nil
+  end
+
+  @doc """
+  Runs `fun` with `ctx` (from `capture_context/0`) attached as the current
+  OpenTelemetry context, detaching it afterwards even if `fun` raises. Runs
+  `fun` unchanged when `ctx` is `nil`.
+  """
+  @spec with_context(term() | nil, (-> result)) :: result when result: term()
+  def with_context(nil, fun), do: fun.()
+
+  if @otel? do
+    def with_context(ctx, fun) do
+      token = OpenTelemetry.Ctx.attach(ctx)
+
+      try do
+        fun.()
+      after
+        OpenTelemetry.Ctx.detach(token)
+      end
+    end
+  else
+    def with_context(_ctx, fun), do: fun.()
+  end
+
   defp with_agent_id(metadata) do
     metadata
     |> put_from_vault(:agent_id)

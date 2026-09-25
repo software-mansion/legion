@@ -33,6 +33,7 @@ defmodule Legion.MixProject do
           "guides/integrating.md": [title: "Adding Legion to an existing app"],
           "guides/sandboxes.md": [title: "Sandboxes"],
           "guides/ash.md": [title: "Using Legion with Ash"],
+          "guides/observability.md": [title: "Observability"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()
@@ -69,6 +70,7 @@ defmodule Legion.MixProject do
         Legion.Recovery,
         Legion.Telemetry
       ],
+      Observability: [~r/^Legion\.OpenTelemetry/],
       Tools: [~r/^Legion\.Tools\./]
     ]
   end
@@ -80,15 +82,18 @@ defmodule Legion.MixProject do
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      {:nimble_options, "~> 1.0"},
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
+      {:opentelemetry_api, "~> 1.4", optional: true},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:makeup_syntect, "~> 0.1", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:mimic, "~> 1.7", only: :test}
+      {:mimic, "~> 1.7", only: :test},
+      {:opentelemetry, "~> 1.5", only: :test}
     ]
   end
 
