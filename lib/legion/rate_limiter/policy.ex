@@ -31,9 +31,8 @@ defmodule Legion.RateLimiter.Policy do
       maximum before the next one is denied. `0` accepts no tokens and so
       denies every turn; `nil` disables this limit.
     * `:max_evals` - maximum recorded code evaluations for matching agents
-      during the window. It counts the `"evals"` recorded in usage and is
-      checked like `:max_tokens`: usage that records no evaluations never
-      reaches it. `0` denies every call; `nil` disables this limit.
+      during the window. Checked when a turn starts, like `:max_tokens`.
+      `0` denies every turn; `nil` disables this limit.
 
   A policy with every optional limit set to `nil` is unrestricted. See
   `Legion.RateLimiter` for the adapter interface and
