@@ -2,11 +2,21 @@ defmodule Legion.RecoveryTest do
   use ExUnit.Case, async: false
   use Mimic
 
+  import ExUnit.CaptureLog
+
   alias Legion.Store.Payload
 
   defmodule RecoveryAgent do
     @moduledoc "Agent used to exercise startup recovery."
     use Legion.Agent
+  end
+
+  defmodule RecoveryLimiter do
+    @moduledoc false
+    @behaviour Legion.RateLimiter
+
+    @impl Legion.RateLimiter
+    def enforce!(_agent_id, _rules), do: :ok
   end
 
   defmodule StoreState do
@@ -235,6 +245,31 @@ defmodule Legion.RecoveryTest do
     send(recovery_pid, :complete_recovery)
 
     assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
+  end
+
+  test "recovers without warning about a configured limiter and no rules" do
+    Application.put_env(:legion, :rate_limit, limiter: RecoveryLimiter)
+    on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
+
+    StoreState.put(RecoveryStoreOne, [interrupted_payload("limited")])
+
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      llm_response("recovered")
+    end)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, worker} =
+                 Legion.Recovery.start_link(
+                   {:ok, stores: [RecoveryStoreOne], store_scan_limit: 1}
+                 )
+
+        monitor_ref = Process.monitor(worker)
+        assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
+      end)
+
+    refute log =~ "configured but no rules"
+    assert {:ok, %Payload{status: :idle}} = StoreState.get(RecoveryStoreOne, "limited")
   end
 
   defp interrupted_payload(agent_id) do

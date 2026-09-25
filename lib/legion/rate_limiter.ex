@@ -89,6 +89,9 @@ defmodule Legion.RateLimiter do
   that was already allowed, so checking it again would discard accepted work
   instead of shedding new load.
 
+  Rules are not persisted either, so a resumed agent's later turns are checked
+  only when `:rate_limit` is passed to `Legion.resume/2` again.
+
   ## Calling it yourself
 
   `resolve!/1` and `enforce!/2` are public, so an application can rate-limit its
