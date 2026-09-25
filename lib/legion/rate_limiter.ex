@@ -63,7 +63,8 @@ defmodule Legion.RateLimiter do
   Sub-agents inherit whatever their parent resolved - a parent started
   without rate limiting runs its whole subtree without it, and rules given
   below it raise rather than re-enable it. Each sub-agent is a separate agent
-  ID in every group, so it counts towards `:max_agents` and its usage towards
+  ID in every group, so it counts towards `:max_agents`, towards
+  `:max_running_agents` while its turn runs, and its usage towards
   `:max_tokens`.
 
   Rules must agree on their identities: two rules may share a field only with
