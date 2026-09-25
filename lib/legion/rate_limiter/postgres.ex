@@ -69,9 +69,11 @@ defmodule Legion.RateLimiter.Postgres do
   exceed the configured maximum. Agents are counted by `started_at`.
 
   `:max_running_agents` counts the matching agents mid-turn: rows whose stored
-  status is `running`, changed inside the window, and whose agent process is
-  alive. A turn interrupted by a crash never writes `idle` back, so a dead
-  process does not hold a slot. When a rule sets this limit, the adapter marks
+  status is `running` and whose agent process is alive, however long ago the
+  turn started. A turn interrupted by a crash never writes `idle` back, so a
+  dead process does not hold a slot; an agent restarted under the same id
+  before its interrupted run is recovered holds one until its next turn ends.
+  When a rule sets this limit, the adapter marks
   the caller `running` in the same transaction, before it counts, so
   concurrent starts see each other; the caller's own row is included, as with
   `:max_agents`.
@@ -149,11 +151,9 @@ defmodule Legion.RateLimiter.Postgres do
 
     {row, on_conflict} =
       if mark_running? do
-        {Map.merge(row, %{status: "running", updated_at: now}),
+        {Map.put(row, :status, "running"),
          from(agent in record,
-           update: [
-             set: [ratelimit_metadata: ^metadata_identity, status: "running", updated_at: ^now]
-           ]
+           update: [set: [ratelimit_metadata: ^metadata_identity, status: "running"]]
          )}
       else
         {row,
@@ -179,7 +179,7 @@ defmodule Legion.RateLimiter.Postgres do
 
     %{
       agents: count_agents(repo, record, metadata_identity, policy, now),
-      running: count_running(repo, record, metadata_identity, policy, now),
+      running: count_running(repo, record, metadata_identity, policy),
       tokens: sum_tokens(repo, record, metadata_identity, policy, now)
     }
   end
@@ -202,10 +202,9 @@ defmodule Legion.RateLimiter.Postgres do
     |> repo.one()
   end
 
-  defp count_running(_repo, _record, _metadata_identity, %{max_running_agents: nil}, _now),
-    do: nil
+  defp count_running(_repo, _record, _metadata_identity, %{max_running_agents: nil}), do: nil
 
-  defp count_running(repo, record, metadata_identity, policy, now) do
+  defp count_running(repo, record, metadata_identity, _policy) do
     import Ecto.Query
 
     from(agent in record,
@@ -216,7 +215,6 @@ defmodule Legion.RateLimiter.Postgres do
           type(^metadata_identity, :map)
         ),
       where: agent.status == "running",
-      where: agent.updated_at >= ^naive_cutoff(now, policy),
       select: agent.agent_id
     )
     |> repo.all()

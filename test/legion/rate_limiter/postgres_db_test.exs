@@ -367,16 +367,25 @@ defmodule Legion.RateLimiter.PostgresDbTest do
       assert :ok = RateLimiter.enforce!("new", [rule(@ip_key, policy(max_running_agents: 1))])
     end
 
-    test "does not count a running row untouched since before the window" do
-      start_live_agent("stale")
-      insert_agent("stale", @ip_key, status: "running", updated_at: milliseconds_ago(2_000))
+    test "keeps counting a turn that outlasts the window" do
+      start_live_agent("long-turn")
+
+      insert_agent("long-turn", @ip_key,
+        status: "running",
+        started_at: milliseconds_ago(2_000),
+        updated_at: milliseconds_ago(2_000)
+      )
+
       start_live_agent("new")
 
-      assert :ok =
-               RateLimiter.enforce!(
-                 "new",
-                 [rule(@ip_key, policy(window_ms: 1_000, max_running_agents: 1))]
-               )
+      error =
+        assert_raise ExceededError, fn ->
+          RateLimiter.enforce!("new", [
+            rule(@ip_key, policy(window_ms: 1_000, max_running_agents: 1))
+          ])
+        end
+
+      assert error.violations == [:max_running_agents]
     end
 
     test "leaves the status alone when no rule limits running agents" do
