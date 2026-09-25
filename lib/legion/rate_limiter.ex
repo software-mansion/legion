@@ -89,10 +89,8 @@ defmodule Legion.RateLimiter do
   that was already allowed, so checking it again would discard accepted work
   instead of shedding new load.
 
-  Rules are not persisted with the conversation. A resumed agent is checked
-  on its later turns only when `:rate_limit` is passed to `Legion.resume/2`
-  again; otherwise it runs without rate limiting from then on. Recovered runs
-  finish the interrupted turn and stop, so they take no later turns.
+  Rules are not persisted either, so a resumed agent's later turns are checked
+  only when `:rate_limit` is passed to `Legion.resume/2` again.
 
   ## Calling it yourself
 
