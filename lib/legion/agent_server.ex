@@ -329,8 +329,13 @@ defmodule Legion.AgentServer do
         new_state = %{state | messages: messages, bindings: bindings, usage: usage}
 
         case save(new_state, [:conversation_state, status: :idle, usage: usage]) do
-          :ok -> {reply, new_state}
-          :error -> {{:error, "The code ran, but the step could not be saved. Try again."}, state}
+          :ok ->
+            {reply, new_state}
+
+          :error ->
+            {{:error,
+              "The code ran, but the step could not be saved. Its effects stand; its variables were discarded and do not exist."},
+             state}
         end
 
       {:rate_limited, violations} ->

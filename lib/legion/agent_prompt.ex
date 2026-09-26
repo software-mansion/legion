@@ -4,22 +4,20 @@ defmodule Legion.AgentPrompt do
   # Generates system prompts for agents based on their definitions and the
   # tools they have access to.
 
-  @executor_template_path Path.join(__DIR__, "prompts/system_prompt.eex")
-  @mcp_template_path Path.join(__DIR__, "prompts/mcp_instructions.eex")
-  @external_resource @executor_template_path
-  @external_resource @mcp_template_path
-  @executor_template EEx.compile_file(@executor_template_path)
-  @mcp_template EEx.compile_file(@mcp_template_path)
+  @template_path Path.join(__DIR__, "prompts/system_prompt.eex")
+  @external_resource @template_path
+  @template EEx.compile_file(@template_path)
 
-  # `mode: :executor` (default) renders the JSON action-loop prompt used by
-  # `Legion.Executor`; `mode: :mcp` renders the instructions an MCP host gets,
-  # where the model calls a `repl` tool instead. An agent's `system_prompt/0`
-  # override wins in both modes.
   def system_prompt(agent, config \\ nil, opts \\ []) do
-    if function_exported?(agent, :system_prompt, 0) do
+    mode = Keyword.get(opts, :mode, :executor)
+
+    # A hand-written `system_prompt/0` is written for the executor's action
+    # loop, so only the executor uses it. Over MCP the instructions are always
+    # generated; `server_instructions/0` in the server is the override point.
+    if mode == :executor and function_exported?(agent, :system_prompt, 0) do
       agent.system_prompt()
     else
-      build_system_prompt(agent, config || agent.config(), Keyword.get(opts, :mode, :executor))
+      build_system_prompt(agent, config || agent.config(), mode)
     end
   end
 
@@ -31,6 +29,7 @@ defmodule Legion.AgentPrompt do
     prompt_info = sandbox.prompt_info()
 
     assigns = [
+      mode: mode,
       description: description,
       tool_contents: tool_contents,
       action_types: agent.action_types(),
@@ -41,13 +40,12 @@ defmodule Legion.AgentPrompt do
       tool_usage: prompt_info.tool_usage
     ]
 
-    mode |> render(assigns) |> String.trim()
+    assigns |> render() |> String.trim()
   end
 
-  # Both templates are compiled at build time from files in this repo; the
-  # literal attribute per clause keeps that visible to static analysis.
-  defp render(:executor, assigns), do: elem(Code.eval_quoted(@executor_template, assigns), 0)
-  defp render(:mcp, assigns), do: elem(Code.eval_quoted(@mcp_template, assigns), 0)
+  # The template is compiled at build time from a file in this repo; the
+  # literal attribute keeps that visible to static analysis.
+  defp render(assigns), do: elem(Code.eval_quoted(@template, assigns), 0)
 
   defp tool_description(module, sandbox) do
     Code.ensure_loaded!(module)

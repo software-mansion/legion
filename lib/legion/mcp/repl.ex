@@ -18,14 +18,15 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     end
 
     # The agent owns the variables, saves every step and enforces the rate
-    # limit; this is one `Legion.eval/3` call dressed as a tool result.
+    # limit; this is one `Legion.eval/3` call formatted as a tool result
+    # for the calling agent.
     @impl true
     def execute(%{code: code}, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
-      {agent, vault, frame} = Server.resolve_agent(frame)
+      {agent, agent_id, vault, frame} = Server.resolve_agent(frame)
 
       metadata = %{
         agent: server.__legion_agent__(),
-        agent_id: Legion.get_agent_id(agent),
+        agent_id: agent_id,
         session_id: frame.context.session_id,
         code: code
       }

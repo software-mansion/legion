@@ -24,6 +24,23 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: ConfiguredAgent, name: "configured", version: "0.1.0"
   end
 
+  defmodule EndlessAgent do
+    @moduledoc "Agent whose evals never time out."
+    use Legion.Agent
+
+    def config, do: %{sandbox_timeout: :infinity}
+  end
+
+  defmodule EndlessMCP do
+    use Legion.MCP.Server, agent: EndlessAgent, name: "endless", version: "0.1.0"
+  end
+
+  defmodule PatientMCP do
+    use Legion.MCP.Server, agent: ConfiguredAgent, name: "patient", version: "0.1.0"
+
+    def request_timeout, do: 10
+  end
+
   defmodule CustomPromptAgent do
     @moduledoc "Agent with a hand-written prompt."
     use Legion.Agent
@@ -148,16 +165,37 @@ defmodule Legion.MCP.ServerTest do
       assert ConfiguredMCP.server_instructions() =~ "Variables do not persist"
     end
 
-    test "an agent's own system_prompt/0 wins" do
-      assert CustomPromptMCP.server_instructions() == "Do exactly as I say."
+    test "an agent's own system_prompt/0 is not used for MCP instructions" do
+      instructions = CustomPromptMCP.server_instructions()
+
+      refute instructions == "Do exactly as I say."
+      assert instructions =~ "Agent with a hand-written prompt."
+      assert instructions =~ "`repl`"
+    end
+  end
+
+  describe "request_timeout/0" do
+    test "is the sandbox timeout plus thirty seconds" do
+      assert ConfiguredMCP.request_timeout() == 31_000
+    end
+
+    test "has no default for a sandbox without a timeout" do
+      assert_raise ArgumentError, ~r/request_timeout\/0/, fn ->
+        EndlessMCP.request_timeout()
+      end
     end
   end
 
   describe "child_spec/1" do
-    test "gives the transport call five seconds more than the sandbox" do
+    test "gives the transport the server's request_timeout" do
       %{start: {_, _, [_, opts]}} = ConfiguredMCP.child_spec(transport: :stdio)
-      assert opts[:request_timeout] == 6_000
+      assert opts[:request_timeout] == 31_000
       assert opts[:transport] == :stdio
+    end
+
+    test "uses an overridden request_timeout/0" do
+      %{start: {_, _, [_, opts]}} = PatientMCP.child_spec(transport: :stdio)
+      assert opts[:request_timeout] == 10
     end
 
     test "keeps an explicit request_timeout" do

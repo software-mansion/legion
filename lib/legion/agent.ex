@@ -30,7 +30,9 @@ defmodule Legion.Agent do
 
     - `system_prompt/0` — override to return a fully custom system prompt. When
       not defined, the prompt is auto-generated from `@moduledoc`, tool source
-      code, and the resolved `binding_scope`.
+      code, and the resolved `binding_scope`. Used by the executor only; over
+      MCP the instructions are always generated, override `server_instructions/0`
+      in the `Legion.MCP.Server` instead.
 
     - `output_schema/0` — JSON Schema map describing the agent's structured output.
       Used by the LLM for the `result` field. Defaults to `%{"type" => "string"}`.

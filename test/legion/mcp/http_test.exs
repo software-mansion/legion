@@ -3,7 +3,7 @@ defmodule Legion.MCP.HTTPTest do
   use ExUnit.Case, async: false
 
   alias Anubis.Client
-  alias Legion.Test.Support.{MathAgent, VaultTool}
+  alias Legion.Test.Support.{MathAgent, SlowTool, VaultTool}
 
   defmodule HTTPMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "math-http", version: "1.0.0"
@@ -22,16 +22,26 @@ defmodule Legion.MCP.HTTPTest do
     def session(frame), do: [vault: [current_user: frame.context.headers["x-user"]]]
   end
 
+  defmodule SlowAgent do
+    @moduledoc "Agent whose tool can outlast the transport."
+    use Legion.Agent
+
+    def tools, do: [SlowTool]
+  end
+
+  defmodule ImpatientMCP do
+    use Legion.MCP.Server, agent: SlowAgent, name: "impatient", version: "1.0.0"
+
+    def request_timeout, do: 200
+  end
+
   setup do
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
     start_supervised!({HTTPMCP, transport: :streamable_http})
 
     bandit =
       start_supervised!(
-        {Bandit,
-         plug: {Anubis.Server.Transport.StreamableHTTP.Plug, server: HTTPMCP},
-         ip: :loopback,
-         port: 0}
+        {Bandit, plug: {Legion.MCP.Plug, server: HTTPMCP}, ip: :loopback, port: 0}
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
@@ -111,10 +121,7 @@ defmodule Legion.MCP.HTTPTest do
 
     bandit =
       start_supervised!(
-        {Bandit,
-         plug: {Anubis.Server.Transport.StreamableHTTP.Plug, server: VaultMCP},
-         ip: :loopback,
-         port: 0},
+        {Bandit, plug: {Legion.MCP.Plug, server: VaultMCP}, ip: :loopback, port: 0},
         id: :vault_bandit
       )
 
@@ -135,6 +142,36 @@ defmodule Legion.MCP.HTTPTest do
 
     assert {false, text} = repl(:vault_client, "return VaultTool.current_user()")
     assert text =~ "ivan"
+  end
+
+  test "the plug gives up on a call after the server's request_timeout/0" do
+    start_supervised!({ImpatientMCP, transport: :streamable_http})
+
+    bandit =
+      start_supervised!(
+        {Bandit, plug: {Legion.MCP.Plug, server: ImpatientMCP}, ip: :loopback, port: 0},
+        id: :impatient_bandit
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+
+    start_supervised!(
+      {Client,
+       name: :impatient_client,
+       transport: {:streamable_http, base_url: "http://127.0.0.1:#{port}", mcp_path: "/"},
+       client_info: %{"name" => "impatient", "version" => "1"},
+       capabilities: %{}}
+    )
+
+    :ok = Client.await_ready(:impatient_client, timeout: 5_000)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, _} =
+                 Client.call_tool(:impatient_client, "repl", %{"code" => "SlowTool.wait(1000)"})
+      end)
+
+    assert log =~ "timeout"
   end
 
   test "sessions do not share variables", %{url: url} do
