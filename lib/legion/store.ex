@@ -68,6 +68,16 @@ defmodule Legion.Store do
   The setting is read when an agent starts. Disabled agents neither restore nor
   update usage; existing usage in a store is preserved.
 
+  A `Legion.eval/3` call, the step of an agent driven by an MCP host, makes
+  no LLM request. It records one map instead, without token counts:
+
+      %{"at" => 1_789_654_321_000, "evals" => 1, "message_index" => 4}
+
+  `"at"` is when the call finished. `"message_index"` is the position of the
+  call's code among the stored messages, counting from zero, so an entry can
+  be matched to its message. These are the evaluations `:max_evals` in a
+  `Legion.RateLimiter.Policy` limits.
+
   ## Identifying a conversation
 
   `:agent_id` is the key a conversation is saved under - it names one
@@ -92,7 +102,7 @@ defmodule Legion.Store do
   and `:retries` for step checkpoints. `:status` records whether the agent is
   mid-turn. The payload also carries the agent module, parent conversation,
   and start time when those values are known. Its `:usage` field is the ordered
-  list of string-keyed LLM usage maps when tracking is enabled; see "Usage
+  list of string-keyed usage maps when tracking is enabled; see "Usage
   tracking" for the `"at"` and `"message_index"` keys.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots

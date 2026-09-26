@@ -1,5 +1,7 @@
 Mimic.copy(ReqLLM)
 
+Legion.Telemetry.attach_default_logger()
+
 defmodule Legion.Test.Support.LegionAgentsMigration do
   use Ecto.Migration
 

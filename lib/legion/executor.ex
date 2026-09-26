@@ -9,7 +9,7 @@ defmodule Legion.Executor do
   context across turns.
   """
 
-  alias Legion.{EvalGuard, Telemetry}
+  alias Legion.{Eval, Telemetry}
   alias Legion.Sandbox.Runner
 
   @default_config %{
@@ -23,7 +23,8 @@ defmodule Legion.Executor do
     sandbox_priority: :low,
     eval_guard: nil,
     binding_scope: :turn,
-    max_message_length: 20_000
+    max_message_length: 20_000,
+    max_bindings_bytes: :infinity
   }
 
   @doc false
@@ -346,12 +347,12 @@ defmodule Legion.Executor do
     # counts. Set before the run so a failed evaluation counts too.
     turn_usage = List.update_at(turn_usage, -1, &Map.put(&1, "evals", 1))
 
-    case eval_in_span(agent, code, config, bindings) do
+    case Eval.run(agent, code, config, bindings) do
       {:ok, {result, new_bindings}} ->
         new_bindings = if config.binding_scope == :iteration, do: [], else: new_bindings
 
         messages =
-          messages ++ [message(:eval_result, format_result(result, new_bindings, config))]
+          messages ++ [message(:eval_result, Eval.format_result(result, new_bindings, config))]
 
         executor_state =
           if eval == "eval_and_continue" do
@@ -384,50 +385,6 @@ defmodule Legion.Executor do
         turn_usage
       )
 
-  defp eval_in_span(agent_module, code, config, bindings) do
-    Telemetry.span([:legion, :sandbox, :eval], %{agent: agent_module, code: code}, fn ->
-      tools = agent_module.tools()
-
-      allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
-
-      sandbox_limits = [
-        max_heap: config.sandbox_max_heap,
-        max_reductions: config.sandbox_max_reductions,
-        priority: config.sandbox_priority
-      ]
-
-      guard_context = %{agent: agent_module, agent_id: Vault.get(:agent_id), tools: tools}
-
-      with :ok <- config.sandbox.check(code, allowed),
-           :allow <- EvalGuard.check(config.eval_guard, code, guard_context),
-           {:ok, {value, new_bindings}} <-
-             config.sandbox.execute(
-               code,
-               config.sandbox_timeout,
-               allowed,
-               bindings,
-               sandbox_limits
-             ) do
-        {{:ok, {value, new_bindings}}, %{success: true, result: value}}
-      else
-        {:deny, reason} ->
-          error = "refused by #{inspect(config.eval_guard)}: #{reason}"
-          {{:error, error}, %{success: false, error: error}}
-
-        {:error, error} ->
-          {{:error, error}, %{success: false, error: error}}
-      end
-    end)
-  end
-
-  defp extra_allowed_modules(tool) do
-    if function_exported?(tool, :extra_allowed_modules, 0) do
-      tool.extra_allowed_modules()
-    else
-      []
-    end
-  end
-
   defp handle_execution_error(
          agent_module,
          messages,
@@ -441,7 +398,7 @@ defmodule Legion.Executor do
     if retries >= config.max_retries do
       {:cancel, :reached_max_retries, messages, bindings, turn_usage}
     else
-      error_text = error |> format_error() |> truncate_content(config[:max_message_length])
+      error_text = error |> Eval.format_error() |> truncate_content(config[:max_message_length])
 
       messages =
         messages ++
@@ -490,33 +447,6 @@ defmodule Legion.Executor do
   end
 
   defp extract_object(_response), do: {:error, "LLM response contained no structured object"}
-
-  defp format_result(result, bindings, config) do
-    variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")
-
-    inspected =
-      result
-      |> inspect(pretty: true, limit: 1000)
-      |> truncate_content(config[:max_message_length])
-
-    base = """
-    Code executed successfully. Result:
-    ```
-    #{inspected}
-    ```
-    """
-
-    if variable_names == [] do
-      base
-    else
-      base <> "\nAvailable variables: #{Enum.join(variable_names, ", ")}"
-    end
-  end
-
-  defp format_error(message) when is_binary(message), do: message
-  defp format_error(%{message: message}) when is_binary(message), do: message
-  defp format_error(error) when is_exception(error), do: Exception.message(error)
-  defp format_error(error), do: inspect(error, pretty: true, limit: 50)
 
   @doc false
   def truncate_content(content, :infinity), do: content

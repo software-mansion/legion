@@ -47,7 +47,10 @@ defmodule Legion do
 
   @impl Supervisor
   def init(_opts) do
-    children = [{Legion.Recovery, Application.fetch_env(:legion, :recovery)}]
+    children = [
+      {Legion.Recovery, Application.fetch_env(:legion, :recovery)},
+      {DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one}
+    ]
 
     Supervisor.init(children, strategy: :one_for_one, name: Legion.Supervisor)
   end
@@ -102,6 +105,13 @@ defmodule Legion do
       limiter without rules runs the agent without rate limiting and logs a
       warning unless `rules: []` opts out on purpose. A denied turn returns
       `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
+    - `:vault` - a keyword list put in the agent process's `Vault`, where its
+      tools and sandbox read it with `Vault.get/1`. The way to hand an agent
+      something request-specific, a current user say, when it is not started
+      from the process that holds it.
+    - `:idle_timeout` - milliseconds without a call after which the agent stops
+      normally. With a store, its state is on record and a later start under
+      the same `:agent_id` continues it (default: `:infinity`).
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
@@ -142,6 +152,41 @@ defmodule Legion do
   """
   def call(pid, message, timeout \\ :infinity) do
     AgentServer.call(pid, message, timeout)
+  end
+
+  @doc """
+  Runs `code` in a running agent's sandbox and returns what the agent's model
+  would read: the result, or the error.
+
+  This is the agent without its model. Nothing is sent to an LLM: the code is
+  taken as the agent's own step and evaluated with its tools, sandbox limits,
+  eval guard and variables, then appended to the conversation and persisted
+  like a turn. It is what `Legion.MCP.Server` runs for a host's model, and what a
+  console or a test can use to drive an agent by hand. Variables persist
+  between calls unless `:binding_scope` is `:iteration`.
+
+  Returns `{:ok, text}` with the formatted result, `{:error, text}` when the
+  code failed to check, was refused or raised, or when the step could not be
+  saved to the store after it ran, and `{:cancel, {:rate_limited, violations}}`
+  when a rate limit denied the call before it ran.
+
+  ## Options
+
+    - `:vault` - a keyword list put in the agent process's `Vault` before the
+      code runs, for tools to read; the per-call form of the `:vault` option
+      of `start_link/2`
+    - `:timeout` - how long to wait for the call (default: `:infinity`)
+
+  ## Examples
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      {:ok, text} = Legion.eval(pid, "x = MathTool.add(1, 2)")
+      {:ok, text} = Legion.eval(pid, "return x * 2")
+      {:error, text} = Legion.eval(pid, "return (")
+      {:ok, text} = Legion.eval(pid, "return Reports.mine()", vault: [current_user: user])
+  """
+  def eval(pid, code, opts \\ []) when is_binary(code) and is_list(opts) do
+    AgentServer.eval(pid, code, opts)
   end
 
   @doc """

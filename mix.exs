@@ -70,6 +70,7 @@ defmodule Legion.MixProject do
         Legion.Recovery,
         Legion.Telemetry
       ],
+      MCP: [~r/^Legion\.MCP/],
       Tools: [~r/^Legion\.Tools\./]
     ]
   end
@@ -83,13 +84,15 @@ defmodule Legion.MixProject do
       {:telemetry, "~> 1.0"},
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
+      {:anubis_mcp, "~> 2.0.0", optional: true},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:makeup_syntect, "~> 0.1", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:mimic, "~> 1.7", only: :test}
+      {:mimic, "~> 1.7", only: :test},
+      {:bandit, "~> 1.0", only: :test}
     ]
   end
 

@@ -58,8 +58,13 @@ defmodule Legion.SupervisorTest do
 
     assert {:ok,
             {_supervisor_flags,
-             [%{id: Legion.Recovery, start: {Legion.Recovery, :start_link, [{:ok, ^config}]}}]}} =
+             [
+               %{id: Legion.Recovery, start: {Legion.Recovery, :start_link, [{:ok, ^config}]}},
+               %{id: Legion.AgentSupervisor, start: {DynamicSupervisor, :start_link, [sup_opts]}}
+             ]}} =
              Legion.init([])
+
+    assert sup_opts[:name] == Legion.AgentSupervisor
   end
 
   test "starts recovery after a client repo" do

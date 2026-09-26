@@ -105,6 +105,67 @@ defmodule Legion.AgentTest do
     end
   end
 
+  defmodule ConfiguredAgent do
+    @moduledoc "Agent with its own config and a configured tool."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool, Legion.Test.Support.MathTool]
+    def tool_config(Legion.Tools.AgentTool), do: [agents: [MinimalAgent]]
+    def config, do: %{model: "agent-model", max_iterations: 3}
+  end
+
+  describe "resolve_config/2" do
+    setup do
+      on_exit(fn -> Application.delete_env(:legion, :config) end)
+    end
+
+    test "starts from the executor defaults" do
+      assert Legion.Agent.resolve_config(MinimalAgent) == Legion.Executor.default_config()
+    end
+
+    test "layers app env, then agent config, then opts on top of the defaults" do
+      Application.put_env(:legion, :config, %{model: "app-model", max_retries: 9})
+
+      config = Legion.Agent.resolve_config(ConfiguredAgent, max_iterations: 1)
+
+      assert config.model == "agent-model"
+      assert config.max_retries == 9
+      assert config.max_iterations == 1
+    end
+
+    test "warns about unknown keys but keeps them" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %{bogus: true} = Legion.Agent.resolve_config(MinimalAgent, bogus: true)
+        end)
+
+      assert log =~ "Unknown Legion config keys: [:bogus]"
+    end
+
+    test "accepts :infinity and positive integers for max_message_length" do
+      assert %{max_message_length: :infinity} =
+               Legion.Agent.resolve_config(MinimalAgent, max_message_length: :infinity)
+
+      assert %{max_message_length: 5} =
+               Legion.Agent.resolve_config(MinimalAgent, max_message_length: 5)
+    end
+
+    test "rejects other max_message_length values" do
+      assert_raise ArgumentError, ~r/expected :max_message_length/, fn ->
+        Legion.Agent.resolve_config(MinimalAgent, max_message_length: 0)
+      end
+    end
+  end
+
+  describe "seed_tool_configs/1" do
+    test "stores each tool's config in the calling process's Vault under the tool module" do
+      assert :ok = Legion.Agent.seed_tool_configs(ConfiguredAgent)
+
+      assert Vault.get(Legion.Tools.AgentTool) == [agents: [MinimalAgent]]
+      assert Vault.get(Legion.Test.Support.MathTool) == []
+    end
+  end
+
   describe "defaults" do
     test "moduledoc returns @moduledoc" do
       assert MinimalAgent.moduledoc() == "A minimal agent with no overrides."

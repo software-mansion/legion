@@ -60,7 +60,7 @@ defmodule Legion.Store.Postgres do
   leaving the running status unchanged.
 
   Usage is stored as a `jsonb[]`: each element contains one complete,
-  string-keyed LLM usage map.
+  string-keyed usage map.
 
   `list/1` and `get/1` read persisted conversations back from the same table.
 

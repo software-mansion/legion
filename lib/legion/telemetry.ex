@@ -60,13 +60,26 @@ defmodule Legion.Telemetry do
 
   ## Rate Limit Events
 
-  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn before
-    it started; metadata carries the identity and policy of the rule that
+  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn, or a
+    `Legion.eval/3` call, before it started; metadata carries the identity and policy of the rule that
     denied it, the usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
       Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
+
+  ## MCP Events
+
+  A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
+  sandbox and rate limit events above. On top of those, every `repl` call is
+  a span that ties them to the MCP session:
+
+  - `[:legion, :mcp, :call, :start | :stop | :exception]` — one `repl` tool call
+    (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
+    denied call has no eval span)
+    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
+    - Stop adds: `success`, and `error` with the text the host's model was
+      given when the code failed or the call was rate limited.
 
   ## Default Logger
 
@@ -85,7 +98,7 @@ defmodule Legion.Telemetry do
 
     - `:level` — log level, defaults to `:info`
     - `:events` — `:all` or a list of event categories
-      (`:agent`, `:message`, `:iteration`, `:llm`, `:sandbox`).
+      (`:agent`, `:message`, `:iteration`, `:llm`, `:sandbox`, `:mcp`).
       Defaults to `:all`.
   """
   def attach_default_logger(opts \\ []) do
@@ -114,6 +127,11 @@ defmodule Legion.Telemetry do
               [:legion, :sandbox, :eval, :start],
               [:legion, :sandbox, :eval, :stop],
               [:legion, :sandbox, :eval, :exception]
+            ],
+            mcp: [
+              [:legion, :mcp, :call, :start],
+              [:legion, :mcp, :call, :stop],
+              [:legion, :mcp, :call, :exception]
             ]
           ],
           filter == :all or category in filter,
@@ -294,6 +312,38 @@ defmodule Legion.Telemetry do
   def handle_event([:legion, :sandbox, :eval, :exception], measurements, meta, opts) do
     ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
     log(opts, meta, "    eval:exception #{inspect(meta.reason)} #{ms}ms", :error)
+  end
+
+  def handle_event([:legion, :mcp, :call, :start], _measurements, meta, opts) do
+    log(opts, meta, "mcp:call:start #{short(meta.agent)}\n#{indent_code(meta.code)}")
+  end
+
+  def handle_event([:legion, :mcp, :call, :stop], measurements, meta, opts) do
+    ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    if meta.success do
+      log(opts, meta, "mcp:call:stop #{short(meta.agent)} ok #{ms}ms")
+    else
+      error = format_eval_error(meta[:error])
+
+      log(
+        opts,
+        meta,
+        "mcp:call:stop #{short(meta.agent)} error #{ms}ms\n      #{error}",
+        :warning
+      )
+    end
+  end
+
+  def handle_event([:legion, :mcp, :call, :exception], measurements, meta, opts) do
+    ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    log(
+      opts,
+      meta,
+      "mcp:call:exception #{short(meta.agent)} #{inspect(meta.reason)} #{ms}ms",
+      :error
+    )
   end
 
   def handle_event(event, _measurements, _meta, _opts) do
