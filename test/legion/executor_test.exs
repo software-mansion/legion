@@ -469,7 +469,8 @@ defmodule Legion.ExecutorTest do
                        %{
                          messages: continuing_messages,
                          bindings: [x: 10],
-                         executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                         executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0},
+                         turn_usage: [%{"turn_usage" => 0}]
                        }}
 
       assert List.last(continuing_messages).type == :eval_result

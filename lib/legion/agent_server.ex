@@ -278,7 +278,8 @@ defmodule Legion.AgentServer do
     checkpoint =
       if state.persistence_frequency == :step do
         fn checkpoint ->
-          persist(state, [{:conversation_state, checkpoint}])
+          usage = persisted_usage(state, checkpoint.turn_usage)
+          persist(state, [{:conversation_state, checkpoint}, usage: usage])
           :ok
         end
       end
@@ -322,7 +323,7 @@ defmodule Legion.AgentServer do
 
     kept_bindings = if conversation_scope?, do: final_bindings, else: []
 
-    usage = if state.track_usage, do: state.usage ++ Enum.map(turn_usage, &stored_usage/1)
+    usage = persisted_usage(state, turn_usage)
 
     state =
       %{
@@ -374,6 +375,10 @@ defmodule Legion.AgentServer do
          executor_state: executor_state
        }) do
     %{messages: messages, bindings: bindings, executor_state: executor_state}
+  end
+
+  defp persisted_usage(state, turn_usage) do
+    if state.track_usage, do: state.usage ++ Enum.map(turn_usage, &stored_usage/1)
   end
 
   # The executor indexes the list it was given, which starts with the system

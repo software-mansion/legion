@@ -871,8 +871,8 @@ defmodule Legion.AgentServerTest do
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
-          1 -> llm_eval_continue_response("x = 42")
-          2 -> llm_response("done")
+          1 -> llm_eval_continue_response("x = 42", 7)
+          2 -> llm_response("done", 11)
         end
       end)
 
@@ -902,10 +902,16 @@ defmodule Legion.AgentServerTest do
                  messages: [%{type: :user}, %{type: :assistant}, %{type: :eval_result}],
                  bindings: [x: 42],
                  executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
-               }
+               },
+               usage: [%{"turn_usage" => 7, "message_index" => 1}]
              } = checkpoint
 
-      assert %Payload{status: :idle, conversation_state: final_state} = completed
+      assert %Payload{
+               status: :idle,
+               conversation_state: final_state,
+               usage: [%{"turn_usage" => 7}, %{"turn_usage" => 11}]
+             } = completed
+
       assert final_state.bindings == []
       assert final_state.executor_state == :nonexistent
     end

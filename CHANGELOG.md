@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- LLM usage tracking - `:step` stores now persist usage with every step checkpoint instead of only at turn end
+
 ## v0.5.1 - 2026-09-25
 
 ### Changes
