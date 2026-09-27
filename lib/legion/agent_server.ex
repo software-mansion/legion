@@ -317,13 +317,14 @@ defmodule Legion.AgentServer do
         action = %{"action" => "eval_and_continue", "code" => code}
         action_message = Executor.message(:assistant, Jason.encode!(action))
 
+        {reply, result_message, bindings} = run_eval(code, state)
+
         entry = %{
           "at" => System.system_time(:millisecond),
           "evals" => 1,
           "message_index" => length(state.messages) - 1
         }
 
-        {reply, result_message, bindings} = run_eval(code, state)
         messages = state.messages ++ [action_message, result_message]
         usage = if state.track_usage, do: state.usage ++ [entry]
         new_state = %{state | messages: messages, bindings: bindings, usage: usage}
@@ -360,6 +361,9 @@ defmodule Legion.AgentServer do
 
   defp do_run(state, executor_state \\ :nonexistent) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
+    # A resumed turn keeps the bindings its checkpoint saved, whatever the scope -
+    # they belong to the turn being finished, not to a new one.
+    resuming? = executor_state != :nonexistent
 
     checkpoint =
       if state.persistence_frequency == :step do
@@ -379,9 +383,6 @@ defmodule Legion.AgentServer do
           messages = state.messages
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
-          # A resumed turn keeps the bindings its checkpoint saved, whatever the scope -
-          # they belong to the turn being finished, not to a new one.
-          resuming? = executor_state != :nonexistent
           initial_bindings = if conversation_scope? or resuming?, do: state.bindings, else: []
 
           {status, value, messages, bindings, _turn_usage} =
@@ -406,7 +407,12 @@ defmodule Legion.AgentServer do
         end
       )
 
-    kept_bindings = if conversation_scope?, do: final_bindings, else: []
+    kept_bindings =
+      cond do
+        conversation_scope? -> final_bindings
+        resuming? -> []
+        true -> state.bindings
+      end
 
     usage = if state.track_usage, do: state.usage ++ Enum.map(turn_usage, &stored_usage/1)
 

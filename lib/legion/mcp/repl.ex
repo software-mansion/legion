@@ -3,7 +3,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @moduledoc """
     Execute code in this server's sandbox. The language, its rules and the tool modules you
     can call are described in the server instructions. Variables persist across calls
-    within this session unless the instructions say otherwise.
+    unless the instructions say otherwise.
     """
 
     use Anubis.Server.Component, type: :tool

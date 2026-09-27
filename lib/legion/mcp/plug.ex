@@ -16,6 +16,8 @@ if Code.ensure_loaded?(Anubis.Server.Transport.StreamableHTTP.Plug) do
 
     @behaviour Plug
 
+    require Logger
+
     alias Anubis.Server.Transport.StreamableHTTP.Plug, as: AnubisPlug
 
     @impl Plug
@@ -28,8 +30,26 @@ if Code.ensure_loaded?(Anubis.Server.Transport.StreamableHTTP.Plug) do
     # runs init/1 at compile time, before the agent's config exists.
     @impl Plug
     def call(conn, opts) do
-      timeout = Keyword.fetch!(opts, :server).request_timeout()
+      server = Keyword.fetch!(opts, :server)
+      warn_if_open(server)
+      timeout = server.request_timeout()
       AnubisPlug.call(conn, AnubisPlug.init(Keyword.put_new(opts, :request_timeout, timeout)))
+    end
+
+    # Once per server: an HTTP endpoint with no `authorization:` runs code for
+    # whoever reaches it.
+    defp warn_if_open(server) do
+      key = {__MODULE__, :open_warned, server}
+
+      if is_nil(server.__authorization__()) and not :persistent_term.get(key, false) do
+        :persistent_term.put(key, true)
+
+        Logger.warning(
+          "#{inspect(server)} serves MCP over HTTP without `authorization:`, so anyone " <>
+            "who reaches it can call `repl`; pass `authorization:` to `use Legion.MCP.Server` " <>
+            "before exposing it beyond localhost"
+        )
+      end
     end
   end
 end

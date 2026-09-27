@@ -1498,6 +1498,21 @@ defmodule Legion.AgentServerTest do
       end)
     end
 
+    test "a turn under :turn drops its own bindings and keeps those eval/2 made" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("y = 7\nreturn y")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      {:ok, _text} = AgentServer.eval(pid, "x = 1")
+      {:ok, 7} = Legion.call(pid, "set y")
+
+      assert {:ok, text} = AgentServer.eval(pid, "return {x, y == nil}")
+      assert text =~ "[1, true]"
+      assert text =~ "Available variables: `x`"
+    end
+
     test "bindings persist across turns with :conversation" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))

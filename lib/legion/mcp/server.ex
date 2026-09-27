@@ -24,7 +24,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     An MCP host brings its own model. That model reads the agent's system
     prompt as the server `instructions`, writes code, and the server runs it
     with `Legion.eval/3`. The agent makes no LLM request of its own; what a
-    call costs is one evaluation.
+    call costs is one evaluation, plus whatever its tools do (`AgentTool`,
+    for one).
 
     Built on the optional `:anubis_mcp` dependency, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -61,7 +62,10 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     A `:sandbox_timeout` of `:infinity` has no default to derive; defining
     `request_timeout/0` is required then. Both transports use it: the child
-    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP.
+    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP. Note that
+    the transport only stops waiting; the eval keeps running, and its step is
+    saved and counted like any other. A retry from the host runs the code a
+    second time.
 
     ## Sessions are agents
 
@@ -122,9 +126,12 @@ if Code.ensure_loaded?(Anubis.Server) do
     go idle together, so raise both if you raise one.
 
     The default, `[]`, gives every MCP session an anonymous agent of its own,
-    started on its first call and stopped with the session. With no store it
-    leaves nothing behind. With one configured for the application it is
-    saved like any agent, under the id Legion generated for it.
+    started on its first call and stopped with the session. It is the stdio
+    default: one caller, who launched the process. Over HTTP, pair it with
+    `authorization:` or anyone who reaches the endpoint gets a sandbox. With
+    no store it leaves nothing behind. With one configured for the
+    application it is saved like any agent, under an id no caller learns.
+    Stores never delete, so each session leaves a row behind.
 
     ## Who is calling
 
@@ -132,7 +139,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     where the request is: `init/2` runs when the client sends
     `notifications/initialized` and sees no HTTP request at all. Over
     StreamableHTTP `frame.context.remote_ip` and `headers` are filled in; over
-    stdio they are `nil` and empty, and there is one caller anyway.
+    stdio they are `nil` and empty, and there is one caller anyway. Anubis's
+    `:session_store` restores sessions without running `init/2`; `repl` does
+    not work in one, so leave it unset.
 
     Authentication is Anubis's: pass `authorization:` to `use` and the
     transport rejects requests without a valid bearer token before they reach

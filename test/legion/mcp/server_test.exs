@@ -168,7 +168,6 @@ defmodule Legion.MCP.ServerTest do
     test "an agent's own system_prompt/0 is not used for MCP instructions" do
       instructions = CustomPromptMCP.server_instructions()
 
-      refute instructions == "Do exactly as I say."
       assert instructions =~ "Agent with a hand-written prompt."
       assert instructions =~ "`repl`"
     end
@@ -324,7 +323,7 @@ defmodule Legion.MCP.ServerTest do
       assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get("mcp:user:denied")
     end
 
-    test "the vault follows every call, the rest of session/1 is read once" do
+    test "the vault follows every call" do
       first = initialized(UserMCP, frame("host", %{sub: "frank", token: "morning"}))
       second = initialized(UserMCP, frame("host", %{sub: "frank", token: "evening"}))
 
