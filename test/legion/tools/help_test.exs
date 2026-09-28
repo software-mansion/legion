@@ -84,11 +84,11 @@ defmodule Legion.Tools.HelpTest do
       assert text =~ "- `MathTool` -"
     end
 
-    test "Help is not defined under the default :full" do
+    test "Help is in the sandbox under the default :full too" do
       {:ok, pid} = Legion.start_link(MathAgent)
 
-      assert {:ok, text} = AgentServer.eval(pid, "return Help == nil")
-      assert text =~ "true"
+      assert {:ok, text} = AgentServer.eval(pid, ~s|return Help.help("MathTool")|)
+      assert text =~ "### MathTool"
     end
 
     test "help/1 works in the Elixir sandbox under :discovery" do
@@ -109,11 +109,11 @@ defmodule Legion.Tools.HelpTest do
       refute text =~ "result = response[2]"
     end
 
-    test "Help is not allowed in the Elixir sandbox under :full" do
+    test "Help is in the Elixir sandbox under :full too" do
       {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
 
-      assert {:error, message} = AgentServer.eval(pid, ~s|Help.help("MathTool")|)
-      assert message =~ "Help"
+      assert {:ok, text} = AgentServer.eval(pid, ~s|Help.help("MathTool")|)
+      assert text =~ "### MathTool"
     end
   end
 end

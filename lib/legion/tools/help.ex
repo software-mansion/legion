@@ -2,11 +2,13 @@ defmodule Legion.Tools.Help do
   @moduledoc """
   Lists the tools available to this agent and describes one of them in full.
 
-  Added to the sandbox by Legion itself when the agent runs with
-  `tool_docs: :discovery`: the system prompt then names each tool with a
-  one-line summary, and the model calls `Help.help("Name")` to read a
-  tool's functions, arguments and return shapes before using it. Not a tool
-  to list in `tools/0`.
+  In every agent's sandbox, added by Legion itself. Under
+  `tool_docs: :discovery` the system prompt names each tool with a one-line
+  summary and the model calls `Help.help("Name")` to read a tool's
+  functions, arguments and return shapes before using it; under `:full` the
+  prompt embeds the tools and does not mention it. Over MCP the server's
+  `help` tool is this module run for the host. Not a tool to list in
+  `tools/0`.
   """
   use Legion.Tool
 

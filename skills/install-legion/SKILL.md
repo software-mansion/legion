@@ -10,8 +10,9 @@ modules next to the code the app already has. Nothing gets rewritten. The
 install is one reviewable diff: minimal edits, in the order below, nothing
 the user did not choose in step 0.
 
-Steps 1, 2, 3, 8 and 9 run on every install. Steps 4 to 7 run only when the
-matching answer from step 0 is yes; each names its gate in its heading.
+Steps 1, 2, 3, 8 and 10 run on every install. Steps 4 to 7 and 9 run only
+when the matching answer from step 0 is yes; each names its gate in its
+heading.
 
 ## 0. Look, then ask
 
@@ -27,6 +28,9 @@ Read, editing nothing yet:
   whether any of them admits admins only (`phx.gen.auth` gives
   `:require_authenticated_user`, which admits every signed-in user).
 - `lib/<app>/` - the contexts (orders, tickets, catalog) a tool could wrap.
+- `lib/*_web/live/`, `lib/*_web/controllers/`, `lib/<app>/workers/` - the
+  entry points a message could reach the agent through: a chat or assistant
+  LiveView, a support form, a webhook action, an Oban worker, a mix task.
 - `git status` - start from a clean tree so the install is one reviewable
   diff.
 
@@ -53,9 +57,14 @@ one line why it is not offered.
   behalf of a signed-in user (their orders, their tickets)? Yes means the
   user's identity travels in Vault. No means a public tool, such as catalog
   search, and no Vault at all.
+- **Entry point** - asked last. List the ones found, recommend the one the
+  user's request points at; step 9 wires the agent into it. None found: say
+  so and ask whether to create one; yes means step 9 adds a minimal chat
+  LiveView (a message list, a text input) at a route the user names. Skip
+  means the agent stays callable from code only.
 
-Done when: the plan (provider, model, each yes/no, context) is recapped and
-the user has confirmed it.
+Done when: the plan (provider, model, each yes/no, context, entry point) is
+recapped and the user has confirmed it.
 
 ## 1. Dependency
 
@@ -169,7 +178,7 @@ config :legion, :rate_limit,
 ```
 
 The config holds the limiter and policy only. Rules naming the group go on
-every `Legion.start_link/2` call (step 8); without them Legion logs a
+every `Legion.start_link/2` call (step 9); without them Legion logs a
 warning and runs unlimited. Identity keys are strings:
 
 ```elixir
@@ -180,7 +189,7 @@ rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"user_id" => to_string
 A denied turn returns `{:cancel, {:rate_limited, violations}}`.
 
 Done when: the limiter module and `:rate_limit` config exist and the
-`start_link/2` call in step 8 names its group.
+`start_link/2` call in step 9 names its group.
 
 ## 6. Dashboard (dashboard = yes)
 
@@ -265,7 +274,7 @@ it is started from that process with `Legion.start_link/2`; generated code
 cannot read it.
 
 Done when: `:vault` is a dependency, exactly one `Vault.init` site carries
-`:current_user`, and the agent of step 8 starts under it.
+`:current_user`, and the agent starts under it in step 9.
 
 ## 8. First tool and agent
 
@@ -315,7 +324,17 @@ Rules that keep this safe and cheap:
 - Ash app: the tool calls the domain's code interface with
   `actor: Vault.get(:current_user)` so policies keep applying.
 
-Starting it, in the process of step 7 when identity = yes:
+Done when: one tool module and one agent module exist, the agent lists the
+tool, and the facade exposes only the functions the chosen context needs.
+
+## 9. Entry point (entry point = yes)
+
+Wire the entry point chosen in step 0 to the agent, or the chat LiveView
+agreed there. Its look and every other behaviour stay; only what happens to
+the message changes.
+
+Start the agent in the process that owns the entry point, under the identity
+of step 7 when identity = yes:
 
 ```elixir
 {:ok, pid} = Legion.start_link(MyApp.SupportAgent)
@@ -341,25 +360,33 @@ the socket. The gates from step 0 add to that call:
     end
   ```
 
-`Legion.call/2` waits for the whole turn with no timeout, so a LiveView
-calls it through `start_async` rather than blocking `handle_event`:
+Then the call, by entry point:
 
-```elixir
-def handle_event("ask", %{"question" => question}, socket) do
-  pid = socket.assigns.agent
-  {:noreply, start_async(socket, :reply, fn -> Legion.call(pid, question) end)}
-end
+- LiveView (a chat pane, a form): `Legion.call/2` waits for the whole turn
+  with no timeout, so call it through `start_async` rather than blocking
+  `handle_event`:
 
-def handle_async(:reply, {:ok, {:ok, reply}}, socket), do: ...
-def handle_async(:reply, {:ok, {:cancel, reason}}, socket), do: ...
-```
+  ```elixir
+  def handle_event("ask", %{"question" => question}, socket) do
+    pid = socket.assigns.agent
+    {:noreply, start_async(socket, :reply, fn -> Legion.call(pid, question) end)}
+  end
 
-A controller may call `Legion.call/2` directly.
+  def handle_async(:reply, {:ok, {:ok, reply}}, socket), do: ...
+  def handle_async(:reply, {:ok, {:cancel, reason}}, socket), do: ...
+  ```
 
-Done when: one tool module and one agent module exist, the agent lists the
-tool, and the facade exposes only the functions the chosen context needs.
+  The reply goes where the pane shows messages today.
+- Controller action or webhook: `Legion.call(pid, message)` directly, one
+  turn per request.
+- Worker, scheduled job or mix task: `start_link` in the job, then
+  `Legion.call(pid, message)`; the result goes where the job's output went
+  before.
 
-## 9. Verify
+Done when: the entry point's handler calls the agent and the reply lands
+where that handler's output landed before.
+
+## 10. Verify
 
 ```bash
 mix format

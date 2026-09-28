@@ -92,9 +92,9 @@ defmodule Legion.Agent do
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
       - `tool_docs` — how the system prompt documents the agent's tools:
         `:full` embeds every tool's description, `:discovery` lists them by
-        `summary/0` and adds the built-in `Legion.Tools.Help` tool to the
-        sandbox; see `Legion.Tools.Help` and `Legion.MCP.Server` (default:
-        `:full`, or `:discovery` over MCP)
+        `summary/0` and names the built-in `Legion.Tools.Help` tool, which is
+        in the sandbox either way; see `Legion.Tools.Help` and
+        `Legion.MCP.Server` (default: `:full`, or `:discovery` over MCP)
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.

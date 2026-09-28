@@ -27,9 +27,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     one-line summary. It reads a tool in full with `help` before the first
     call, and the sandbox language and rules from the `repl` tool's
     description. The model then writes code, and the server runs it with
-    `Legion.eval/3`. The agent makes no LLM request of its own; what a
-    call costs is one evaluation, plus whatever its tools do (`AgentTool`,
-    for one).
+    `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
+    session's agent, so a lookup is a step of the conversation, saved, rate
+    limited and traced like a `repl` call. The agent makes no LLM request of
+    its own; what a call costs is one evaluation, plus whatever its tools do
+    (`AgentTool`, for one).
 
     Built on the optional `:anubis_mcp` dependency, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -204,15 +206,15 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     ## Telemetry
 
-    Every `repl` call is a `[:legion, :mcp, :call]` span carrying the MCP
-    session id and the agent id it ran in; the agent's own events fire
-    inside it. See `Legion.Telemetry`.
+    Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
+    the MCP session id and the agent id it ran in; the agent's own events
+    fire inside it. See `Legion.Telemetry`.
     """
 
     require Logger
 
-    alias Anubis.Server.{Component, Frame}
-    alias Legion.{Agent, AgentPrompt, AgentServer}
+    alias Anubis.Server.{Component, Frame, Response}
+    alias Legion.{Agent, AgentPrompt, AgentServer, Telemetry}
 
     # What Claude Code reads of the instructions (and of each tool description)
     # before cutting: its `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` default.
@@ -330,6 +332,40 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     def stop_anonymous_agent(_frame), do: :ok
+
+    @doc false
+    # One `Legion.eval/3` on the session's agent, answered as a tool result:
+    # `repl` runs the host's code through it, `help` its own `Help.help/1`
+    # call. The agent owns the variables, saves the step and enforces the
+    # rate limit.
+    def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code) do
+      {agent, agent_id, vault, frame} = resolve_agent(frame)
+
+      metadata = %{
+        agent: server.__legion_agent__(),
+        agent_id: agent_id,
+        session_id: frame.context.session_id,
+        code: code
+      }
+
+      Telemetry.span([:legion, :mcp, :call], metadata, fn ->
+        case Legion.eval(agent, code, vault: vault) do
+          {:ok, text} ->
+            {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
+
+          {:error, error} ->
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
+
+          {:cancel, {:rate_limited, violations}} ->
+            limits = Enum.join(violations, ", ")
+            error = "Rate limit exceeded (#{limits}). Try again later."
+
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
+        end
+      end)
+    end
 
     @doc false
     # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or

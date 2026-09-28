@@ -32,7 +32,9 @@ defmodule Legion.Eval do
   """
   def run(agent_module, code, config, bindings) do
     Telemetry.span([:legion, :sandbox, :eval], %{agent: agent_module, code: code}, fn ->
-      tools = agent_module.tools() ++ discovery_tools(config)
+      # `Help` is in every sandbox; the prompt names it only under
+      # `tool_docs: :discovery`, where it lists the tools by summary.
+      tools = agent_module.tools() ++ [Legion.Tools.Help]
 
       allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
 
@@ -120,9 +122,4 @@ defmodule Legion.Eval do
       []
     end
   end
-
-  # Under `tool_docs: :discovery` the prompt lists tools by summary only, so
-  # the sandbox gets `Help` to read a tool's full reference on demand.
-  defp discovery_tools(%{tool_docs: :discovery}), do: [Legion.Tools.Help]
-  defp discovery_tools(_config), do: []
 end

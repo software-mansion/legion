@@ -74,7 +74,7 @@ defmodule Legion.Telemetry do
   sandbox and rate limit events above. On top of those, every `repl` call is
   a span that ties them to the MCP session:
 
-  - `[:legion, :mcp, :call, :start | :stop | :exception]` — one `repl` tool call
+  - `[:legion, :mcp, :call, :start | :stop | :exception]` — one MCP tool call
     (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
     denied call has no eval span)
     - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`

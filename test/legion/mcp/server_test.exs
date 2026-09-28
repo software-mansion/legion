@@ -356,12 +356,53 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "performs math operations"
     end
 
-    test "with an unknown name is a tool error listing the tools" do
+    test "with an unknown name returns the list instead" do
       frame = initialized(MathMCP, frame())
 
-      assert {true, text, _frame} = help(MathMCP, frame, %{"tool" => "Nope"})
-      assert text =~ ~s|No tool named "Nope"|
+      assert {false, text, _frame} = help(MathMCP, frame, %{"tool" => "Nope"})
+      assert text =~ "No tool named"
       assert text =~ "- `MathTool` -"
+    end
+
+    test "rejects a name that is not a bare word without running anything" do
+      frame = initialized(MathMCP, frame())
+
+      assert {true, text, frame} = help(MathMCP, frame, %{"tool" => ~s|x") os.exit(|})
+      assert text =~ "Tools:"
+      assert text =~ "- `MathTool` -"
+      refute Map.has_key?(frame.assigns, :legion_mcp_agent)
+    end
+
+    test "is a step of the session's conversation" do
+      frame = initialized(MathMCP, frame())
+
+      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
+               help(MathMCP, frame, %{"tool" => "MathTool"})
+
+      [%{type: :assistant, content: code}, %{type: :eval_result, content: result}] =
+        pid |> Legion.get_messages() |> Enum.take(-2)
+
+      assert Jason.decode!(code)["code"] == ~s|return Help.help("MathTool")|
+      assert result =~ "### MathTool"
+    end
+
+    test "writes the call in the agent's sandbox language" do
+      frame = initialized(ElixirMCP, frame())
+
+      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
+               help(ElixirMCP, frame, %{})
+
+      [%{type: :assistant, content: code}, _result] =
+        pid |> Legion.get_messages() |> Enum.take(-2)
+
+      assert Jason.decode!(code)["code"] == "Help.help()"
+    end
+
+    test "is rate limited like repl" do
+      frame = initialized(UserMCP, frame("host", %{sub: "denied"}))
+
+      assert {true, "Rate limit exceeded (max_evals)." <> _, _frame} =
+               help(UserMCP, frame, %{})
     end
 
     test "renders the reference for the agent's sandbox" do
@@ -386,11 +427,14 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "- `MathTool` -"
     end
 
-    test "an agent config with tool_docs: :full keeps Help out of the sandbox" do
+    test "over MCP Help is in the sandbox whatever the agent's tool_docs" do
       frame = initialized(FullDocsMCP, frame())
 
-      assert {false, text, _frame} = repl(FullDocsMCP, frame, "return Help == nil")
-      assert text =~ "true"
+      assert {false, text, frame} = repl(FullDocsMCP, frame, "return Help == nil")
+      assert text =~ "false"
+
+      assert {false, text, _frame} = help(FullDocsMCP, frame, %{"tool" => "MathTool"})
+      assert text =~ "### MathTool"
     end
   end
 

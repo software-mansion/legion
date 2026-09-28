@@ -18,26 +18,18 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
         description: "Tool name as listed in the server instructions; omit to list all tools"
     end
 
-    # One module serves every server: the server comes from the frame. The
-    # sandbox is what the session's agent runs, resolved from the agent's
-    # config and the session's options without a call into the agent, so a
-    # tool's `description/1` answers in the right language and `help` never
-    # has to start an agent.
     @impl true
     def execute(params, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
       agent = server.__legion_agent__()
+      sandbox = Server.sandbox(agent, server.session(frame))
 
-      case Map.get(params, :tool) do
-        nil ->
-          {:reply, Response.text(Response.tool(), Help.index(agent)), frame}
+      case code(sandbox, Map.get(params, :tool)) do
+        {:ok, code} ->
+          Server.run(frame, code)
 
-        name ->
-          sandbox = Server.sandbox(agent, server.session(frame))
-
-          case Help.reference(agent, sandbox, name) do
-            {:ok, text} -> {:reply, Response.text(Response.tool(), text), frame}
-            {:error, text} -> {:reply, Response.error(Response.tool(), text), frame}
-          end
+        :error ->
+          message = "Tool names are single words, as listed. Tools:\n" <> Help.index(agent)
+          {:reply, Response.error(Response.tool(), message), frame}
       end
     end
 
@@ -45,5 +37,19 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
       message = "Session is not initialized: send notifications/initialized before calling tools."
       {:reply, Response.error(Response.tool(), message), frame}
     end
+
+    # Lua needs the `return`; Elixir, and any other sandbox, takes the bare
+    # call. The name is interpolated into code, so only a bare word passes:
+    # anything else would be a syntax error saved as a failed step.
+    defp code(sandbox, nil), do: {:ok, prefix(sandbox) <> "Help.help()"}
+
+    defp code(sandbox, name) do
+      if name =~ ~r/^\w+$/,
+        do: {:ok, prefix(sandbox) <> ~s|Help.help("#{name}")|},
+        else: :error
+    end
+
+    defp prefix(Legion.Sandbox.Lua), do: "return "
+    defp prefix(_sandbox), do: ""
   end
 end
