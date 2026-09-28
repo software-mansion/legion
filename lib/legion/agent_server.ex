@@ -117,6 +117,8 @@ defmodule Legion.AgentServer do
     for {key, value} <- vault, do: Vault.unsafe_put(key, value)
     Vault.unsafe_put(:agent_id, agent_id)
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
+    Vault.unsafe_put(:agent_module, agent_module)
+    Vault.unsafe_put(:sandbox, config.sandbox)
     if store, do: Vault.unsafe_put(:store, store)
 
     Legion.Agent.seed_tool_configs(agent_module)

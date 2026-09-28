@@ -90,6 +90,13 @@ defmodule Legion.Agent do
         a store, on disk. Set to `:infinity` to disable (default: `:infinity`)
       - `idle_timeout` — milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
+      - `tool_docs` — how the system prompt documents the agent's tools. `:full`
+        embeds every tool's full description. `:discovery` lists each tool in
+        one line, its name and `summary/0`, and adds the built-in
+        `Legion.Tools.Help` tool to the sandbox. The LLM then reads a tool's
+        full description with `Help.describe("Name")` before its first use;
+        `Help.tools()` repeats the list. Keeps the prompt short when the tools
+        are many or large (default: `:full`)
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.
@@ -137,7 +144,7 @@ defmodule Legion.Agent do
     end
   end
 
-  @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
+  @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode tool_docs)a
 
   @doc false
   # Resolves the effective config for `agent_module`: Executor defaults, then the

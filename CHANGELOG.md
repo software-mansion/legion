@@ -9,6 +9,7 @@
 - `use Legion.MCP.Server` warns at start when the instructions are longer than `:instructions_budget` (default 2048, Claude Code's cap)
 - [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
 - `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
+- Tool discovery - `tool_docs: :discovery` in [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) lists tools in the system prompt by name and one-line summary instead of embedding their descriptions; the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) tool returns a tool's full description on demand with `Help.describe("Name")`; tools gain an overridable [`Legion.Tool.summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), by default the first sentence of the `@moduledoc`
 
 ## v0.5.1 - 2026-09-25
 

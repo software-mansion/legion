@@ -81,4 +81,36 @@ defmodule Legion.AgentPromptTest do
       refute prompt =~ "result = response[2]"
     end
   end
+
+  describe "tool_docs: :discovery" do
+    test "lists tools by name and summary instead of their source" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ "- `MathTool` - This is math tool moduledoc."
+      assert prompt =~ "- `Help` -"
+      refute prompt =~ "MathTool — performs math operations"
+      refute prompt =~ "random_add"
+    end
+
+    test "steers the model to Help before the first use of a tool" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ ~s|Help.describe("Name")|
+      assert prompt =~ "Help.tools()"
+      refute prompt =~ "Examine the tool source code below"
+    end
+
+    test "keeps the rest of the executor prompt" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ "## How you work"
+      assert prompt =~ "An agent that does math."
+      assert prompt =~ "**Constraints:**"
+    end
+
+    test "an explicit :full renders the same prompt as the default" do
+      assert AgentPrompt.system_prompt(MathAgent, %{tool_docs: :full}) ==
+               AgentPrompt.system_prompt(MathAgent)
+    end
+  end
 end

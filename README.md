@@ -113,6 +113,8 @@ end
 
 Use it to hand agents your existing app logic directly. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
 
+Either way the prompt grows with every tool it embeds. When an agent has many, set `tool_docs: :discovery` in its config. The prompt then lists each tool in one line: its name and its `summary/0`, by default the first sentence of its `@moduledoc`. The agent also gets a built-in `Help` tool. `Help.tools()` repeats that list, and `Help.describe("WeatherTool")` returns the tool's full description, so the LLM reads it only when it is about to call the tool.
+
 See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
 ### **2. Agents are BEAM processes**

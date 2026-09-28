@@ -147,4 +147,32 @@ defmodule Legion.ToolTest do
       assert Legion.Tool.extract_module_source(code, MyApp.CharHeredoc) == code
     end
   end
+
+  describe "summary/0" do
+    alias Legion.Test.Support.{BareTool, DescribedTool, MathTool, SummaryTool}
+
+    test "defaults to the first sentence of the moduledoc" do
+      assert MathTool.summary() == "This is math tool moduledoc."
+    end
+
+    test "cuts a multi-sentence moduledoc at the first sentence" do
+      assert Legion.Tool.default_summary(SummaryTool) == "Sums numbers."
+    end
+
+    test "falls back to the first sentence of a hand-written description/0" do
+      assert DescribedTool.summary() == "DescribedTool - counts things."
+    end
+
+    test "falls back to the short module name when the description is the source" do
+      assert BareTool.summary() == "BareTool"
+    end
+
+    test "an overriding summary/0 wins" do
+      assert SummaryTool.summary() == "Custom summary."
+    end
+
+    test "default_summary/1 reads the moduledoc of a module that does not use Legion.Tool" do
+      assert Legion.Tool.default_summary(Jason) =~ "JSON"
+    end
+  end
 end
