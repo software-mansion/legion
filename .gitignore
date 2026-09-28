@@ -23,3 +23,6 @@ erl_crash.dump
 legion-*.tar
 
 .env
+
+# Local Claude Code state (worktrees, settings).
+/.claude/
