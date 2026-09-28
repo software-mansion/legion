@@ -1,26 +1,64 @@
 if Code.ensure_loaded?(Anubis.Server.Component) do
   defmodule Legion.MCP.Repl do
     @moduledoc """
-    Execute code in this server's sandbox. The language, its rules and the tool modules you
-    can call are described in the server instructions. Variables persist across calls
-    unless the instructions say otherwise.
-    """
+    The `repl` tool of a `Legion.MCP.Server`.
 
-    use Anubis.Server.Component, type: :tool
+    Its description tells the host which language the sandbox runs, whether
+    variables persist between calls, and the sandbox rules in full. Those
+    depend on the agent, so each server gets its own copy, `MyApp.MCP.Repl`,
+    defined by `use Legion.MCP.Server`.
+    """
 
     alias Anubis.Server.Frame
     alias Anubis.Server.Response
+    alias Legion.Agent
     alias Legion.MCP.Server
     alias Legion.Telemetry
 
-    schema do
-      field :code, :string, required: true, description: "Code to execute in the sandbox"
+    defmacro __using__(opts) do
+      agent = Keyword.fetch!(opts, :agent)
+
+      quote do
+        use Anubis.Server.Component, type: :tool
+
+        schema do
+          field :code, :string, required: true, description: "Code to execute in the sandbox"
+        end
+
+        @impl true
+        def description, do: unquote(__MODULE__).description(unquote(agent))
+
+        @impl true
+        def execute(params, frame), do: unquote(__MODULE__).execute(params, frame)
+      end
     end
 
+    @doc false
+    # What the host reads about `repl`: the language, whether variables
+    # survive between calls, and the sandbox rules in full, since the
+    # instructions under `tool_docs: :discovery` no longer carry them.
+    def description(agent) do
+      config = Agent.resolve_config(agent)
+      info = config.sandbox.prompt_info()
+
+      variables =
+        if config.binding_scope == :iteration,
+          do: "Variables do not persist between calls.",
+          else: "Variables persist across calls."
+
+      """
+      Run #{info.language} code in this server's sandbox and see its result. Call the tools the \
+      server instructions list as `Name.fun(...)`. #{variables}
+
+      #{info.language} rules:
+      #{String.trim_trailing(info.constraints)}
+      """
+    end
+
+    @doc false
     # The agent owns the variables, saves every step and enforces the rate
     # limit; this is one `Legion.eval/3` call formatted as a tool result
     # for the calling agent.
-    @impl true
     def execute(%{code: code}, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
       {agent, agent_id, vault, frame} = Server.resolve_agent(frame)
 

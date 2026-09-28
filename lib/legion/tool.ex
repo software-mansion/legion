@@ -6,7 +6,7 @@ defmodule Legion.Tool do
   knows what functions are available. An agent running with
   `tool_docs: :discovery` (see `Legion.Agent`) first sees only each tool's
   `summary/0`, one sentence, and reads the full description with
-  `Help.describe("Name")` when it needs it.
+  `Help.help("Name")` when it needs it.
 
   ## Overridable
 

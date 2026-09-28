@@ -25,7 +25,7 @@ defmodule Legion.AgentPrompt do
 
   defp build_system_prompt(agent, config, mode) do
     sandbox = Map.get(config, :sandbox, Legion.Sandbox.Lua)
-    tool_docs = Map.get(config, :tool_docs) || :full
+    tool_docs = Map.get(config, :tool_docs) || default_tool_docs(mode)
     description = agent.moduledoc()
     binding_scope = Map.get(config, :binding_scope, :turn)
     prompt_info = sandbox.prompt_info()
@@ -54,6 +54,11 @@ defmodule Legion.AgentPrompt do
 
     assigns |> render() |> String.trim()
   end
+
+  # Over MCP the host caps the instructions, so tools are listed by summary
+  # and fetched with `help`; the executor's prompt has room for them in full.
+  defp default_tool_docs(:mcp), do: :discovery
+  defp default_tool_docs(_mode), do: :full
 
   # The template is compiled at build time from a file in this repo; the
   # literal attribute keeps that visible to static analysis.

@@ -4,7 +4,7 @@ defmodule Legion.Tools.Help do
 
   Added to the sandbox by Legion itself when the agent runs with
   `tool_docs: :discovery`: the system prompt then names each tool with a
-  one-line summary, and the model calls `Help.describe("Name")` to read a
+  one-line summary, and the model calls `Help.help("Name")` to read a
   tool's functions, arguments and return shapes before using it. Not a tool
   to list in `tools/0`.
   """
@@ -12,14 +12,16 @@ defmodule Legion.Tools.Help do
 
   alias Legion.AgentPrompt
 
-  @doc "One line per tool: its name and what it does."
-  def tools, do: index(Vault.fetch!(:agent_module))
-
   @doc """
-  A tool's full reference: functions, arguments and return shapes. `name` as
-  listed by `tools()`; an unknown name returns that list instead.
+  With no argument, one line per tool: its name and what it does. With a
+  `name` from that list, the tool's full reference: functions, arguments and
+  return shapes. An unknown name returns the list instead.
   """
-  def describe(name) when is_binary(name) do
+  def help(name \\ nil)
+
+  def help(nil), do: index(Vault.fetch!(:agent_module))
+
+  def help(name) when is_binary(name) do
     case reference(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), name) do
       {:ok, text} -> text
       {:error, text} -> text

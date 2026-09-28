@@ -90,11 +90,11 @@ defmodule Legion.MCP.HTTPTest do
     assert result["instructions"] =~ "`repl`"
   end
 
-  test "lists exactly one tool, repl", %{url: url} do
+  test "lists the repl and help tools", %{url: url} do
     client = connect(url, :list_client)
 
     {:ok, response} = Client.list_tools(client)
-    assert Enum.map(response.result["tools"], & &1["name"]) == ["repl"]
+    assert response.result["tools"] |> Enum.map(& &1["name"]) |> Enum.sort() == ["help", "repl"]
   end
 
   test "keeps variables between calls in one session", %{url: url} do
