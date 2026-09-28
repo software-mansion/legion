@@ -1513,6 +1513,21 @@ defmodule Legion.AgentServerTest do
       assert text =~ "Available variables: `x`"
     end
 
+    test "a turn under :turn reads the bindings eval/2 made and cannot change them" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = x + 1\nreturn x")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      {:ok, _text} = AgentServer.eval(pid, "x = 1")
+      assert {:ok, 2} = Legion.call(pid, "bump x")
+
+      assert {:ok, text} = AgentServer.eval(pid, "return x")
+      assert text =~ "1"
+      assert text =~ "Available variables: `x`"
+    end
+
     test "bindings persist across turns with :conversation" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))

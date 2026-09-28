@@ -163,7 +163,8 @@ defmodule Legion do
   eval guard and variables, then appended to the conversation and persisted
   like a turn. It is what `Legion.MCP.Server` runs for a host's model, and what a
   console or a test can use to drive an agent by hand. Variables persist
-  between calls unless `:binding_scope` is `:iteration`.
+  between calls unless `:binding_scope` is `:iteration`, and the model's next
+  turn sees them whatever the scope.
 
   Returns `{:ok, text}` with the formatted result, `{:error, text}` when the
   code failed to check, was refused or raised, or when the step could not be

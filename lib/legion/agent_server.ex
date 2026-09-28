@@ -103,11 +103,6 @@ defmodule Legion.AgentServer do
     GenServer.call(agent, :get_messages)
   end
 
-  @doc false
-  def get_config(agent) do
-    GenServer.call(agent, :get_config)
-  end
-
   def get_agent_id(agent) do
     GenServer.call(agent, :get_agent_id)
   end
@@ -213,11 +208,6 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_call(:get_config, _from, state) do
-    {:reply, state.config, state, idle_timeout(state)}
-  end
-
-  @impl true
   def handle_call({:message, message}, _from, state) do
     {reply, state} = handle_message(message, state)
     {:reply, reply, state, idle_timeout(state)}
@@ -304,11 +294,13 @@ defmodule Legion.AgentServer do
 
   # The step is saved once, after it ran, and never as `status: :running`:
   # `Legion.Recovery` would resume a running row through the LLM loop, which a
-  # conversation driven by an outside model does not have. There are no turns
-  # here either, so bindings live on unless the scope is `:iteration`. Usage
-  # records the evaluation, not tokens: that is what `:max_evals` counts. A
-  # step that cannot be saved is answered as an error and forgotten, so the
-  # conversation on record and the one in memory stay the same.
+  # conversation driven by an outside model does not have. Only the rate
+  # limiter marks the row running, on enforcing `:max_running_agents`, and
+  # the save below clears it. There are no turns here either, so bindings live
+  # on unless the scope is `:iteration`. Usage records the evaluation, not
+  # tokens: that is what `:max_evals` counts. A step that cannot be saved is
+  # answered as an error and forgotten, so the conversation on record and the
+  # one in memory stay the same.
   defp handle_eval(code, opts, state) do
     case enforce_rate_limit(state) do
       :ok ->
@@ -383,15 +375,13 @@ defmodule Legion.AgentServer do
           messages = state.messages
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
-          initial_bindings = if conversation_scope? or resuming?, do: state.bindings, else: []
-
           {status, value, messages, bindings, _turn_usage} =
             result =
             Executor.run(
               state.agent_module,
               messages,
               executor_config,
-              initial_bindings,
+              state.bindings,
               executor_state
             )
 

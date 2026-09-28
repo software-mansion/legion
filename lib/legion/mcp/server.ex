@@ -97,6 +97,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         a `Legion.RateLimiter.Policy` counts.
       - With rate limit rules, every call is checked before it runs. A denied
         call runs nothing and comes back as a tool error the model can read.
+        A running call counts towards `:max_running_agents` like a turn does.
       - Two sessions that resolve to one agent id share one process, so their
         calls are serialised and nothing is overwritten.
 
@@ -127,20 +128,19 @@ if Code.ensure_loaded?(Anubis.Server) do
     another host, continues the same conversation. `:agent_id` needs a store;
     see `Legion.Store`.
 
-    `:vault` is how tools learn who is calling. It is put in the agent before
-    every call, so it may change from request to request: a refreshed token,
-    a tenant switch. Every other option is read when the agent starts and
-    stays as it is until the agent stops, since the process outlives the
-    request. They are read once, by whoever starts the agent. An agent
-    already running under that id, started by `Legion.start_link/2` before
-    the MCP call arrived, keeps its own `:idle_timeout`, `:rate_limit` and
-    config; `session/1`'s go unused, the thirty-minute default included.
-    `:idle_timeout` is what stops it once nobody calls: thirty minutes by
-    default here, whatever `Legion.start_link/2` would default to, after
-    which the store holds the conversation and the next call starts the
-    agent again from it. Thirty minutes is also Anubis's default
-    `:session_idle_timeout`; an MCP session and the agent it last called
-    go idle together, so raise both if you raise one.
+    `:vault` is put in the agent before every call, so it may change from
+    request to request: a refreshed token, a tenant switch. It is how tools
+    learn who is calling.
+
+    Every other option is read once, by whoever starts the agent, and holds
+    until it stops. An agent already running under that id, started by
+    `Legion.start_link/2` before the MCP call arrived, keeps its own
+    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused.
+
+    `:idle_timeout` stops the agent once nobody calls, after thirty minutes
+    by default. The store then holds the conversation and the next call
+    starts the agent again from it. Thirty minutes is also Anubis's default
+    `:session_idle_timeout`; raise both if you raise one.
 
     The default, `[]`, gives every MCP session an anonymous agent of its own,
     started on its first call and stopped with the session. It is the stdio
