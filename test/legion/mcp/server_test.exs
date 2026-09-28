@@ -185,6 +185,52 @@ defmodule Legion.MCP.ServerTest do
     end
   end
 
+  defmodule VerboseAgent do
+    @moduledoc "An agent whose purpose statement runs long. " <>
+                 String.duplicate("It does math, and it says so at length. ", 60)
+    use Legion.Agent
+    def tools, do: [MathTool]
+  end
+
+  defmodule VerboseMCP do
+    use Legion.MCP.Server, agent: VerboseAgent, name: "verbose", version: "0.1.0"
+  end
+
+  defmodule UncheckedMCP do
+    use Legion.MCP.Server,
+      agent: VerboseAgent,
+      name: "unchecked",
+      version: "0.1.0",
+      instructions_budget: :infinity
+  end
+
+  defmodule RoomyMCP do
+    use Legion.MCP.Server,
+      agent: VerboseAgent,
+      name: "roomy",
+      version: "0.1.0",
+      instructions_budget: 100_000
+  end
+
+  describe "instructions_budget" do
+    import ExUnit.CaptureLog
+
+    test "warns at child_spec time when the instructions exceed the budget" do
+      log = capture_log(fn -> VerboseMCP.child_spec(transport: :stdio) end)
+
+      assert log =~ "VerboseMCP: server instructions are"
+      assert log =~ "cap them at 2048"
+      assert log =~ "stop reading after"
+      assert log =~ "drops the sections: Who you are, Available Tools, MathTool"
+      assert log =~ "instructions_budget:"
+    end
+
+    test "is quiet with a budget the instructions fit, or :infinity" do
+      assert capture_log(fn -> RoomyMCP.child_spec(transport: :stdio) end) == ""
+      assert capture_log(fn -> UncheckedMCP.child_spec(transport: :stdio) end) == ""
+    end
+  end
+
   describe "child_spec/1" do
     test "gives the transport the server's request_timeout" do
       %{start: {_, _, [_, opts]}} = ConfiguredMCP.child_spec(transport: :stdio)

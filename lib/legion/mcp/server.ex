@@ -37,6 +37,9 @@ if Code.ensure_loaded?(Anubis.Server) do
       - `:name`, `:version` - MCP `serverInfo`, shown by hosts (required)
       - `:capabilities` - what `use Anubis.Server` takes, for a server that adds
         components of its own; `:tools` is always among them, since `repl` is one
+      - `:instructions_budget` - how many characters of `server_instructions/0`
+        the hosts you target read; see "Instruction size". Defaults to 2048,
+        `:infinity` disables the check
 
     Every other option is passed to `use Anubis.Server`, `:authorization`
     above all; see "Who is calling". The child spec takes what
@@ -66,6 +69,20 @@ if Code.ensure_loaded?(Anubis.Server) do
     the transport only stops waiting; the eval keeps running, and its step is
     saved and counted like any other. A retry from the host runs the code a
     second time.
+
+    ## Instruction size
+
+    Hosts read only so much of the instructions. Claude Code cuts them at
+    2,048 characters (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` raises it, per
+    user, not per server) and appends "[truncated]"; it cuts every tool
+    description at the same length. The generated instructions carry the
+    agent's `@moduledoc` and every tool's description, so an agent with a few
+    tools is over the line. When the server starts, it renders the
+    instructions and logs a warning if they are longer than
+    `:instructions_budget`, naming the last words the host will read and the
+    sections after them. Answer it by overriding `server_instructions/0`, or
+    by giving tools a `description/0` shorter than their source, and set the
+    budget to what your hosts read if it is not Claude Code's.
 
     ## Sessions are agents
 
@@ -177,8 +194,14 @@ if Code.ensure_loaded?(Anubis.Server) do
     inside it. See `Legion.Telemetry`.
     """
 
+    require Logger
+
     alias Anubis.Server.Frame
     alias Legion.{Agent, AgentPrompt, AgentServer}
+
+    # What Claude Code reads of the instructions (and of each tool description)
+    # before cutting: its `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` default.
+    @default_budget 2048
 
     # Matches Anubis's default `:session_idle_timeout`. Anonymous agents are
     # stopped with their session in `terminate/2`; this is their backstop,
@@ -192,6 +215,7 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     defmacro __using__(opts) do
       {agent, anubis_opts} = Keyword.pop!(opts, :agent)
+      {budget, anubis_opts} = Keyword.pop(anubis_opts, :instructions_budget, @default_budget)
       anubis_opts = Keyword.update(anubis_opts, :capabilities, [:tools], &with_tools/1)
 
       quote do
@@ -211,6 +235,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         def request_timeout, do: Legion.MCP.Server.request_timeout(unquote(agent))
 
         def child_spec(opts) do
+          Legion.MCP.Server.check_instructions(__MODULE__, unquote(budget))
           super(Keyword.put_new(opts, :request_timeout, request_timeout()))
         end
 
@@ -302,6 +327,46 @@ if Code.ensure_loaded?(Anubis.Server) do
         {:error, {:already_started, pid}} -> pid
         {:error, reason} -> raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
       end
+    end
+
+    @doc false
+    # Logged once, when the supervisor builds the child spec, so an oversize
+    # prompt is a boot-time warning and not a silently confused host. Counted
+    # in characters, as Claude Code slices a JavaScript string; for the ASCII
+    # prompts Legion renders the two agree.
+    def check_instructions(_server, :infinity), do: :ok
+
+    def check_instructions(server, budget) when is_integer(budget) do
+      text = server.server_instructions()
+      size = String.length(text)
+
+      if size > budget do
+        kept = String.slice(text, 0, budget)
+        lost = String.slice(text, budget, size)
+
+        last_words =
+          kept |> String.split(~r/\s+/, trim: true) |> Enum.take(-6) |> Enum.join(" ")
+
+        lost_sections =
+          case Regex.scan(~r/^#+ (.+)$/m, lost, capture: :all_but_first) do
+            [] ->
+              ""
+
+            headings ->
+              " That drops the sections: " <> Enum.map_join(headings, ", ", &List.first/1) <> "."
+          end
+
+        Logger.warning(
+          "#{inspect(server)}: server instructions are #{size} characters, and hosts that " <>
+            "cap them at #{budget} (Claude Code does) stop reading after \"…#{last_words}\"." <>
+            lost_sections <>
+            " Override server_instructions/0 with something shorter, or pass " <>
+            "instructions_budget: to `use Legion.MCP.Server` (an integer, or :infinity " <>
+            "to skip this check)."
+        )
+      end
+
+      :ok
     end
 
     @doc false
