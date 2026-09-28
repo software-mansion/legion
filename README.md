@@ -15,6 +15,8 @@ Legion is an Elixir runtime for AI agents that live inside your application and 
 
 Define an agent's responsibilities, give it tools to interact with your app safely, and hand it a task from one of your users. It will read the source of the modules you expose, write a Lua (or Elixir) snippet, run it in a sandbox, look at the result, and write the next one - until the task is done.
 
+The code it writes is a means, not the product: Legion is for agents that act on your running app on behalf of your users, not a dev-time coding agent - it doesn't check out repos, edit your source, or run your test suite. For that, use Claude Code, Codex, or similar.
+
 One evaluation can filter, branch, and loop - work that would cost a tool-calling agent an LLM round trip per step. [Anthropic on why code execution beats tool calling](https://www.anthropic.com/engineering/code-execution-with-mcp).
 
 ## Usage
