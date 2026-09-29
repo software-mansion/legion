@@ -82,17 +82,11 @@ defmodule Legion.Tools.AgentTool do
   end
 
   defp moduledoc_summary(module) do
-    case Code.fetch_docs(module) do
-      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
-        doc
-        |> String.split("\n\n", parts: 2)
-        |> hd()
-        |> String.replace(~r/\s+/, " ")
-        |> String.trim()
-
-      _ ->
-        "(no @moduledoc)"
-    end
+    module.moduledoc()
+    |> String.split("\n\n", parts: 2)
+    |> hd()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
   end
 
   @doc """
