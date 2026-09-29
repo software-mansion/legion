@@ -79,12 +79,27 @@ defmodule Legion.Tool do
 
     quote do
       @behaviour Legion.Tool
+      @before_compile Legion.Tool
 
       def description, do: unquote(source)
-      def summary, do: Legion.Tool.default_summary(__MODULE__)
       def extra_allowed_modules, do: []
 
-      defoverridable description: 0, summary: 0, extra_allowed_modules: 0
+      defoverridable description: 0, extra_allowed_modules: 0
+    end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    unless Module.defines?(env.module, {:summary, 0}) do
+      sentence =
+        case Module.get_attribute(env.module, :moduledoc) do
+          {_line, doc} when is_binary(doc) -> first_sentence(doc)
+          _ -> nil
+        end
+
+      quote do
+        def summary, do: Legion.Tool.default_summary(__MODULE__, unquote(sentence))
+      end
     end
   end
 
@@ -93,11 +108,14 @@ defmodule Legion.Tool do
   # `use`s Legion.Tool: the first sentence of its moduledoc, else of a
   # hand-written `description/0`, else its short name. The default
   # `description/0` is the module's source, which has no first sentence.
-  def default_summary(module) do
+  def default_summary(module), do: default_summary(module, moduledoc_sentence(module))
+
+  @doc false
+  def default_summary(module, moduledoc_sentence) do
     Code.ensure_loaded!(module)
 
     cond do
-      sentence = moduledoc_sentence(module) -> sentence
+      moduledoc_sentence -> moduledoc_sentence
       sentence = description_sentence(module) -> sentence
       true -> module |> Module.split() |> List.last()
     end

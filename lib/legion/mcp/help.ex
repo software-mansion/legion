@@ -44,7 +44,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     defp code(sandbox, nil), do: {:ok, prefix(sandbox) <> "Help.help()"}
 
     defp code(sandbox, name) do
-      if name =~ ~r/^\w+$/,
+      if name =~ ~r/\A\w+\z/,
         do: {:ok, prefix(sandbox) <> ~s|Help.help("#{name}")|},
         else: :error
     end

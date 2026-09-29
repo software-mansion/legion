@@ -22,6 +22,9 @@ defmodule Legion.Agent do
 
     - `tools/0` — list of tool modules available to the agent. Each tool's
       `tool_config/1` result is stored in the Vault under the tool's module key.
+      Code in the sandbox reaches a tool by its short name (`MyApp.SearchTool`
+      is `SearchTool`), so `use Legion.Agent` warns at compile time when two
+      tools, or a tool and the built-in `Legion.Tools.Help`, share one.
       Defaults to `[]`.
 
     - `tool_config/1` — per-tool configuration. Receives a tool module, returns a
@@ -121,6 +124,7 @@ defmodule Legion.Agent do
     quote do
       @behaviour Legion.Agent
       @before_compile Legion.Agent
+      @after_compile Legion.Agent
 
       def tools, do: []
       def output_schema, do: %{"type" => "string"}
@@ -215,4 +219,29 @@ defmodule Legion.Agent do
       def tool_config(_tool), do: []
     end
   end
+
+  @doc false
+  # `tools/0` is read once, at compile time: a list that differs at runtime,
+  # or one that cannot be built at compile time, is not checked.
+  def __after_compile__(env, _bytecode) do
+    tools =
+      env.module.tools()
+      |> Enum.filter(&elixir_module?/1)
+      |> Kernel.++([Legion.Tools.Help])
+      |> Enum.uniq()
+
+    for {name, [_, _ | _] = modules} <- Enum.group_by(tools, &short_name/1) do
+      IO.warn(
+        "#{inspect(env.module)} lists tools with the same short name #{name}: " <>
+          "#{Enum.map_join(modules, ", ", &inspect/1)}. Only one of them is reachable from the sandbox.",
+        env
+      )
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp short_name(module), do: module |> Module.split() |> List.last()
+
+  defp elixir_module?(module), do: String.starts_with?(Atom.to_string(module), "Elixir.")
 end

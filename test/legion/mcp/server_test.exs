@@ -420,13 +420,6 @@ defmodule Legion.MCP.ServerTest do
   end
 
   describe "session tool_docs" do
-    test "a session agent runs with tool_docs: :discovery" do
-      frame = initialized(MathMCP, frame())
-
-      assert {false, text, _frame} = repl(MathMCP, frame, "return Help.help()")
-      assert text =~ "- `MathTool` -"
-    end
-
     test "over MCP Help is in the sandbox whatever the agent's tool_docs" do
       frame = initialized(FullDocsMCP, frame())
 

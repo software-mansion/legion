@@ -174,5 +174,22 @@ defmodule Legion.ToolTest do
     test "default_summary/1 reads the moduledoc of a module that does not use Legion.Tool" do
       assert Legion.Tool.default_summary(Jason) =~ "JSON"
     end
+
+    @tag :tmp_dir
+    test "summary/0 comes from the moduledoc even without a Docs chunk", %{tmp_dir: dir} do
+      path = Path.join(dir, "released_tool.ex")
+
+      File.write!(path, """
+      defmodule Legion.ReleasedTool do
+        use Legion.Tool
+        @moduledoc "Adds numbers. More text."
+        def add(a, b), do: a + b
+      end
+      """)
+
+      Code.compile_file(path)
+
+      assert Legion.ReleasedTool.summary() == "Adds numbers."
+    end
   end
 end

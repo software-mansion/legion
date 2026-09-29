@@ -81,9 +81,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     Hosts read only so much of the instructions. Claude Code cuts them at
     2,048 characters (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` raises it, per
     user, not per server) and appends "[truncated]"; it cuts every tool
-    description at the same length. So over MCP an agent runs with
-    `tool_docs: :discovery` unless its `config/0` says otherwise (see
-    `Legion.Agent`). The generated instructions then carry the agent's
+    description at the same length. So over MCP the instructions follow
+    `tool_docs: :discovery` unless the agent's `config/0` says otherwise
+    (see `Legion.Agent`). They then carry the agent's
     `@moduledoc` and one line per tool; the model reads a tool in full with
     `help`. For an agent with a one-line `@moduledoc` and one tool that is
     about 1,000 characters, and each tool adds a line. The sandbox rules
@@ -371,10 +371,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
     # returns the live process that already owns the agent id.
     def agent(agent_module, opts) do
-      opts =
-        opts
-        |> Keyword.put_new(:idle_timeout, @idle_timeout)
-        |> with_tool_docs(agent_module)
+      opts = Keyword.put_new(opts, :idle_timeout, @idle_timeout)
 
       child = %{
         id: AgentServer,
@@ -386,17 +383,6 @@ if Code.ensure_loaded?(Anubis.Server) do
         {:ok, pid} -> pid
         {:error, {:already_started, pid}} -> pid
         {:error, reason} -> raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
-      end
-    end
-
-    # Over MCP the host's model reads the tool list, not the tools, unless
-    # the agent's own config or the session says otherwise; see `tool_docs`
-    # in `Legion.Agent`. Only that key is passed on, since the session's
-    # other options (`:store`, `:agent_id`, ...) are not config.
-    defp with_tool_docs(opts, agent_module) do
-      case Agent.resolve_config(agent_module, Keyword.take(opts, [:tool_docs])) do
-        %{tool_docs: _} -> opts
-        _ -> Keyword.put(opts, :tool_docs, :discovery)
       end
     end
 

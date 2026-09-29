@@ -179,4 +179,38 @@ defmodule Legion.AgentTest do
       assert MinimalAgent.output_schema() == %{"type" => "string"}
     end
   end
+
+  describe "tool short names" do
+    import ExUnit.CaptureIO
+
+    test "warns when two tools share a short name" do
+      warning =
+        capture_io(:stderr, fn ->
+          Code.compile_string("""
+          defmodule Legion.ShadowAgent do
+            @moduledoc "Test."
+            use Legion.Agent
+            def tools, do: [Legion.Test.Support.MathTool, Legion.Other.MathTool]
+          end
+          """)
+        end)
+
+      assert warning =~ "same short name MathTool"
+    end
+
+    test "warns when a tool is named Help" do
+      warning =
+        capture_io(:stderr, fn ->
+          Code.compile_string("""
+          defmodule Legion.HelpAgent do
+            @moduledoc "Test."
+            use Legion.Agent
+            def tools, do: [Legion.Mine.Help]
+          end
+          """)
+        end)
+
+      assert warning =~ "same short name Help"
+    end
+  end
 end
