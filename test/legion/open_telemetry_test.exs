@@ -131,15 +131,16 @@ defmodule Legion.OpenTelemetryTest do
       assert opts[:telemetry][:conversation_id] == agent_id
     end
 
-    test "content: :attributes records messages on chat spans" do
+    test "content: :attributes records chat content as one JSON array string per attribute" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       stub_llm("done")
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
       assert_receive {:otel, :start_span, _, @span_name, attrs, _}
-      assert [message] = attrs[:"gen_ai.input.messages"]
-      assert message =~ "hi"
+
+      assert [%{"role" => "user", "parts" => [%{"content" => "hi"}]}] =
+               Jason.decode!(attrs[:"gen_ai.input.messages"])
     end
 
     test "content: :none keeps messages off chat spans" do
@@ -177,7 +178,7 @@ defmodule Legion.OpenTelemetryTest do
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
       assert_receive {:host_req_llm, :start_span, @span_name}
-      refute_received {:otel, :start_span, _, _, _, _}
+      refute_received {:otel, :start_span, _, @span_name, _, _}
     end
 
     test "req_llm: false leaves ReqLLM's telemetry untouched" do
@@ -187,10 +188,17 @@ defmodule Legion.OpenTelemetryTest do
       refute OpenTelemetry.req_llm_handler_id() in handler_ids
     end
 
-    test "returns {:error, :already_exists} when already attached" do
+    test "attaching again replaces the earlier attachment" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      assert :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+      assert OpenTelemetry.config()[:content] == :attributes
 
-      assert OpenTelemetry.attach(adapter: FakeOTelAdapter) == {:error, :already_exists}
+      stub_llm("done")
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      # One chat span per request: the first attachment is gone, not doubled.
+      assert_receive {:otel, :start_span, _, @span_name, _, _}
+      refute_receive {:otel, :start_span, _, @span_name, _, _}, 100
     end
 
     test "returns {:error, :opentelemetry_unavailable} when the adapter has no tracer" do
@@ -202,7 +210,7 @@ defmodule Legion.OpenTelemetryTest do
 
     test "rejects unknown options" do
       assert_raise NimbleOptions.ValidationError, fn ->
-        OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_spans: true)
+        OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_span: true)
       end
     end
   end
@@ -216,6 +224,8 @@ defmodule Legion.OpenTelemetryTest do
 
       handler_ids = Enum.map(:telemetry.list_handlers([:req_llm, :request, :start]), & &1.id)
       refute OpenTelemetry.req_llm_handler_id() in handler_ids
+      legion_ids = Enum.map(:telemetry.list_handlers([:legion]), & &1.id)
+      refute "legion-otel" in legion_ids
       assert Application.get_env(:req_llm, :telemetry) == []
       assert OpenTelemetry.config() == nil
     end

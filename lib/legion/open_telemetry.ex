@@ -2,13 +2,25 @@ defmodule Legion.OpenTelemetry do
   @moduledoc """
   OpenTelemetry integration for Legion.
 
-  `attach/1` wires Legion's LLM traffic into the host's OpenTelemetry pipeline
-  in one call: it attaches `ReqLLM.OpenTelemetry` under Legion's own handler id
-  so every LLM request becomes a GenAI `chat` span, forwards the content setting
-  and vendor adapter, and tags each span with `gen_ai.conversation.id` = the
-  agent id. `Legion.call/3` and `Legion.cast/2` carry the caller's OpenTelemetry
-  context into the agent process, so `chat` spans nest under the host's own
-  request or job span.
+  `attach/1` wires Legion into the host's OpenTelemetry pipeline in one call.
+  Each agent turn becomes a GenAI `invoke_agent <agent>` span, each code
+  evaluation an `execute_tool sandbox` span under it, and every LLM request a
+  `chat` span from `ReqLLM.OpenTelemetry`, which Legion attaches under its own
+  handler id with the same content setting and adapter. All of them carry
+  `gen_ai.agent.name`, `gen_ai.conversation.id` (the agent id) and
+  `session.id` (the id of the agent the conversation is with, shared by the
+  sub-agents its turns call).
+
+  The OpenTelemetry context follows the work across processes:
+  `Legion.call/3`, `Legion.cast/2`, `Legion.parallel/2` and the sandbox
+  process all run under the caller's context, so a sub-agent started from
+  tool code nests under the `execute_tool` span that started it, and the whole
+  tree nests under the host's own request or job span.
+
+  Retries, eval guard denials and rate-limit denials are recorded as span
+  events (`legion.retry`, `legion.eval_guard.denied`,
+  `legion.rate_limit.exceeded`); a cancelled turn sets `legion.status`,
+  `legion.cancel.reason` and `error.type`.
 
   Exporting is the host's job: add `opentelemetry` and `opentelemetry_exporter`
   and configure the OTLP endpoint (see the Observability guide). Legion only
@@ -18,12 +30,33 @@ defmodule Legion.OpenTelemetry do
   ## Options
 
     * `:adapter` - a `Legion.OpenTelemetry.Adapter` module. Defaults to
-      `Legion.OpenTelemetry.OTelAdapter`.
+      `Legion.OpenTelemetry.Adapter.OTel`.
     * `:content` - `:none` (default) records no message content;
       `:attributes` puts messages, system instructions and tool definitions on
       the `chat` spans as `gen_ai.*` attributes. Also turns on
       `config :req_llm, telemetry: [payloads: :raw]` unless the host configured
       `:payloads` itself.
+      Legion's own spans then record the user message
+      (`gen_ai.input.messages`), the turn's result (`gen_ai.output.messages`)
+      and the evaluated code and its result (`gen_ai.tool.call.arguments`,
+      `gen_ai.tool.call.result`).
+    * `:max_attribute_bytes` - longest content attribute Legion records, in
+      bytes; longer values are cut on a UTF-8 boundary and end in
+      `…[truncated]`. Defaults to `20_000`.
+    * `:metrics` - `false` turns off metrics, both Legion's and ReqLLM's.
+      Defaults to `true`. Metrics also need the adapter to support them; see
+      `Legion.OpenTelemetry.Adapter.OTel`.
+    * `:iteration_spans` - `true` adds an `iteration N` span per executor
+      iteration between `invoke_agent` and its `chat` and `execute_tool`
+      spans. Defaults to `false`; every child span carries `legion.iteration`
+      either way.
+    * `:conversation_traces` - `true` puts every turn of an agent process in
+      one trace, under a `conversation <agent>` root span created on the
+      first turn. Only turns called without a current span join it; a
+      caller's span always wins. The root span is ended as soon as it starts
+      (a trace only shows up once its root is exported), so its duration is
+      zero. Defaults to `false`: one trace per turn, the turns of a
+      conversation sharing `session.id`, the way vendors group sessions.
     * `:req_llm` - extra options for `ReqLLM.OpenTelemetry.attach/2`, e.g.
       `[langfuse: true]` or `[adapter: MyApp.ReqLLMAdapter]` (which replaces
       `Legion.OpenTelemetry.ReqLLM`). `false` leaves ReqLLM alone, for hosts
@@ -35,19 +68,41 @@ defmodule Legion.OpenTelemetry do
       :ok = Legion.OpenTelemetry.attach(content: :attributes)
   """
 
+  alias Legion.OpenTelemetry.{Handler, Metrics}
+
   @req_llm_handler_id "legion-req-llm-otel"
   @config_key {__MODULE__, :config}
 
   @schema NimbleOptions.new!(
             adapter: [
               type: :atom,
-              default: Legion.OpenTelemetry.OTelAdapter,
+              default: Legion.OpenTelemetry.Adapter.OTel,
               doc: "`Legion.OpenTelemetry.Adapter` implementation."
             ],
             content: [
               type: {:in, [:none, :attributes]},
               default: :none,
               doc: "Message content capture: `:none` or `:attributes`."
+            ],
+            max_attribute_bytes: [
+              type: :pos_integer,
+              default: 20_000,
+              doc: "Longest content attribute, in bytes."
+            ],
+            metrics: [
+              type: :boolean,
+              default: true,
+              doc: "Record metrics."
+            ],
+            iteration_spans: [
+              type: :boolean,
+              default: false,
+              doc: "Add an `iteration N` span per executor iteration."
+            ],
+            conversation_traces: [
+              type: :boolean,
+              default: false,
+              doc: "Put an agent's turns in one trace under a `conversation` span."
             ],
             req_llm: [
               type: {:or, [:keyword_list, {:in, [false]}]},
@@ -65,35 +120,42 @@ defmodule Legion.OpenTelemetry do
   @doc """
   Attaches the OpenTelemetry integration. See the module docs for options.
 
-  Returns `{:error, :opentelemetry_unavailable}` when the adapter reports the
-  OpenTelemetry API missing, and `{:error, :already_exists}` when already
-  attached. Raises `NimbleOptions.ValidationError` on unknown options.
+  Safe to call more than once: a second call replaces the earlier attachment
+  with the new options, so an application restart or a code reload never
+  fails on it. Returns `{:error, :opentelemetry_unavailable}` when the adapter
+  reports the OpenTelemetry API missing. Raises
+  `NimbleOptions.ValidationError` on unknown options.
   """
-  @spec attach(keyword()) :: :ok | {:error, :already_exists | :opentelemetry_unavailable}
+  @spec attach(keyword()) :: :ok | {:error, term()}
   def attach(opts \\ []) do
     config = NimbleOptions.validate!(opts, @schema)
 
-    cond do
-      not config[:adapter].available?() ->
-        {:error, :opentelemetry_unavailable}
+    if config[:adapter].available?() do
+      detach()
+      do_attach(config)
+    else
+      {:error, :opentelemetry_unavailable}
+    end
+  end
 
-      config() != nil ->
-        {:error, :already_exists}
+  defp do_attach(config) do
+    config =
+      Keyword.merge(config,
+        metrics?: config[:metrics] and Metrics.available?(config[:adapter]),
+        req_llm_telemetry_env: Application.get_env(:req_llm, :telemetry)
+      )
 
-      true ->
-        config =
-          Keyword.put(config, :req_llm_telemetry_env, Application.get_env(:req_llm, :telemetry))
+    :persistent_term.put(@config_key, config)
 
-        :persistent_term.put(@config_key, config)
-
-        case attach_req_llm(config) do
-          :ok ->
-            :ok
-
-          {:error, _} = error ->
-            :persistent_term.erase(@config_key)
-            error
-        end
+    with :ok <- Handler.attach(Keyword.put(config, :span_kind, :internal)),
+         :ok <- attach_req_llm(config) do
+      :ok
+    else
+      {:error, _} = error ->
+        Handler.detach()
+        restore_req_llm_env(config[:req_llm_telemetry_env])
+        :persistent_term.erase(@config_key)
+        error
     end
   end
 
@@ -108,6 +170,7 @@ defmodule Legion.OpenTelemetry do
         {:error, :not_found}
 
       config ->
+        Handler.detach()
         if config[:req_llm] != false, do: ReqLLM.OpenTelemetry.detach(@req_llm_handler_id)
         restore_req_llm_env(config[:req_llm_telemetry_env])
         :persistent_term.erase(@config_key)

@@ -201,9 +201,6 @@ defmodule Legion.AgentServer do
     {:reply, state.agent_id, state}
   end
 
-  # The third element carries the caller's OpenTelemetry context, so spans
-  # emitted during the turn nest under the caller's span. The two-element
-  # shape is still accepted for mailboxes filled before an upgrade.
   @impl true
   def handle_call({:message, message, ctx}, _from, state) do
     {reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
