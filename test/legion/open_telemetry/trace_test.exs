@@ -1,0 +1,247 @@
+defmodule Legion.OpenTelemetry.TraceTest do
+  @moduledoc """
+  Runs the real OpenTelemetry SDK with a pid exporter to check the shape of
+  whole traces: which span is whose parent, across the agent process, the
+  sandbox process, sub-agents and `Legion.parallel/2`.
+  """
+
+  use ExUnit.Case, async: false
+  use Mimic
+
+  setup :set_mimic_global
+
+  @moduletag capture_log: true
+
+  require OpenTelemetry.Tracer, as: Tracer
+  require Record
+
+  alias Legion.Test.Support.{MathAgent, ReqLLMTelemetry}
+
+  Record.defrecordp(
+    :span,
+    Record.extract(:span, from_lib: "opentelemetry/include/otel_span.hrl")
+  )
+
+  Record.defrecordp(
+    :span_ctx,
+    Record.extract(:span_ctx, from_lib: "opentelemetry_api/include/opentelemetry.hrl")
+  )
+
+  defmodule ChildAgent do
+    @moduledoc "Sub-agent invoked through AgentTool."
+    use Legion.Agent
+  end
+
+  defmodule DelegatingAgent do
+    @moduledoc "Agent that delegates work to ChildAgent."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool]
+    def tool_config(Legion.Tools.AgentTool), do: [agents: [ChildAgent]]
+    def tool_config(_tool), do: []
+  end
+
+  @model "openai:gpt-4o-mini"
+
+  setup do
+    :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
+    :ok = Legion.OpenTelemetry.attach()
+    on_exit(fn -> Legion.OpenTelemetry.detach() end)
+    :ok
+  end
+
+  # The parent evaluates code that calls ChildAgent; everyone else returns.
+  defp stub_llm do
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema, opts ->
+      ReqLLMTelemetry.emit_request(@model, opts)
+
+      object =
+        if Enum.any?(messages, &(&1[:content] == "delegate")) and
+             not Enum.any?(messages, &(&1[:role] == "assistant")) do
+          code = ~s|local reply = AgentTool.call(ChildAgent, "child task")\nreturn reply[2]|
+          %{"action" => "eval_and_complete", "code" => code, "result" => ""}
+        else
+          %{"action" => "return", "code" => "", "result" => "done"}
+        end
+
+      {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
+    end)
+  end
+
+  # Runs `fun` inside a `name` span and returns every span exported by the time
+  # that span ends, as `%{name => [span]}`.
+  defp trace(name, fun) do
+    Tracer.with_span name do
+      fun.()
+    end
+
+    collect(name, [])
+  end
+
+  defp collect(root, acc) do
+    receive do
+      {:span, span(name: ^root) = root_span} -> group([root_span | acc])
+      {:span, span} -> collect(root, [span | acc])
+    after
+      1_000 -> flunk("#{root} span was not exported")
+    end
+  end
+
+  defp group(spans), do: Enum.group_by(spans, &span(&1, :name))
+
+  defp id(spans, name) do
+    [span] = Map.fetch!(spans, name)
+    span(span, :span_id)
+  end
+
+  defp parent_ids(spans, name), do: Enum.map(Map.fetch!(spans, name), &span(&1, :parent_span_id))
+
+  test "a sub-agent called from tool code nests under the execute_tool span" do
+    stub_llm()
+
+    spans =
+      trace("request", fn ->
+        assert {:ok, "done"} = Legion.execute(DelegatingAgent, "delegate")
+      end)
+
+    parent = "invoke_agent Legion.OpenTelemetry.TraceTest.DelegatingAgent"
+    child = "invoke_agent Legion.OpenTelemetry.TraceTest.ChildAgent"
+
+    assert parent_ids(spans, parent) == [id(spans, "request")]
+    assert parent_ids(spans, "execute_tool sandbox") == [id(spans, parent)]
+    assert parent_ids(spans, child) == [id(spans, "execute_tool sandbox")]
+
+    chat_parents = parent_ids(spans, "chat gpt-4o-mini")
+    assert Enum.sort(chat_parents) == Enum.sort([id(spans, parent), id(spans, child)])
+  end
+
+  test "a sub-agent's spans carry the session of the turn that called it" do
+    stub_llm()
+
+    spans =
+      trace("request", fn ->
+        assert {:ok, "done"} = Legion.execute(DelegatingAgent, "delegate")
+      end)
+
+    [parent] = spans["invoke_agent Legion.OpenTelemetry.TraceTest.DelegatingAgent"]
+    {:attributes, _, _, _, parent_attributes} = span(parent, :attributes)
+    session = parent_attributes[:"session.id"]
+    assert session == parent_attributes[:"gen_ai.agent.id"]
+
+    for {name, list} <- spans, name != "request", span <- list do
+      {:attributes, _, _, _, attributes} = span(span, :attributes)
+      assert attributes[:"session.id"] == session, "#{name} has another session"
+    end
+  end
+
+  test "Legion.parallel runs each agent under the caller's span" do
+    stub_llm()
+
+    spans =
+      trace("job", fn ->
+        assert {:ok, ["done", "done"]} = Legion.parallel([{MathAgent, "a"}, {MathAgent, "b"}])
+      end)
+
+    job = id(spans, "job")
+    assert parent_ids(spans, "invoke_agent Legion.Test.Support.MathAgent") == [job, job]
+  end
+
+  test "Legion.cast nests the turn under the caller's span" do
+    stub_llm()
+    {:ok, pid} = Legion.start_link(MathAgent)
+
+    outer_id =
+      Tracer.with_span "job" do
+        :ok = Legion.cast(pid, "hi")
+        span_ctx(span_id: span_id) = Tracer.current_span_ctx()
+        span_id
+      end
+
+    assert_receive {:span,
+                    span(
+                      name: "invoke_agent Legion.Test.Support.MathAgent",
+                      parent_span_id: ^outer_id
+                    )}
+  end
+
+  test "the agent process forgets the caller's span and its own once the turn ends" do
+    stub_llm()
+    {:ok, pid} = Legion.start_link(MathAgent)
+
+    Tracer.with_span "request" do
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+    end
+
+    assert_receive {:span, span(name: "invoke_agent Legion.Test.Support.MathAgent") = first}
+    assert span(first, :parent_span_id) != :undefined
+
+    assert {:ok, "done"} = Legion.call(pid, "again")
+
+    assert_receive {:span,
+                    span(
+                      name: "invoke_agent Legion.Test.Support.MathAgent",
+                      parent_span_id: :undefined
+                    )}
+  end
+
+  describe "conversation_traces: true" do
+    setup do
+      :ok = Legion.OpenTelemetry.attach(conversation_traces: true)
+      stub_llm()
+      {:ok, pid} = Legion.start_link(MathAgent)
+      %{pid: pid}
+    end
+
+    test "turns called without a span share one trace under the conversation span", %{pid: pid} do
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+      assert {:ok, "done"} = Legion.call(pid, "again")
+
+      assert_receive {:span,
+                      span(
+                        name: "conversation Legion.Test.Support.MathAgent",
+                        span_id: conversation_id,
+                        trace_id: trace_id,
+                        parent_span_id: :undefined
+                      )}
+
+      for _turn <- 1..2 do
+        assert_receive {:span,
+                        span(
+                          name: "invoke_agent Legion.Test.Support.MathAgent",
+                          trace_id: ^trace_id,
+                          parent_span_id: ^conversation_id
+                        )}
+      end
+
+      refute_receive {:span, span(name: "conversation " <> _)}, 100
+    end
+
+    test "a turn called under a span nests there instead", %{pid: pid} do
+      outer_id =
+        Tracer.with_span "request" do
+          assert {:ok, "done"} = Legion.call(pid, "hi")
+          span_ctx(span_id: span_id) = Tracer.current_span_ctx()
+          span_id
+        end
+
+      assert_receive {:span,
+                      span(
+                        name: "invoke_agent Legion.Test.Support.MathAgent",
+                        parent_span_id: ^outer_id
+                      )}
+
+      refute_receive {:span, span(name: "conversation " <> _)}, 100
+    end
+  end
+
+  test "chat spans carry the agent id as the conversation id" do
+    stub_llm()
+    {:ok, pid} = Legion.start_link(MathAgent)
+    agent_id = Legion.get_agent_id(pid)
+
+    assert {:ok, "done"} = Legion.call(pid, "hi")
+
+    assert_receive {:span, span(name: "chat gpt-4o-mini", attributes: attributes)}
+    assert {:attributes, _, _, _, %{"gen_ai.conversation.id": ^agent_id}} = attributes
+  end
+end

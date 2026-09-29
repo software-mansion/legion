@@ -16,6 +16,8 @@ defmodule Legion.Sandbox.Runner do
       accepts (default: `:low`, so generated code yields to the rest of the node)
   """
 
+  alias Legion.Telemetry
+
   # Generated code runs with a memory budget by default
   @default_max_heap 256_000_000
 
@@ -46,6 +48,10 @@ defmodule Legion.Sandbox.Runner do
     max_reductions = Keyword.get(limits, :max_reductions, :infinity)
     priority = Keyword.get(limits, :priority, :low)
 
+    # Tool code (and any agent it calls) runs under the caller's
+    # OpenTelemetry context, so its spans nest under the eval's.
+    otel_ctx = Telemetry.capture_context()
+
     {pid, ref} =
       spawn_monitor(fn ->
         kill_eval_when_parent_dies(parent)
@@ -58,7 +64,7 @@ defmodule Legion.Sandbox.Runner do
           Process.flag(:max_heap_size, %{size: heap_words, kill: true, error_logger: false})
         end
 
-        send(parent, {:result, self(), eval_fun.()})
+        send(parent, {:result, self(), Telemetry.with_context(otel_ctx, eval_fun)})
       end)
 
     deadline =

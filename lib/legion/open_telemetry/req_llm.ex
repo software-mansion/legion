@@ -8,7 +8,19 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   which carries the Legion adapter as `:legion_adapter` and the Legion attach
   options as `:legion_config`; the Legion adapter is called with the latter plus
   `span_kind: :client`.
+
+  A `chat` span started during an agent turn also gets `gen_ai.agent.name`,
+  `gen_ai.conversation.id` and `legion.iteration`; values ReqLLM sets win.
+
+  ReqLLM records message content (`gen_ai.input.messages`,
+  `gen_ai.output.messages`, `gen_ai.system_instructions`,
+  `gen_ai.tool.definitions`) as a list of JSON strings, one per entry. The shim
+  joins each list into one JSON array string, the form the GenAI semantic
+  conventions give for span attributes and the only one Braintrust parses, so
+  `chat` content matches Legion's own spans.
   """
+
+  alias Legion.OpenTelemetry.Handler
 
   @behaviour ReqLLM.OpenTelemetry.Adapter
 
@@ -24,18 +36,19 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   def metrics_available? do
     case Legion.OpenTelemetry.config() do
       nil -> false
-      config -> metrics?(config[:adapter])
+      config -> config[:metrics?] == true
     end
   end
 
   @impl true
   def start_span(name, attributes, config) do
+    attributes = Handler.chat_attributes() |> Map.merge(attributes) |> join_content()
     adapter(config).start_span(name, attributes, legion_config(config))
   end
 
   @impl true
   def set_attributes(span, attributes, config) do
-    adapter(config).set_attributes(span, attributes, legion_config(config))
+    adapter(config).set_attributes(span, join_content(attributes), legion_config(config))
   end
 
   @impl true
@@ -55,10 +68,10 @@ defmodule Legion.OpenTelemetry.ReqLLM do
 
   @impl true
   def record_histogram(record, config) do
-    adapter = adapter(config)
+    legion_config = legion_config(config)
 
-    if metrics?(adapter),
-      do: adapter.record_histogram(record, legion_config(config)),
+    if legion_config[:metrics?],
+      do: adapter(config).record_histogram(record, legion_config),
       else: :ok
   end
 
@@ -66,6 +79,8 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   def start_child_span(parent, name, attributes, opts, config) do
     adapter = adapter(config)
     legion_config = legion_config(config, Map.get(opts, :kind, :internal))
+
+    attributes = join_content(attributes)
 
     if function_exported?(adapter, :start_child_span, 5),
       do: adapter.start_child_span(parent, name, attributes, opts, legion_config),
@@ -81,17 +96,33 @@ defmodule Legion.OpenTelemetry.ReqLLM do
       else: adapter.end_span(span, legion_config(config))
   end
 
+  @content_keys [
+    :"gen_ai.input.messages",
+    :"gen_ai.output.messages",
+    :"gen_ai.system_instructions",
+    :"gen_ai.tool.definitions"
+  ]
+
+  defp join_content(attributes) do
+    Enum.reduce(@content_keys, attributes, fn key, acc ->
+      case acc do
+        %{^key => [_ | _] = entries} -> Map.put(acc, key, json_array(entries))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp json_array(entries) do
+    if Enum.all?(entries, &is_binary/1),
+      do: "[" <> Enum.join(entries, ",") <> "]",
+      else: entries
+  end
+
   defp adapter(config), do: Keyword.fetch!(config, :legion_adapter)
 
   defp legion_config(config, span_kind \\ :client) do
     config
     |> Keyword.get(:legion_config, [])
     |> Keyword.put(:span_kind, span_kind)
-  end
-
-  defp metrics?(adapter) do
-    function_exported?(adapter, :metrics_available?, 0) and
-      function_exported?(adapter, :record_histogram, 2) and
-      adapter.metrics_available?()
   end
 end
