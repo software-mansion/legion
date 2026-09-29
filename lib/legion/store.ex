@@ -54,13 +54,13 @@ defmodule Legion.Store do
 
   ## Usage tracking
 
-  Legion persists a string-keyed copy of `ReqLLM.Response.usage` for every LLM
-  request in a conversation, ordered by request. Each map includes an `"at"`
-  Unix timestamp in milliseconds for when Legion received the response, and a
+  Legion persists one string-keyed usage map per LLM request in a conversation,
+  ordered by request: a copy of `ReqLLM.Response.usage`, an `"at"` Unix
+  timestamp in milliseconds for when Legion received the response, a
   `"message_index"`, the position in the conversation's `:messages` (which omit
   the system prompt) of the assistant message it produced, or `nil` when the
-  response had no usable object.
-  Entries saved by Legion 0.5.0 have no `"message_index"`.
+  response had no usable object, and `"evals" => 1` when the request's action
+  ran code. Entries saved by Legion 0.5.0 have no `"message_index"`.
   Tracking is enabled by default. Disable it globally before starting an agent:
 
       config :legion, :track_usage, false

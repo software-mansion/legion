@@ -187,6 +187,49 @@ defmodule Legion.ExecutorTest do
                Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
     end
 
+    test "flags the request whose action ran code as one eval" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(%{"action" => "eval_and_continue", "code" => "x = 10", "result" => ""}, 7)
+          2 -> response(%{"action" => "return", "code" => "", "result" => "done"}, 11)
+        end
+      end)
+
+      assert {:ok, "done", _messages, _bindings, [eval_request, return_request]} =
+               Legion.Executor.run(MathAgent, executor_messages("compute"), %{})
+
+      assert %{"turn_usage" => 7, "evals" => 1} = eval_request
+      assert %{"turn_usage" => 11} = return_request
+      refute Map.has_key?(return_request, "evals")
+    end
+
+    test "counts a failed evaluation as one eval" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            response(
+              %{"action" => "eval_and_complete", "code" => "error('boom')", "result" => ""},
+              7
+            )
+
+          2 ->
+            response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
+        end
+      end)
+
+      assert {:ok, "recovered", _messages, [],
+              [%{"turn_usage" => 7, "evals" => 1}, %{"turn_usage" => 11}]} =
+               Legion.Executor.run(MathAgent, executor_messages("fail once"), %{})
+    end
+
     test "emits normalized usage in LLM request stop telemetry" do
       ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :llm, :request, :stop]])
       on_exit(fn -> :telemetry.detach(ref) end)
