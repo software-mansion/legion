@@ -3,8 +3,8 @@ defmodule Legion.RateLimiter.Policy do
   Defines the limits enforced by a `Legion.RateLimiter`.
 
   Every policy has a rolling `:window_ms`. Within that window, it can
-  limit new agents matching an identity, and the token usage and code
-  evaluations recorded for those agents:
+  limit new agents matching an identity, how many of them run a turn at
+  once, and the token usage and code evaluations recorded for those agents:
 
       %Legion.RateLimiter.Policy{
         window_ms: :timer.minutes(1),
