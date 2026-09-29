@@ -15,12 +15,14 @@ if Code.ensure_loaded?(Anubis.Server) do
           use Legion.MCP.Server, agent: MyApp.Assistant, name: "mansion", version: "1.0.0"
         end
 
-        # supervision tree, after Legion
-        {MyApp.MCP, transport: :stdio}
-
-        # or, behind Phoenix/Plug:
-        {MyApp.MCP, transport: :streamable_http}
+        # over HTTP: start it after Legion and mount the plug in your router
+        # (start: true also starts it outside `mix phx.server`, e.g. in tests)
+        {MyApp.MCP, transport: {:streamable_http, start: true}}
         forward "/mcp", to: Legion.MCP.Plug, server: MyApp.MCP
+
+        # or over stdio; stdout carries the protocol, so keep logs off it:
+        # config :logger, :default_handler, config: [type: :standard_error]
+        {MyApp.MCP, transport: :stdio}
 
     An MCP host brings its own model. That model reads the server
     `instructions`: the agent's `@moduledoc` and its tools, each by name and
@@ -115,11 +117,15 @@ if Code.ensure_loaded?(Anubis.Server) do
       - With rate limit rules, every call is checked before it runs. A denied
         call runs nothing and comes back as a tool error the model can read.
         A running call counts towards `:max_running_agents` like a turn does.
+        Rules need a limiter; see `Legion.RateLimiter`.
       - Two sessions that resolve to one agent id share one process, so their
         calls are serialised and nothing is overwritten.
 
     Which agent a call belongs to is what `session/1` decides. It receives
     the call's frame and returns the options the agent is started with:
+
+        # no token over stdio: an anonymous agent per session
+        def session(%{context: %{auth: nil}}), do: []
 
         def session(frame) do
           user = MyApp.Users.from_claims!(frame.context.auth)
@@ -179,8 +185,11 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     Authentication is Anubis's: pass `authorization:` to `use` and the
     transport rejects requests without a valid bearer token before they reach
-    the server, serves the OAuth protected-resource metadata hosts discover,
-    and puts the token's claims in `frame.context.auth`:
+    the server and puts the token's claims in `frame.context.auth`. Hosts
+    also look for the OAuth protected-resource metadata at the root of the
+    site, which a mount under `/mcp` does not reach; Anubis's
+    [authorization guide](https://hexdocs.pm/anubis_mcp/authorization.html)
+    shows how to serve it:
 
         use Legion.MCP.Server,
           agent: MyApp.Assistant,
