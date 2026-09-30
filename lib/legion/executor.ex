@@ -285,7 +285,7 @@ defmodule Legion.Executor do
   defp normalize_usage_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_usage_key(key), do: key
 
-  defp checkpoint!(config, messages, bindings, executor_state) do
+  defp checkpoint!(config, messages, bindings, executor_state, turn_usage) do
     case config[:checkpoint] do
       nil ->
         :ok
@@ -296,7 +296,8 @@ defmodule Legion.Executor do
             callback.(%{
               messages: messages,
               bindings: bindings,
-              executor_state: executor_state
+              executor_state: executor_state,
+              turn_usage: turn_usage
             })
         rescue
           error -> exit({:checkpoint_persistence_failed, error})
@@ -361,7 +362,7 @@ defmodule Legion.Executor do
             %{phase: :completing, iteration: i, retries: 0}
           end
 
-        checkpoint!(config, messages, new_bindings, executor_state)
+        checkpoint!(config, messages, new_bindings, executor_state, turn_usage)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings, turn_usage),
@@ -411,11 +412,13 @@ defmodule Legion.Executor do
 
       next_retries = retries + 1
 
-      checkpoint!(config, messages, bindings, %{
-        phase: :awaiting_llm,
-        iteration: iteration,
-        retries: next_retries
-      })
+      checkpoint!(
+        config,
+        messages,
+        bindings,
+        %{phase: :awaiting_llm, iteration: iteration, retries: next_retries},
+        turn_usage
+      )
 
       loop(agent_module, messages, config, iteration, next_retries, bindings, turn_usage)
     end

@@ -22,9 +22,10 @@ defmodule Legion.RateLimiter.Policy do
       limit.
     * `:max_running_agents` - maximum number of matching agents mid-turn at
       the same time, including sub-agents. It ignores `:window_ms`: a turn
-      holds its slot for as long as it runs. A turn's usage is recorded only
-      when it ends, so this is the limit that bounds how far one window can
-      overshoot `:max_tokens`. `0` allows no turns; `nil` disables this limit.
+      holds its slot for as long as it runs. A turn's usage is recorded when
+      it ends, or at each step checkpoint under a `:step` store, so this is
+      the limit that bounds how far one window can overshoot `:max_tokens`.
+      `0` allows no turns; `nil` disables this limit.
     * `:max_tokens` - maximum recorded token total for matching agents during
       the window. Limits are checked when a turn starts and never interrupt
       a running turn, so one turn can carry the recorded total past the

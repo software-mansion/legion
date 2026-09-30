@@ -46,7 +46,8 @@ defmodule Legion.RateLimiter.Postgres do
 
   Limits are evaluated when a turn starts; a turn that is already running is
   never interrupted, so one turn can carry the recorded total past
-  `:max_tokens` before the next call is denied.
+  `:max_tokens` before the next call is denied. A `:step` store records usage
+  at each step checkpoint, so calls made while that turn runs see its spend.
 
   ## Identity matching
 
