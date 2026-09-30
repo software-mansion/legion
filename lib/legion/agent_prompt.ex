@@ -8,35 +8,44 @@ defmodule Legion.AgentPrompt do
   @external_resource @template_path
   @template EEx.compile_file(@template_path)
 
-  def system_prompt(agent, config \\ nil) do
-    if function_exported?(agent, :system_prompt, 0) do
+  def system_prompt(agent, config \\ nil, opts \\ []) do
+    mode = Keyword.get(opts, :mode, :executor)
+
+    # A hand-written `system_prompt/0` is written for the executor's action
+    # loop, so only the executor uses it. Over MCP the instructions are always
+    # generated; `server_instructions/0` in the server is the override point.
+    if mode == :executor and function_exported?(agent, :system_prompt, 0) do
       agent.system_prompt()
     else
-      build_system_prompt(agent, config || agent.config())
+      build_system_prompt(agent, config || agent.config(), mode)
     end
   end
 
-  defp build_system_prompt(agent, config) do
+  defp build_system_prompt(agent, config, mode) do
     sandbox = Map.get(config, :sandbox, Legion.Sandbox.Lua)
     tool_contents = Enum.map(agent.tools(), &tool_description(&1, sandbox))
     description = agent.moduledoc()
     binding_scope = Map.get(config, :binding_scope, :turn)
     prompt_info = sandbox.prompt_info()
 
-    {result, _} =
-      Code.eval_quoted(@template,
-        description: description,
-        tool_contents: tool_contents,
-        action_types: agent.action_types(),
-        plain_text_result?: match?(%{"type" => "string"}, agent.output_schema()),
-        binding_scope: binding_scope,
-        language: prompt_info.language,
-        constraints: String.trim_trailing(prompt_info.constraints),
-        tool_usage: prompt_info.tool_usage
-      )
+    assigns = [
+      mode: mode,
+      description: description,
+      tool_contents: tool_contents,
+      action_types: agent.action_types(),
+      plain_text_result?: match?(%{"type" => "string"}, agent.output_schema()),
+      binding_scope: binding_scope,
+      language: prompt_info.language,
+      constraints: String.trim_trailing(prompt_info.constraints),
+      tool_usage: prompt_info.tool_usage
+    ]
 
-    String.trim(result)
+    assigns |> render() |> String.trim()
   end
+
+  # The template is compiled at build time from a file in this repo; the
+  # literal attribute keeps that visible to static analysis.
+  defp render(assigns), do: elem(Code.eval_quoted(@template, assigns), 0)
 
   defp tool_description(module, sandbox) do
     Code.ensure_loaded!(module)

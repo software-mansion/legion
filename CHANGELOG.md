@@ -5,6 +5,10 @@
 ### Changes
 
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps recorded code evaluations per window; usage entries carry `"evals" => 1` when the request's action ran code
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as a `repl` tool, with stdio and Streamable HTTP transports (mounted with [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html)), OAuth 2.1, a `session/1` callback choosing the agent per call, and a `request_timeout/0` derived from the sandbox timeout; needs the optional `:anubis_mcp` dependency
+- `use Legion.MCP.Server` warns at start when the instructions are longer than `:instructions_budget` (default 2048, Claude Code's cap)
+- [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
+- `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
 
 ## v0.5.1 - 2026-09-25
 
