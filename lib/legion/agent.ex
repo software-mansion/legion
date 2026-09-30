@@ -73,9 +73,9 @@ defmodule Legion.Agent do
         - `:iteration` — bindings reset between every code execution
         - `:turn` — bindings persist across iterations within one turn and are dropped
           when it ends; bindings made outside a turn, by `Legion.eval/3`, are in
-          scope during the turn and outlive it, unless it resumes from a `:step`
-          checkpoint after a crash, which saves them mixed with its own, so both
-          get dropped
+          scope during the turn and outlive it, unless the turn crashed after a
+          `:step` checkpoint, which saves them mixed with its own, so both get
+          dropped when the agent resumes or starts again
         - `:conversation` — bindings persist for the entire conversation (across turns)
       - `max_message_length` — max byte size of a single message added to the
         conversation (user input, code execution result, or error text). Longer

@@ -147,6 +147,8 @@ defmodule Legion.AgentServer do
           {[], [], :nonexistent, if(track_usage, do: [], else: nil)}
       end
 
+    saved_bindings = restored_bindings(saved_bindings, mode, saved_executor_state, config)
+
     state = %__MODULE__{
       agent_module: agent_module,
       messages: [Executor.message(:system, system_prompt) | saved_messages],
@@ -168,6 +170,13 @@ defmodule Legion.AgentServer do
        usage: state.usage
      ), {:continue, %{start_mode: mode, executor_state: saved_executor_state}}}
   end
+
+  defp restored_bindings(bindings, :normal, executor_state, config)
+       when executor_state != :nonexistent do
+    if Map.get(config, :binding_scope, :turn) == :conversation, do: bindings, else: []
+  end
+
+  defp restored_bindings(bindings, _mode, _executor_state, _config), do: bindings
 
   @impl true
   def handle_continue(%{start_mode: :normal}, state), do: {:noreply, state, idle_timeout(state)}
