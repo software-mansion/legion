@@ -15,6 +15,7 @@ defmodule Legion.OpenTelemetry.TraceTest do
   require OpenTelemetry.Tracer, as: Tracer
   require Record
 
+  alias Anubis.Server.{Context, Frame, Handlers}
   alias Legion.Test.Support.{MathAgent, ReqLLMTelemetry}
 
   Record.defrecordp(
@@ -39,6 +40,10 @@ defmodule Legion.OpenTelemetry.TraceTest do
     def tools, do: [Legion.Tools.AgentTool]
     def tool_config(Legion.Tools.AgentTool), do: [agents: [ChildAgent]]
     def tool_config(_tool), do: []
+  end
+
+  defmodule MathMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "math", version: "0.1.0"
   end
 
   defmodule FailingAttributesAdapter do
@@ -315,5 +320,53 @@ defmodule Legion.OpenTelemetry.TraceTest do
     assert_receive {:span, span(name: "invoke_agent " <> _, span_id: agent_id)}
     assert_receive {:span, span(name: "iteration 0", parent_span_id: ^agent_id)}
     assert_receive {:span, span(name: "iteration 1", parent_span_id: ^agent_id)}
+  end
+
+  describe "MCP calls" do
+    setup do
+      start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+      context = %Context{session_id: "mcp-session-1", client_info: %{}}
+      {:ok, frame} = MathMCP.init(%{}, %Frame{context: context})
+      %{frame: frame}
+    end
+
+    defp repl(frame, code) do
+      request = %{
+        "method" => "tools/call",
+        "params" => %{"name" => "repl", "arguments" => %{"code" => code}}
+      }
+
+      {:reply, _response, _frame} = Handlers.handle(request, MathMCP, frame)
+      collect("tools/call repl", [])
+    end
+
+    defp attributes(spans, name) do
+      [span(attributes: attributes)] = Map.fetch!(spans, name)
+      :otel_attributes.map(attributes)
+    end
+
+    test "a call is a trace keyed by the MCP session, with the agent's eval under it",
+         %{frame: frame} do
+      spans = repl(frame, "return 1 + 1")
+
+      assert [span(parent_span_id: :undefined, kind: :server)] = spans["tools/call repl"]
+      assert parent_ids(spans, "execute_tool sandbox") == [id(spans, "tools/call repl")]
+
+      call = attributes(spans, "tools/call repl")
+      assert call[:"session.id"] == "mcp-session-1"
+      assert call[:"mcp.session.id"] == "mcp-session-1"
+      assert call[:"gen_ai.tool.call.arguments"] == "return 1 + 1"
+      assert call[:"gen_ai.tool.call.result"] =~ "2"
+      assert attributes(spans, "execute_tool sandbox")[:"session.id"] == "mcp-session-1"
+    end
+
+    test "a failed call is marked as a tool error", %{frame: frame} do
+      spans = repl(frame, "error('boom')")
+
+      assert [span(status: {:status, :error, _message}, attributes: attributes)] =
+               spans["tools/call repl"]
+
+      assert :otel_attributes.map(attributes)[:"error.type"] == "tool_error"
+    end
   end
 end

@@ -71,15 +71,16 @@ defmodule Legion.Telemetry do
   ## MCP Events
 
   A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
-  sandbox and rate limit events above. On top of those, every `repl` call is
-  a span that ties them to the MCP session:
+  sandbox and rate limit events above. On top of those, every `repl` and
+  `help` call is a span that ties them to the MCP session:
 
   - `[:legion, :mcp, :call, :start | :stop | :exception]` — one MCP tool call
     (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
     denied call has no eval span)
-    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
-    - Stop adds: `success`, and `error` with the text the host's model was
-      given when the code failed or the call was rate limited.
+    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), tool: "repl" | "help", code: String.t()}`
+    - Stop adds: `success`, `result` with the text the host's model was given
+      when the call succeeded, and `error` with that text when the code failed
+      or the call was rate limited.
 
   ## Default Logger
 

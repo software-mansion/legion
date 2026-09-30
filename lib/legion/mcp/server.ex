@@ -217,7 +217,9 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
     the MCP session id and the agent id it ran in; the agent's own events
-    fire inside it. See `Legion.Telemetry`.
+    fire inside it. See `Legion.Telemetry`. With `Legion.OpenTelemetry`
+    attached, each call is a `tools/call <tool>` span keyed by the MCP session
+    id, so a vendor groups one host session's calls together.
     """
 
     require Logger
@@ -347,20 +349,22 @@ if Code.ensure_loaded?(Anubis.Server) do
     # `repl` runs the host's code through it, `help` its own `Help.help/1`
     # call. The agent owns the variables, saves the step and enforces the
     # rate limit.
-    def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code) do
+    def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, tool, code) do
       {agent, agent_id, vault, frame} = resolve_agent(frame)
 
       metadata = %{
         agent: server.__legion_agent__(),
         agent_id: agent_id,
         session_id: frame.context.session_id,
+        tool: tool,
         code: code
       }
 
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
         case Legion.eval(agent, code, vault: vault) do
           {:ok, text} ->
-            {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
+            {{:reply, Response.text(Response.tool(), text), frame},
+             %{success: true, result: text}}
 
           {:error, error} ->
             {{:reply, Response.error(Response.tool(), error), frame},

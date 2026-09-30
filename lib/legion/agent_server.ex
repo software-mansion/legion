@@ -96,7 +96,7 @@ defmodule Legion.AgentServer do
   # Returns `{:ok, text}`, `{:error, text}` or `{:cancel, {:rate_limited, violations}}`.
   def eval(agent, code, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, :infinity)
-    GenServer.call(agent, {:eval, code, opts}, timeout)
+    GenServer.call(agent, {:eval, code, opts, Telemetry.capture_context()}, timeout)
   end
 
   def get_messages(agent) do
@@ -229,9 +229,13 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_call({:eval, code, opts}, _from, state) do
-    {reply, state} = handle_eval(code, opts, state)
+  def handle_call({:eval, code, opts, ctx}, _from, state) do
+    {reply, state} = Telemetry.with_context(ctx, fn -> handle_eval(code, opts, state) end)
     {:reply, reply, state, idle_timeout(state)}
+  end
+
+  def handle_call({:eval, code, opts}, from, state) do
+    handle_call({:eval, code, opts, nil}, from, state)
   end
 
   @impl true

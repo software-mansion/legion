@@ -27,7 +27,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
 
       case code(sandbox, Map.get(params, :tool)) do
         {:ok, code} ->
-          Server.run(frame, code)
+          Server.run(frame, "help", code)
 
         :error ->
           message = "Tool names are single words, as listed. Tools:\n" <> Help.index(agent)

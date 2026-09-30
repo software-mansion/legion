@@ -88,6 +88,30 @@ defmodule Legion.OpenTelemetry.Attributes do
 
   def execute_tool_stop(_meta, _config), do: %{"legion.eval.success": false}
 
+  @doc "A `repl` or `help` call to a `Legion.MCP.Server`, as the host's tool call."
+  def mcp_call_start(meta, config) do
+    meta.agent
+    |> agent(meta[:agent_id])
+    |> Map.merge(%{
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": meta[:tool],
+      "gen_ai.agent.id": meta[:agent_id],
+      "mcp.method.name": "tools/call",
+      "mcp.session.id": meta[:session_id]
+    })
+    |> put_content(config, :"gen_ai.tool.call.arguments", &truncate(meta[:code], &1))
+    |> drop_nils()
+  end
+
+  def mcp_call_stop(%{success: true} = meta, config) do
+    put_content(%{"legion.eval.success": true}, config, :"gen_ai.tool.call.result", fn max ->
+      truncate(meta[:result], max)
+    end)
+  end
+
+  def mcp_call_stop(_meta, _config),
+    do: %{"legion.eval.success": false, "error.type": "tool_error"}
+
   def iteration(agent, agent_id, iteration) do
     agent
     |> agent(agent_id)

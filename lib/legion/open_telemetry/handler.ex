@@ -10,6 +10,8 @@ defmodule Legion.OpenTelemetry.Handler do
   #     `iteration N` span with `iteration_spans: true`
   #   * `[:legion, :llm, :request]`   -> no span (ReqLLM's `chat` is one); its
   #     outcome feeds `legion.retry`
+  #   * `[:legion, :mcp, :call]`      -> `tools/call <tool>`, a server span in
+  #     the MCP session process keyed by the MCP session id
   #
   # Every Legion span starts and stops in the same process, strictly nested, so
   # the open spans live on a stack in the process dictionary. Each span is made
@@ -38,7 +40,10 @@ defmodule Legion.OpenTelemetry.Handler do
     [:legion, :sandbox, :eval, :stop],
     [:legion, :sandbox, :eval, :exception],
     [:legion, :eval_guard, :denied],
-    [:legion, :rate_limit, :exceeded]
+    [:legion, :rate_limit, :exceeded],
+    [:legion, :mcp, :call, :start],
+    [:legion, :mcp, :call, :stop],
+    [:legion, :mcp, :call, :exception]
   ]
 
   def attach(config) do
@@ -207,7 +212,7 @@ defmodule Legion.OpenTelemetry.Handler do
     update(:iteration, &%{&1 | eval: :pending})
 
     attributes =
-      meta |> Attributes.execute_tool_start(iteration, config) |> with_session(find(:agent))
+      meta |> Attributes.execute_tool_start(iteration, config) |> with_session(current_session())
 
     span = config[:adapter].start_span("execute_tool sandbox", attributes, config)
 
@@ -239,6 +244,32 @@ defmodule Legion.OpenTelemetry.Handler do
       error_type = closing(frame, config, fn -> fail(frame, meta, config) end)
       update(:iteration, &%{&1 | eval: :error})
       record_eval(frame, measurements, error_type, "crash", config)
+    end
+  end
+
+  # -- MCP --
+
+  # A `repl` or `help` call from an MCP host, in the MCP session process. The
+  # MCP session id is the session: the context carries it into the agent's
+  # eval and on to any agent the tool code calls.
+  defp handle([:legion, :mcp, :call, :start], _measurements, meta, config) do
+    session = meta[:session_id] || meta[:agent_id]
+    attributes = meta |> Attributes.mcp_call_start(config) |> with_session(session)
+    name = "tools/call " <> (meta[:tool] || "repl")
+    span = config[:adapter].start_span(name, attributes, Keyword.put(config, :span_kind, :server))
+
+    push(%{kind: :mcp, span: span, token: attach_span(span, session), agent: meta.agent})
+  end
+
+  defp handle([:legion, :mcp, :call, :stop], _measurements, meta, config) do
+    with %{} = frame <- pop(:mcp, config) do
+      closing(frame, config, fn -> end_mcp_call(frame, meta, config) end)
+    end
+  end
+
+  defp handle([:legion, :mcp, :call, :exception], _measurements, meta, config) do
+    with %{} = frame <- pop(:mcp, config) do
+      closing(frame, config, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -292,6 +323,15 @@ defmodule Legion.OpenTelemetry.Handler do
     adapter.end_span(span, config)
     Process.put(@conversation_key, span)
     span
+  end
+
+  # The session of the running turn, or, for an eval outside one (an MCP
+  # call), the one the context carries.
+  defp current_session do
+    case find(:agent) do
+      %{session: session} -> session
+      nil -> inherited_session()
+    end
   end
 
   defp with_session(attributes, %{session: session}), do: with_session(attributes, session)
@@ -447,6 +487,18 @@ defmodule Legion.OpenTelemetry.Handler do
 
     attributes =
       if error_kind, do: Map.put(attributes, :"error.type", error_kind), else: attributes
+
+    adapter.set_attributes(frame.span, attributes, config)
+  end
+
+  defp end_mcp_call(frame, meta, config) do
+    adapter = config[:adapter]
+    attributes = Attributes.mcp_call_stop(meta, config)
+
+    if error_type = attributes[:"error.type"] do
+      message = Attributes.status_message(meta[:error], error_type, config)
+      adapter.set_status(frame.span, :error, message, config)
+    end
 
     adapter.set_attributes(frame.span, attributes, config)
   end

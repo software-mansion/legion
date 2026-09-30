@@ -199,6 +199,17 @@ own, and the trace list shows the empty root rather than each turn's input and
 output. A resumed agent (`Legion.resume/2`, `Legion.recover/2`) starts a new
 conversation trace.
 
+### MCP servers
+
+Each `repl` or `help` call to a `Legion.MCP.Server` is its own trace: a
+`tools/call repl` (or `tools/call help`) server span with `mcp.session.id`,
+the code as `gen_ai.tool.call.arguments` and the text the host's model got
+back as `gen_ai.tool.call.result`, with the agent's `execute_tool sandbox`
+span and any sub-agent or `chat` span under it. Every span of the call
+carries the MCP session id as `session.id`, so one host session's calls are
+one session in Datadog and share `metadata.session_id` in Braintrust. A
+failed or rate-limited call is marked `error.type` `tool_error`.
+
 ## Metrics
 
 With `metrics: true` (the default) Legion records:
