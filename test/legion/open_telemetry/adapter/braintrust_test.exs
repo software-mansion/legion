@@ -13,6 +13,7 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
 
   require Record
 
+  alias Legion.OpenTelemetry.Adapter.Braintrust
   alias Legion.Test.Support.{MathAgent, ReqLLMTelemetry}
 
   Record.defrecordp(
@@ -20,40 +21,79 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
     Record.extract(:span, from_lib: "opentelemetry/include/otel_span.hrl")
   )
 
-  setup do
-    :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
-    :ok = Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Braintrust)
-    on_exit(fn -> Legion.OpenTelemetry.detach() end)
+  describe "spans" do
+    setup do
+      :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
+      :ok = Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Braintrust)
+      on_exit(fn -> Legion.OpenTelemetry.detach() end)
 
-    {:ok, script} =
-      Agent.start_link(fn ->
-        [
-          %{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""},
-          %{"action" => "return", "code" => "", "result" => "done"}
-        ]
+      {:ok, script} =
+        Agent.start_link(fn ->
+          [
+            %{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""},
+            %{"action" => "return", "code" => "", "result" => "done"}
+          ]
+        end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+        ReqLLMTelemetry.emit_request("openai:gpt-4o-mini", opts)
+        object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
+        {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
       end)
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
-      ReqLLMTelemetry.emit_request("openai:gpt-4o-mini", opts)
-      object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
-      {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
-    end)
+      {:ok, pid} = Legion.start_link(MathAgent)
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+      %{agent_id: Legion.get_agent_id(pid)}
+    end
 
-    {:ok, pid} = Legion.start_link(MathAgent)
-    assert {:ok, "done"} = Legion.call(pid, "hi")
-    %{agent_id: Legion.get_agent_id(pid)}
+    test "every span carries the conversation's session id in braintrust.metadata", %{
+      agent_id: agent_id
+    } do
+      for name <- [
+            "invoke_agent Legion.Test.Support.MathAgent",
+            "chat gpt-4o-mini",
+            "execute_tool sandbox"
+          ] do
+        assert_receive {:span, span(name: ^name, attributes: {:attributes, _, _, _, attributes})}
+        assert Jason.decode!(attributes[:"braintrust.metadata"]) == %{"session_id" => agent_id}
+      end
+    end
   end
 
-  test "every span carries the conversation's session id in braintrust.metadata", %{
-    agent_id: agent_id
-  } do
-    for name <- [
-          "invoke_agent Legion.Test.Support.MathAgent",
-          "chat gpt-4o-mini",
-          "execute_tool sandbox"
-        ] do
-      assert_receive {:span, span(name: ^name, attributes: {:attributes, _, _, _, attributes})}
-      assert Jason.decode!(attributes[:"braintrust.metadata"]) == %{"session_id" => agent_id}
+  describe "exporter_config/1" do
+    test "sends to the US data plane by default" do
+      assert Braintrust.exporter_config(api_key: "key", project: "my_app") == [
+               opentelemetry: [traces_exporter: :otlp],
+               opentelemetry_exporter: [
+                 otlp_protocol: :http_protobuf,
+                 otlp_endpoint: "https://api.braintrust.dev/otel",
+                 otlp_headers: [
+                   {"authorization", "Bearer key"},
+                   {"x-bt-parent", "project_name:my_app"}
+                 ]
+               ]
+             ]
+    end
+
+    test "region: :eu uses the EU data plane" do
+      config = Braintrust.exporter_config(api_key: "key", project: "my_app", region: :eu)
+
+      assert config[:opentelemetry_exporter][:otlp_endpoint] ==
+               "https://api-eu.braintrust.dev/otel"
+    end
+
+    test "requires an API key and a project, and a known region" do
+      assert_raise NimbleOptions.ValidationError, fn ->
+        Braintrust.exporter_config(project: "p")
+      end
+
+      assert_raise NimbleOptions.ValidationError, fn ->
+        Braintrust.exporter_config(api_key: "k")
+      end
+
+      assert_raise NimbleOptions.ValidationError, fn ->
+        Braintrust.exporter_config(api_key: "k", project: "p", region: :apac)
+      end
     end
   end
 end

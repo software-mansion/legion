@@ -16,9 +16,14 @@ defmodule Legion.OpenTelemetry.Adapter do
 
   Metrics are optional: `record_histogram/2` takes a histogram record
   (`:name`, `:value`, `:unit`, `:description`, `:boundaries`, `:attributes`),
-  and `record_counter/2` adds `:value` to a counter whose `:kind` is
-  `:counter` or `:updown_counter`. An adapter without `record_counter/2` gets
-  histograms only.
+  and `record_counter/2` adds `:value` to a counter (the same fields, with
+  `kind: :counter` and no `:boundaries`). An adapter without
+  `record_counter/2` gets histograms only.
+
+  A vendor adapter can also implement `exporter_config/1`, which turns the
+  vendor's settings into the `:opentelemetry` and `:opentelemetry_exporter`
+  application config that ships spans to it; `Legion.OpenTelemetry.configure/2`
+  applies it from `config/runtime.exs`.
 
   ## Example - tag every span with the deployment environment
 
@@ -77,9 +82,16 @@ defmodule Legion.OpenTelemetry.Adapter do
             ) :: term()
   @callback end_span_at(span :: term(), end_time :: integer(), config :: keyword()) :: :ok
 
+  @doc """
+  Application config, as `{app, keyword}` pairs, that exports spans to the
+  adapter's vendor, built from the vendor settings in `opts`.
+  """
+  @callback exporter_config(opts :: keyword()) :: [{atom(), keyword()}]
+
   @optional_callbacks metrics_available?: 0,
                       record_histogram: 2,
                       record_counter: 2,
                       start_child_span: 5,
-                      end_span_at: 3
+                      end_span_at: 3,
+                      exporter_config: 1
 end

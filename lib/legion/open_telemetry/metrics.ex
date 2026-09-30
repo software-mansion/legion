@@ -4,7 +4,7 @@ defmodule Legion.OpenTelemetry.Metrics do
   # Metric records for Legion's agent and tool activity, handed to the
   # adapter's `record_histogram/2` and `record_counter/2`. Histogram records
   # have the shape ReqLLM's bridge uses for its client metrics; counter records
-  # add `kind: :counter | :updown_counter`. Bucket boundaries follow the GenAI
+  # add `kind: :counter`. Bucket boundaries follow the GenAI
   # semantic conventions where they define one.
 
   @agent_duration [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6]
@@ -31,9 +31,9 @@ defmodule Legion.OpenTelemetry.Metrics do
     "gen_ai.invoke_agent.duration" =>
       {:histogram, "s", "GenAI agent invocation duration.", @agent_duration},
     "gen_ai.invoke_agent.inference_calls" =>
-      {:histogram, "{call}", "LLM calls made by one agent invocation.", @calls},
+      {:histogram, "{inference_call}", "LLM calls made by one agent invocation.", @calls},
     "gen_ai.invoke_agent.tool_calls" =>
-      {:histogram, "{call}", "Tool calls made by one agent invocation.", @calls},
+      {:histogram, "{tool_call}", "Tool calls made by one agent invocation.", @calls},
     "gen_ai.execute_tool.duration" =>
       {:histogram, "s", "GenAI tool execution duration.", @tool_duration},
     "legion.turn.iterations" =>
@@ -41,8 +41,7 @@ defmodule Legion.OpenTelemetry.Metrics do
     "legion.eval.errors" => {:counter, "{error}", "Failed sandbox evaluations."},
     "legion.llm.retries" => {:counter, "{retry}", "LLM requests retried within a turn."},
     "legion.turn.cancellations" => {:counter, "{turn}", "Agent turns cancelled."},
-    "legion.rate_limit.exceeded" => {:counter, "{turn}", "Turns denied by a rate limiter."},
-    "legion.agents.active" => {:updown_counter, "{agent}", "Running agent processes."}
+    "legion.rate_limit.exceeded" => {:counter, "{turn}", "Turns denied by a rate limiter."}
   }
 
   @doc "Builds the record for metric `name`."

@@ -2,9 +2,12 @@ defmodule Legion.OpenTelemetryTest do
   use ExUnit.Case, async: false
   use Mimic
 
+  import ExUnit.CaptureIO
+
   setup :set_mimic_global
 
   alias Legion.OpenTelemetry
+  alias Legion.OpenTelemetry.Adapter.{Braintrust, Datadog, OTel}
   alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
 
   @model "openai:gpt-4o-mini"
@@ -131,6 +134,23 @@ defmodule Legion.OpenTelemetryTest do
       assert opts[:telemetry][:conversation_id] == agent_id
     end
 
+    test "a :req_llm telemetry config that is neither a list nor a map still tags the conversation" do
+      Application.put_env(:req_llm, :telemetry, false)
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+        send(test_pid, {:llm_opts, opts})
+        {:ok, llm_response("done")}
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      agent_id = Legion.get_agent_id(pid)
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+
+      assert_receive {:llm_opts, opts}
+      assert opts[:telemetry] == [conversation_id: agent_id]
+    end
+
     test "content: :attributes records chat content as one JSON array string per attribute" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       stub_llm("done")
@@ -211,6 +231,92 @@ defmodule Legion.OpenTelemetryTest do
     test "rejects unknown options" do
       assert_raise NimbleOptions.ValidationError, fn ->
         OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_span: true)
+      end
+    end
+  end
+
+  describe "attach/1 with config :legion, :open_telemetry" do
+    setup do
+      app_config = Application.get_env(:legion, :open_telemetry)
+
+      on_exit(fn ->
+        if app_config,
+          do: Application.put_env(:legion, :open_telemetry, app_config),
+          else: Application.delete_env(:legion, :open_telemetry)
+      end)
+    end
+
+    test "takes its options from the app config" do
+      Application.put_env(:legion, :open_telemetry, adapter: Braintrust, iteration_spans: true)
+
+      :ok = OpenTelemetry.attach()
+
+      assert OpenTelemetry.config()[:adapter] == Braintrust
+      assert OpenTelemetry.config()[:iteration_spans] == true
+    end
+
+    test "options given to attach/1 win over the app config" do
+      Application.put_env(:legion, :open_telemetry, adapter: Braintrust)
+
+      :ok = OpenTelemetry.attach(adapter: OTel)
+
+      assert OpenTelemetry.config()[:adapter] == OTel
+    end
+
+    test "an app config that is not a keyword list is a clear error" do
+      Application.put_env(:legion, :open_telemetry, %{adapter: Braintrust})
+
+      assert_raise ArgumentError, ~r/must be a keyword list/, fn -> OpenTelemetry.attach() end
+    end
+  end
+
+  describe "configure/2" do
+    # Evaluates `body` as a config/runtime.exs file, the way Mix and releases
+    # do; the result is returned, not applied to the app env.
+    defp runtime_config(body), do: Config.Reader.eval!("runtime.exs", "import Config\n" <> body)
+
+    test "writes the adapter's exporter config and selects the adapter for attach/1" do
+      config =
+        runtime_config("""
+        Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog,
+          api_key: "key", site: "datadoghq.eu", ml_app: "my_app")
+        """)
+
+      assert config[:legion][:open_telemetry] == [adapter: Datadog]
+
+      assert config[:opentelemetry] == [
+               traces_exporter: :otlp,
+               resource: [service: [name: "my_app"]]
+             ]
+
+      assert config[:opentelemetry_exporter][:otlp_endpoint] == "https://otlp.datadoghq.eu"
+    end
+
+    test "warns when the same config already set a trace exporter" do
+      stderr =
+        capture_io(:stderr, fn ->
+          runtime_config("""
+          config :opentelemetry, traces_exporter: {:otel_exporter_stdout, []}
+          Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
+            api_key: "key", project: "my_app")
+          """)
+        end)
+
+      assert stderr =~ "traces_exporter"
+      assert stderr =~ "Collector"
+    end
+
+    test "rejects invalid vendor options" do
+      assert_raise NimbleOptions.ValidationError, ~r/required :api_key option not found/, fn ->
+        runtime_config("""
+        Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog, ml_app: "my_app")
+        """)
+      end
+    end
+
+    test "raises for an adapter without exporter config" do
+      assert_raise ArgumentError, ~r/has no exporter_config\/1/, fn ->
+        runtime_config("Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.OTel, [])")
       end
     end
   end

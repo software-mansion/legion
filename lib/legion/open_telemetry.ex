@@ -17,14 +17,16 @@ defmodule Legion.OpenTelemetry do
   tool code nests under the `execute_tool` span that started it, and the whole
   tree nests under the host's own request or job span.
 
-  Retries, eval guard denials and rate-limit denials are recorded as span
-  events (`legion.retry`, `legion.eval_guard.denied`,
-  `legion.rate_limit.exceeded`); a cancelled turn sets `legion.status`,
-  `legion.cancel.reason` and `error.type`.
+  Retries and eval guard denials are recorded as span events (`legion.retry`,
+  `legion.eval_guard.denied`); a cancelled turn sets `legion.status`,
+  `legion.cancel.reason` and `error.type`. A rate-limit denial comes before
+  the turn starts, so it has no span and only counts in the
+  `legion.rate_limit.exceeded` metric.
 
   Exporting is the host's job: add `opentelemetry` and `opentelemetry_exporter`
-  and configure the OTLP endpoint (see the Observability guide). Legion only
-  depends on `opentelemetry_api`, optionally; without it `attach/1` returns
+  and configure the OTLP endpoint, or let `configure/2` do it for Datadog or
+  Braintrust (see the Observability guide). Legion only depends on
+  `opentelemetry_api`, optionally; without it `attach/1` returns
   `{:error, :opentelemetry_unavailable}`.
 
   ## Options
@@ -39,10 +41,19 @@ defmodule Legion.OpenTelemetry do
       Legion's own spans then record the user message
       (`gen_ai.input.messages`), the turn's result (`gen_ai.output.messages`)
       and the evaluated code and its result (`gen_ai.tool.call.arguments`,
-      `gen_ai.tool.call.result`).
-    * `:max_attribute_bytes` - longest content attribute Legion records, in
-      bytes; longer values are cut on a UTF-8 boundary and end in
-      `…[truncated]`. Defaults to `20_000`.
+      `gen_ai.tool.call.result`), a failed span's status carries the error's
+      message, and `legion.eval_guard.denied` the guard's reason. With
+      `:none` a failed span's status is just its `error.type`, since error
+      messages can quote tool data.
+    * `:max_attribute_bytes` - longest content attribute on Legion's own
+      spans, in bytes; `chat` span content is sent whole. Longer values are
+      cut on a UTF-8 boundary and end in `…[truncated]`, and invalid UTF-8 is
+      replaced. Results JSON cannot encode are inspected with at most 1,000
+      items and each string cut to a quarter of the cap, so they may be
+      shortened with `...` before reaching it. Defaults to `20_000`. The hard
+      cap on every attribute is the SDK's
+      `attribute_value_length_limit` (`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT`),
+      which cuts values mid-string, JSON included.
     * `:metrics` - `false` turns off metrics, both Legion's and ReqLLM's.
       Defaults to `true`. Metrics also need the adapter to support them; see
       `Legion.OpenTelemetry.Adapter.OTel`.
@@ -118,17 +129,87 @@ defmodule Legion.OpenTelemetry do
   def req_llm_handler_id, do: @req_llm_handler_id
 
   @doc """
-  Attaches the OpenTelemetry integration. See the module docs for options.
+  Configures the OpenTelemetry SDK to export traces to `adapter`'s vendor.
+  Call it from `config/runtime.exs`:
 
-  Safe to call more than once: a second call replaces the earlier attachment
-  with the new options, so an application restart or a code reload never
-  fails on it. Returns `{:error, :opentelemetry_unavailable}` when the adapter
+      # config/runtime.exs
+      if config_env() == :prod do
+        Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog,
+          api_key: System.fetch_env!("DD_API_KEY"),
+          site: "datadoghq.eu",
+          ml_app: "my_app"
+        )
+      end
+
+  It applies the config `adapter`'s `c:Legion.OpenTelemetry.Adapter.exporter_config/1`
+  builds from `opts` and sets `config :legion, :open_telemetry, adapter: adapter`,
+  so `attach/1` uses the same adapter.
+
+  Raises if `adapter` has no exporter config, or when the `opentelemetry` or
+  `opentelemetry_exporter` dependency is missing. Warns when the same config
+  evaluation already set `config :opentelemetry, traces_exporter:`, since
+  the SDK has one trace exporter and this call replaces it. Call it once: a
+  second call merges both vendors' config. The standard OpenTelemetry
+  environment variables (`OTEL_EXPORTER_OTLP_*`, `OTEL_TRACES_EXPORTER`,
+  `OTEL_SERVICE_NAME`) take precedence over what it writes.
+  """
+  @spec configure(module(), keyword()) :: :ok
+  def configure(adapter, opts \\ []) when is_atom(adapter) and is_list(opts) do
+    if not (Code.ensure_loaded?(adapter) and function_exported?(adapter, :exporter_config, 1)) do
+      raise ArgumentError,
+            "#{inspect(adapter)} has no exporter_config/1, so Legion cannot configure an " <>
+              "exporter for it. Configure :opentelemetry and :opentelemetry_exporter yourself " <>
+              "and pass the adapter to Legion.OpenTelemetry.attach/1"
+    end
+
+    if not (Code.ensure_loaded?(:opentelemetry_app) and
+              Code.ensure_loaded?(:opentelemetry_exporter)) do
+      raise ArgumentError, """
+      Legion.OpenTelemetry.configure/2 needs the OpenTelemetry SDK and OTLP exporter. \
+      Add them to your mix.exs deps:
+
+          {:opentelemetry, "~> 1.5"},
+          {:opentelemetry_exporter, "~> 1.8"}
+      """
+    end
+
+    exporter = (Config.read_config(:opentelemetry) || [])[:traces_exporter]
+
+    if exporter do
+      IO.warn(
+        "config :opentelemetry, traces_exporter: #{inspect(exporter)} is replaced by " <>
+          "Legion.OpenTelemetry.configure(#{inspect(adapter)}, ...). The SDK has one trace " <>
+          "exporter; to export elsewhere too, send traces to an OpenTelemetry Collector"
+      )
+    end
+
+    for {app, config} <- adapter.exporter_config(opts), do: Config.config(app, config)
+    Config.config(:legion, :open_telemetry, adapter: adapter)
+    :ok
+  end
+
+  @doc """
+  Attaches the OpenTelemetry integration. See the module docs for options.
+  They default to `config :legion, :open_telemetry`, where `configure/2` puts
+  the adapter; options given here win.
+
+  Safe to call more than once: a second call that succeeds replaces the
+  earlier attachment with the new options, so an application restart or a
+  code reload never fails on it. Returns `{:error, :opentelemetry_unavailable}` when the adapter
   reports the OpenTelemetry API missing. Raises
-  `NimbleOptions.ValidationError` on unknown options.
+  `NimbleOptions.ValidationError` on unknown options, and `ArgumentError`
+  when `config :legion, :open_telemetry` is not a keyword list.
   """
   @spec attach(keyword()) :: :ok | {:error, term()}
   def attach(opts \\ []) do
-    config = NimbleOptions.validate!(opts, @schema)
+    defaults = Application.get_env(:legion, :open_telemetry, [])
+
+    if not Keyword.keyword?(defaults) do
+      raise ArgumentError,
+            "config :legion, :open_telemetry must be a keyword list, got: #{inspect(defaults)}"
+    end
+
+    config = defaults |> Keyword.merge(opts) |> NimbleOptions.validate!(@schema)
 
     if config[:adapter].available?() do
       detach()

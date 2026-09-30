@@ -35,8 +35,13 @@ invoke_agent MyApp.ResearchAgent
   A failed evaluation sets the span's error status and `error.type` to one of
   `runtime`, `timeout`, `crash`, `limit` or `guard_denied`.
 
-Every span carries `gen_ai.agent.name` and `gen_ai.conversation.id`, so
-Datadog, which drops spans without a `gen_ai.*` attribute, keeps them all.
+A failed span's status message is the error's own message only with
+`content: :attributes`, since error messages can quote tool data; otherwise
+it is just the `error.type`.
+
+Legion's spans and the agent's own `chat` spans carry `gen_ai.agent.name`
+and `gen_ai.conversation.id`, so Datadog, which drops spans without a
+`gen_ai.*` attribute, keeps them all.
 Every span also carries `session.id`: the id of the agent the conversation is
 with. A sub-agent's spans carry the session of the turn that called it, so one
 trace never mixes sessions, while `gen_ai.conversation.id` stays each agent's
@@ -48,7 +53,7 @@ Things that go wrong within a turn are span events:
   request, an unparsable response or an action the agent may not take
   (`legion.retry.reason`: `request_failed`, `invalid_object`, `invalid_action`).
 - `legion.eval_guard.denied` on `execute_tool` when an eval guard refuses the
-  code.
+  code, with the guard's reason under `content: :attributes`.
 - A cancelled turn (for example `reached_max_iterations`) sets
   `legion.status` to `cancelled`, `legion.cancel.reason`, `error.type` and the
   error status.
@@ -84,12 +89,16 @@ def start(_type, _args) do
 end
 ```
 
+Call it from `Application.start/2`, not from a Task or a remote console:
+ReqLLM keeps its in-flight `chat` spans in a table owned by the process that
+first attaches, and the table goes away when that process exits.
+
 Options, all optional:
 
 ```elixir
 Legion.OpenTelemetry.attach(
   content: :attributes,          # record messages on spans; default :none
-  max_attribute_bytes: 20_000,   # cap for each content attribute Legion records
+  max_attribute_bytes: 20_000,   # cap for content on Legion's own spans
   metrics: true,                 # false turns metrics off
   iteration_spans: false,        # true adds an `iteration N` span per iteration
   conversation_traces: false,    # true puts an agent's turns in one trace
@@ -110,8 +119,16 @@ result on `execute_tool` (`gen_ai.tool.call.arguments`,
 `gen_ai.tool.call.result`), each cut to `max_attribute_bytes` on a UTF-8
 boundary.
 
-`attach/1` is safe to call again: a second call replaces the first, so it can
-live in `Application.start/2` without guarding against restarts.
+`max_attribute_bytes` caps Legion's own spans only; `chat` span content is
+sent whole, so a long conversation makes large `chat` spans. The hard cap for
+every attribute is the SDK's span limit,
+`config :opentelemetry, attribute_value_length_limit: 20_000` (or
+`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT`), which cuts values mid-string, so a
+cut message attribute is no longer valid JSON.
+
+`attach/1` is safe to call again: a second call that succeeds replaces the
+first, so it can live in `Application.start/2` without guarding against
+restarts.
 
 `iteration_spans: true` inserts an `iteration N` span between `invoke_agent`
 and the `chat` and `execute_tool` spans of that iteration. Braintrust shows
@@ -163,45 +180,58 @@ With `metrics: true` (the default) Legion records:
 | `legion.llm.retries` | counter | agent name, `legion.retry.reason` |
 | `legion.turn.cancellations` | counter | agent name, `legion.cancel.reason` |
 | `legion.rate_limit.exceeded` | counter | agent name, `legion.rate_limit.identity` (the identity's field names, not its values) |
-| `legion.agents.active` | up-down counter | agent name |
+
+The `gen_ai.*` metric names and units follow the GenAI semantic conventions,
+which are still in Development status, so they may change with them.
 
 ReqLLM's `gen_ai.client.operation.duration` and `gen_ai.client.token.usage`
 go through the same adapter. Erlang's OpenTelemetry metrics API is still
 experimental and ships separately, so metrics need
 `{:opentelemetry_api_experimental, "~> 0.6"}` and
 `{:opentelemetry_experimental, "~> 0.6"}` in the host with a metric exporter
-configured; without them Legion records spans only. `legion.agents.active`
-counts on `:started` and `:stopped` events, so an agent killed without its
-`terminate/2` running stays counted. Braintrust ignores OTLP metrics;
-Datadog dashboards can use them.
+configured; without them Legion records spans only. Braintrust ignores OTLP
+metrics; Datadog dashboards can use them.
 
 ## Vendors
 
-All of them take the stock OTLP exporter; nothing vendor-specific lives in
-Legion.
-
-Braintrust (`x-bt-parent` selects the project; EU organizations use
-`api-eu.braintrust.dev`):
-
-```elixir
-config :opentelemetry, traces_exporter: :otlp
-
-config :opentelemetry_exporter,
-  otlp_protocol: :http_protobuf,
-  otlp_endpoint: "https://api.braintrust.dev/otel",
-  otlp_headers: [
-    {"authorization", "Bearer #{System.fetch_env!("BRAINTRUST_API_KEY")}"},
-    {"x-bt-parent", "project_name:my-app"}
-  ]
-```
-
-and attach with the Braintrust adapter:
+All of them take the stock OTLP exporter. For Braintrust and Datadog,
+`Legion.OpenTelemetry.configure/2` writes the exporter config from
+`config/runtime.exs`, and `attach/1` picks up the matching adapter. Both need
+the SDK and exporter:
 
 ```elixir
-Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Braintrust, content: :attributes)
+# mix.exs
+{:opentelemetry, "~> 1.5"},
+{:opentelemetry_exporter, "~> 1.8"}
 ```
 
-It adds `session_id` to every span's metadata, so a conversation's turns can be
+The SDK has one trace exporter. If your app already exports traces somewhere
+else, `configure/2` would replace that exporter: send traces to an
+[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) and fan
+them out from there, or skip `configure/2` and configure the exporter
+yourself. Call `configure/2` once: a second call merges both vendors' config.
+The standard OpenTelemetry environment variables (`OTEL_EXPORTER_OTLP_*`,
+`OTEL_TRACES_EXPORTER`, `OTEL_SERVICE_NAME`) take precedence over what
+`configure/2` writes, so unset them when you switch to it.
+
+### Braintrust
+
+```elixir
+# config/runtime.exs
+if config_env() == :prod do
+  Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
+    api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
+    project: "my_app",
+    region: :us  # :eu for organizations on the EU data plane
+  )
+end
+
+# lib/my_app/application.ex
+:ok = Legion.OpenTelemetry.attach(content: :attributes)
+```
+
+`Legion.OpenTelemetry.Adapter.Braintrust` adds `session_id` to every span's
+metadata, so a conversation's turns can be
 seen together. In the project's Logs, open the row type selector (the
 **Traces** dropdown next to the search box), choose **Group by** and pick
 `session_id` (type it and choose **Custom** if it is not listed). Each row is
@@ -216,33 +246,30 @@ string before it reaches the adapter, so input and output show up on every
 span without extra configuration. With `req_llm: [adapter: ...]` your adapter
 gets ReqLLM's lists unchanged.
 
-Datadog LLM Observability (`service.name` becomes the ML app):
+### Datadog LLM Observability
 
 ```elixir
-config :opentelemetry_exporter,
-  otlp_protocol: :http_protobuf,
-  otlp_endpoint: System.fetch_env!("DD_OTLP_TRACES_ENDPOINT"),
-  otlp_headers: [
-    {"dd-api-key", System.fetch_env!("DD_API_KEY")},
-    {"dd-otlp-source", "llmobs"}
-  ]
+# config/runtime.exs
+if config_env() == :prod do
+  Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog,
+    api_key: System.fetch_env!("DD_API_KEY"),
+    site: "datadoghq.com",  # your Datadog site, e.g. "datadoghq.eu"
+    ml_app: "my_app"
+  )
+end
+
+# lib/my_app/application.ex
+:ok = Legion.OpenTelemetry.attach(content: :attributes)
 ```
 
-and attach with the Datadog adapter:
+Spans go straight to Datadog's OTLP intake, with no Datadog Agent in between,
+and are listed under the `ml_app`. Datadog shows each span's input and output
+from its `gen_ai.*` message attributes and `legion.*` attributes as tags.
+Turns of one conversation share `gen_ai.conversation.id`, which Datadog shows
+as one session, so `conversation_traces` is not needed there. Traces take a
+few minutes to appear.
 
-```elixir
-Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Datadog, content: :attributes)
-```
-
-Datadog keeps only the attributes it maps plus other `gen_ai.*` ones, and
-ignores span events. `Legion.OpenTelemetry.Adapter.Datadog` moves `legion.*`
-attributes and the `legion.retry` / `legion.eval_guard.denied` events into
-the span's metadata (`_dd.ml_obs.metadata`), and copies the text of the turn's
-messages into `input.value` / `output.value`, which is where Datadog reads
-agent-span input and output. Turns of one conversation share
-`gen_ai.conversation.id`, which Datadog shows as one session, so
-`conversation_traces` is not needed there. Traces take a few minutes to
-appear.
+### Others
 
 Langfuse: point the exporter at `/api/public/otel` with Basic auth and pass
 `req_llm: [langfuse: true]` for cost and time-to-first-token attributes.

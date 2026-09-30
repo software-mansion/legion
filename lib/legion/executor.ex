@@ -258,7 +258,9 @@ defmodule Legion.Executor do
     case Vault.get(:agent_id) do
       nil -> env
       agent_id when is_map(env) -> Map.put(env, :conversation_id, agent_id)
-      agent_id -> Keyword.put(env, :conversation_id, agent_id)
+      agent_id when is_list(env) -> Keyword.put(env, :conversation_id, agent_id)
+      # ReqLLM ignores any other value, so there is nothing to keep.
+      agent_id -> [conversation_id: agent_id]
     end
   end
 

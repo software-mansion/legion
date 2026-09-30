@@ -98,10 +98,8 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
       {:opentelemetry_experimental, :get_meter, 1},
       {:otel_meter, :create_histogram, 3},
       {:otel_meter, :create_counter, 3},
-      {:otel_meter, :create_updown_counter, 3},
       {:otel_histogram, :record, 5},
-      {:otel_counter, :add, 5},
-      {:otel_updown_counter, :add, 5}
+      {:otel_counter, :add, 5}
     ]
 
     @impl true
@@ -121,10 +119,6 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
       measure(:create_counter, :otel_counter, :add, record)
     end
 
-    def record_counter(%{kind: :updown_counter} = record, _config) do
-      measure(:create_updown_counter, :otel_updown_counter, :add, record)
-    end
-
     # Instrument names and units are atoms in the OpenTelemetry API. Records
     # carry strings, so they are looked up here rather than converted.
     @instrument_names Map.new(
@@ -141,8 +135,7 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
                           :"legion.eval.errors",
                           :"legion.llm.retries",
                           :"legion.turn.cancellations",
-                          :"legion.rate_limit.exceeded",
-                          :"legion.agents.active"
+                          :"legion.rate_limit.exceeded"
                         ],
                         &{Atom.to_string(&1), &1}
                       )
@@ -151,25 +144,31 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
              [
                :s,
                :"{token}",
-               :"{call}",
+               :"{inference_call}",
+               :"{tool_call}",
                :"{iteration}",
                :"{error}",
                :"{retry}",
-               :"{turn}",
-               :"{agent}"
+               :"{turn}"
              ],
              &{Atom.to_string(&1), &1}
            )
 
+    # Nothing is recorded while no metrics SDK runs: the API would hand out a
+    # no-op meter, cache it for the scope and keep returning it after the SDK
+    # starts.
     defp measure(create, module, function, record) do
-      case instrument_name(record.name) do
-        nil ->
+      case {instrument_name(record.name), Process.whereis(:otel_meter_provider_global)} do
+        {nil, _provider} ->
           :ok
 
-        name ->
+        {_name, nil} ->
+          :ok
+
+        {name, provider} ->
           # credo:disable-for-next-line Credo.Check.Refactor.Apply
           meter = apply(:opentelemetry_experimental, :get_meter, [scope()])
-          ensure_instrument(meter, create, name, record)
+          ensure_instrument(meter, provider, create, name, record)
           ctx = OpenTelemetry.Ctx.get_current()
           apply(module, function, [ctx, meter, name, record.value, record.attributes])
           :ok
@@ -179,9 +178,10 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
     defp instrument_name(name) when is_atom(name), do: name
     defp instrument_name(name), do: Map.get(@instrument_names, name)
 
-    # Instruments are created once per name; the SDK records by meter and name.
-    defp ensure_instrument(meter, create, name, record) do
-      key = {__MODULE__, :instrument, name}
+    # Instruments are created once per name and meter provider process; the
+    # SDK records by meter and name, and a restarted provider starts empty.
+    defp ensure_instrument(meter, provider, create, name, record) do
+      key = {__MODULE__, :instrument, name, provider}
 
       if :persistent_term.get(key, false) == false do
         apply(:otel_meter, create, [meter, name, instrument_opts(record)])

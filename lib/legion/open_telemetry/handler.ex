@@ -23,7 +23,6 @@ defmodule Legion.OpenTelemetry.Handler do
   @handler_id "legion-otel"
   @stack_key {__MODULE__, :stack}
   @conversation_key {__MODULE__, :conversation}
-  @session_key {Legion.OpenTelemetry, :session}
 
   @events [
     [:legion, :agent, :message, :start],
@@ -39,9 +38,7 @@ defmodule Legion.OpenTelemetry.Handler do
     [:legion, :sandbox, :eval, :stop],
     [:legion, :sandbox, :eval, :exception],
     [:legion, :eval_guard, :denied],
-    [:legion, :rate_limit, :exceeded],
-    [:legion, :agent, :started],
-    [:legion, :agent, :stopped]
+    [:legion, :rate_limit, :exceeded]
   ]
 
   def attach(config) do
@@ -52,12 +49,13 @@ defmodule Legion.OpenTelemetry.Handler do
 
   @doc """
   Legion attributes for a `chat` span started in this process: the agent and
-  the iteration the LLM request belongs to. Empty outside an agent turn.
+  the iteration the LLM request belongs to. Outside the agent process, such as
+  in tool code, only the session the context carries; empty outside a turn.
   """
   def chat_attributes do
     case find(:agent) do
       nil ->
-        %{}
+        with_session(%{}, inherited_session())
 
       agent ->
         attributes = agent.agent |> Attributes.agent(agent.agent_id) |> with_session(agent)
@@ -117,13 +115,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
   defp handle([:legion, :agent, :message, :stop], measurements, meta, config) do
     with %{} = frame <- pop(:agent, config) do
-      adapter = config[:adapter]
-      attributes = Attributes.invoke_agent_stop(meta, frame.model, config)
-      error_type = attributes[:"error.type"]
-
-      adapter.set_attributes(frame.span, attributes, config)
-      if error_type, do: adapter.set_status(frame.span, :error, error_type, config)
-      finish(frame, config)
+      error_type = closing(frame, config, fn -> end_agent(frame, meta, config) end)
 
       agent = %{"gen_ai.agent.name": Attributes.agent_name(frame.agent)}
 
@@ -148,8 +140,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
   defp handle([:legion, :agent, :message, :exception], measurements, meta, config) do
     with %{} = frame <- pop(:agent, config) do
-      error_type = fail(frame, meta, config)
-      finish(frame, config)
+      error_type = closing(frame, config, fn -> fail(frame, meta, config) end)
 
       [agent_duration(frame, measurements, error_type)]
       |> Enum.reject(&is_nil/1)
@@ -160,55 +151,23 @@ defmodule Legion.OpenTelemetry.Handler do
   # -- iterations --
 
   defp handle([:legion, :iteration, :start], _measurements, meta, config) do
-    number = meta.iteration
-
-    # The executor starts the next iteration from inside the previous one, so
-    # the enclosing iteration is over here: close its span so iteration spans
-    # come out as siblings. The same number again means the LLM is retried.
-    case stack() do
-      [%{kind: :iteration} = enclosing | rest] ->
-        if enclosing.number == number, do: record_retry(enclosing, number, config)
-        finish(enclosing, config)
-        put_stack([%{enclosing | span: nil, token: nil} | rest])
-
-      _ ->
-        :ok
-    end
-
-    span =
-      with true <- config[:iteration_spans],
-           %{} = agent <- find(:agent) do
-        attributes =
-          agent.agent |> Attributes.iteration(agent.agent_id, number) |> with_session(agent)
-
-        config[:adapter].start_span("iteration #{number}", attributes, config)
-      else
-        _ -> nil
-      end
-
-    push(%{
-      kind: :iteration,
-      number: number,
-      span: span,
-      token: attach_span(span),
-      llm: nil,
-      eval: nil
-    })
+    close_enclosing_iteration(meta.iteration, config)
+  after
+    # Even if closing the enclosing iteration fails, so the stack keeps in
+    # step with the executor.
+    push_iteration(meta.iteration, config)
   end
 
   defp handle([:legion, :iteration, :stop], _measurements, meta, config) do
     with %{} = frame <- pop(:iteration, config) do
-      if frame.span && meta[:action],
-        do: config[:adapter].set_attributes(frame.span, %{"legion.action": meta[:action]}, config)
-
-      finish(frame, config)
+      closing(frame, config, fn -> put_action(frame.span, meta[:action], config) end)
     end
   end
 
   defp handle([:legion, :iteration, :exception], _measurements, meta, config) do
-    with %{} = frame <- pop(:iteration, config) do
-      if frame.span, do: fail(frame, meta, config)
-      finish(frame, config)
+    # Without a span (`iteration_spans: false`) the frame holds no context either.
+    with %{span: span} = frame when not is_nil(span) <- pop(:iteration, config) do
+      closing(frame, config, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -227,7 +186,8 @@ defmodule Legion.OpenTelemetry.Handler do
         true -> {:error, "request_failed"}
       end
 
-    update(:iteration, &%{&1 | llm: outcome})
+    action = if outcome == :ok, do: get_in(meta, [:object, "action"])
+    update(:iteration, &%{&1 | llm: outcome, action: action})
   end
 
   defp handle([:legion, :llm, :request, :exception], _measurements, _meta, _config) do
@@ -262,23 +222,13 @@ defmodule Legion.OpenTelemetry.Handler do
 
   defp handle([:legion, :sandbox, :eval, :stop], measurements, meta, config) do
     with %{} = frame <- pop(:eval, config) do
-      adapter = config[:adapter]
-      attributes = Attributes.execute_tool_stop(meta, config)
-
       error_kind =
-        if meta[:success] do
-          nil
-        else
-          message = Attributes.error_message(meta[:error], config[:max_attribute_bytes])
-          adapter.set_status(frame.span, :error, message, config)
-          Attributes.eval_error_kind(meta[:error], frame.guard_denied?)
-        end
+        if meta[:success],
+          do: nil,
+          else: Attributes.eval_error_kind(meta[:error], frame.guard_denied?)
 
-      attributes =
-        if error_kind, do: Map.put(attributes, :"error.type", error_kind), else: attributes
+      closing(frame, config, fn -> end_eval(frame, meta, error_kind, config) end)
 
-      adapter.set_attributes(frame.span, attributes, config)
-      finish(frame, config)
       update(:iteration, &%{&1 | eval: if(error_kind, do: :error, else: :ok)})
       record_eval(frame, measurements, error_kind, error_kind, config)
     end
@@ -286,8 +236,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
   defp handle([:legion, :sandbox, :eval, :exception], measurements, meta, config) do
     with %{} = frame <- pop(:eval, config) do
-      error_type = fail(frame, meta, config)
-      finish(frame, config)
+      error_type = closing(frame, config, fn -> fail(frame, meta, config) end)
       update(:iteration, &%{&1 | eval: :error})
       record_eval(frame, measurements, error_type, "crash", config)
     end
@@ -298,12 +247,7 @@ defmodule Legion.OpenTelemetry.Handler do
   defp handle([:legion, :eval_guard, :denied], _measurements, meta, config) do
     case stack() do
       [%{kind: :eval} = frame | rest] ->
-        attributes = %{
-          "legion.eval_guard.guard": inspect(meta[:guard]),
-          "legion.eval_guard.reason":
-            Attributes.error_message(meta[:reason], config[:max_attribute_bytes])
-        }
-
+        attributes = Attributes.eval_guard_denied(meta, config)
         config[:adapter].add_event(frame.span, "legion.eval_guard.denied", attributes, config)
         put_stack([%{frame | guard_denied?: true} | rest])
 
@@ -312,36 +256,15 @@ defmodule Legion.OpenTelemetry.Handler do
     end
   end
 
+  # The limit is checked before the turn starts, so there is no span to put an
+  # event on; the denial is only counted.
   defp handle([:legion, :rate_limit, :exceeded], _measurements, meta, config) do
-    identity = identity_keys(meta[:identity])
-
-    with %{} = agent <- find(:agent) do
-      attributes = %{
-        "legion.rate_limit.identity": identity,
-        "legion.rate_limit.violations": Enum.map(meta[:violations] || [], &to_string/1)
-      }
-
-      config[:adapter].add_event(agent.span, "legion.rate_limit.exceeded", attributes, config)
-    end
-
     attributes = %{
       "gen_ai.agent.name": Attributes.agent_name(meta.agent),
-      "legion.rate_limit.identity": identity
+      "legion.rate_limit.identity": identity_keys(meta[:identity])
     }
 
     Metrics.record([Metrics.build("legion.rate_limit.exceeded", 1, attributes)], config)
-  end
-
-  # -- agent processes --
-
-  defp handle([:legion, :agent, :started], _measurements, meta, config) do
-    attributes = %{"gen_ai.agent.name": Attributes.agent_name(meta.agent)}
-    Metrics.record([Metrics.build("legion.agents.active", 1, attributes)], config)
-  end
-
-  defp handle([:legion, :agent, :stopped], _measurements, meta, config) do
-    attributes = %{"gen_ai.agent.name": Attributes.agent_name(meta.agent)}
-    Metrics.record([Metrics.build("legion.agents.active", -1, attributes)], config)
   end
 
   # -- helpers --
@@ -454,21 +377,111 @@ defmodule Legion.OpenTelemetry.Handler do
     end
   end
 
+  # The executor starts the next iteration from inside the previous one, so
+  # the enclosing iteration is over here: close its span so iteration spans
+  # come out as siblings. The same number again means the LLM is retried.
+  defp close_enclosing_iteration(number, config) do
+    case stack() do
+      [%{kind: :iteration} = enclosing | rest] ->
+        put_stack([%{enclosing | span: nil, token: nil} | rest])
+
+        closing(enclosing, config, fn -> end_iteration(enclosing, number, config) end)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp end_iteration(enclosing, number, config) do
+    if enclosing.number == number, do: record_retry(enclosing, number, config)
+
+    # Its stop event, which carries the action, only comes after this
+    # iteration, so the action is taken from its LLM reply. An iteration that
+    # evaluated code had a valid one.
+    if enclosing.eval, do: put_action(enclosing.span, enclosing.action, config)
+  end
+
+  defp push_iteration(number, config) do
+    span =
+      with true <- config[:iteration_spans],
+           %{} = agent <- find(:agent) do
+        attributes =
+          agent.agent |> Attributes.iteration(agent.agent_id, number) |> with_session(agent)
+
+        config[:adapter].start_span("iteration #{number}", attributes, config)
+      else
+        _ -> nil
+      end
+
+    push(%{
+      kind: :iteration,
+      number: number,
+      span: span,
+      token: attach_span(span),
+      llm: nil,
+      action: nil,
+      eval: nil
+    })
+  end
+
+  # Records a finished turn on its span, returning `error.type`.
+  defp end_agent(frame, meta, config) do
+    adapter = config[:adapter]
+    attributes = Attributes.invoke_agent_stop(meta, frame.model, config)
+    error_type = attributes[:"error.type"]
+
+    adapter.set_attributes(frame.span, attributes, config)
+    if error_type, do: adapter.set_status(frame.span, :error, error_type, config)
+    error_type
+  end
+
+  defp end_eval(frame, meta, error_kind, config) do
+    adapter = config[:adapter]
+
+    if error_kind do
+      message = Attributes.status_message(meta[:error], error_kind, config)
+      adapter.set_status(frame.span, :error, message, config)
+    end
+
+    attributes = Attributes.execute_tool_stop(meta, config)
+
+    attributes =
+      if error_kind, do: Map.put(attributes, :"error.type", error_kind), else: attributes
+
+    adapter.set_attributes(frame.span, attributes, config)
+  end
+
+  defp put_action(nil = _span, _action, _config), do: :ok
+  defp put_action(_span, nil = _action, _config), do: :ok
+
+  defp put_action(span, action, config),
+    do: config[:adapter].set_attributes(span, %{"legion.action": action}, config)
+
   defp cancel_attributes(agent, reason), do: Map.put(agent, :"legion.cancel.reason", reason)
 
   # Marks `frame`'s span failed from an `:exception` event, returning `error.type`.
   defp fail(frame, meta, config) do
     adapter = config[:adapter]
     error_type = Attributes.exception_type(meta[:kind], meta[:reason])
-    message = Attributes.error_message(meta[:reason], config[:max_attribute_bytes])
+    message = Attributes.status_message(meta[:reason], error_type, config)
 
     adapter.set_attributes(frame.span, %{"error.type": error_type}, config)
     adapter.set_status(frame.span, :error, message, config)
     error_type
   end
 
+  # Runs `fun`, which records `frame`'s outcome, then ends the span and
+  # restores the context even if `fun` raises: a span left open is never
+  # exported, and its context would stay current in the agent process.
+  defp closing(frame, config, fun) do
+    fun.()
+  after
+    finish(frame, config)
+  end
+
   defp finish(frame, config) do
     if frame.span, do: config[:adapter].end_span(frame.span, config)
+  after
     detach_span(frame.token)
   end
 
@@ -506,8 +519,8 @@ defmodule Legion.OpenTelemetry.Handler do
 
     case rest do
       [frame | rest] ->
-        Enum.each(above, &finish(&1, config))
         put_stack(rest)
+        Enum.each(above, &finish(&1, config))
         frame
 
       [] ->
@@ -518,6 +531,8 @@ defmodule Legion.OpenTelemetry.Handler do
   # -- current span --
 
   if Code.ensure_loaded?(OpenTelemetry.Ctx) do
+    @session_key {Legion.OpenTelemetry, :session}
+
     # Only real span contexts become current; an adapter that hands back
     # something else (a test fake, a vendor handle) still gets its lifecycle
     # callbacks, but nothing nests under its spans.

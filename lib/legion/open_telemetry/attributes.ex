@@ -23,7 +23,10 @@ defmodule Legion.OpenTelemetry.Attributes do
   def conversation(meta) do
     meta.agent
     |> agent(meta[:agent_id])
-    |> Map.put(:"gen_ai.agent.id", meta[:agent_id])
+    |> Map.merge(%{
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.agent.id": meta[:agent_id]
+    })
     |> drop_nils()
   end
 
@@ -79,7 +82,7 @@ defmodule Legion.OpenTelemetry.Attributes do
 
   def execute_tool_stop(%{success: true} = meta, config) do
     put_content(%{"legion.eval.success": true}, config, :"gen_ai.tool.call.result", fn max ->
-      truncate(term_text(meta[:result]), max)
+      truncate(term_text(meta[:result], max), max)
     end)
   end
 
@@ -88,7 +91,7 @@ defmodule Legion.OpenTelemetry.Attributes do
   def iteration(agent, agent_id, iteration) do
     agent
     |> agent(agent_id)
-    |> Map.put(:"legion.iteration", iteration)
+    |> Map.merge(%{"gen_ai.operation.name": "invoke_workflow", "legion.iteration": iteration})
   end
 
   @doc """
@@ -101,13 +104,36 @@ defmodule Legion.OpenTelemetry.Attributes do
   def eval_error_kind("evaluation exceeded " <> _, _), do: "limit"
   def eval_error_kind(_error, _), do: "runtime"
 
-  @doc "The status message of a failed eval span."
-  def error_message(message, max) when is_binary(message), do: truncate(message, max)
+  @doc """
+  The status message of a failed span. Error messages can quote tool data, so
+  they are recorded only with `content: :attributes`; otherwise the status
+  names just the `error.type`.
+  """
+  def status_message(error, error_type, config) do
+    case config[:content] do
+      :attributes -> error_message(error, config[:max_attribute_bytes])
+      _none -> error_type
+    end
+  end
 
-  def error_message(error, max) when is_exception(error),
+  @doc "The `legion.eval_guard.denied` event; the guard's reason is content."
+  def eval_guard_denied(meta, config) do
+    put_content(
+      %{"legion.eval_guard.guard": inspect(meta[:guard])},
+      config,
+      :"legion.eval_guard.reason",
+      fn max ->
+        error_message(meta[:reason], max)
+      end
+    )
+  end
+
+  defp error_message(message, max) when is_binary(message), do: truncate(message, max)
+
+  defp error_message(error, max) when is_exception(error),
     do: truncate(Exception.message(error), max)
 
-  def error_message(error, max), do: truncate(inspect(error, limit: 50), max)
+  defp error_message(error, max), do: truncate(inspect(error, limit: 50), max)
 
   @doc "`error.type` for an exception event's `kind`/`reason`."
   def exception_type(_kind, %{__exception__: true} = exception), do: inspect(exception.__struct__)
@@ -147,13 +173,20 @@ defmodule Legion.OpenTelemetry.Attributes do
 
   @doc """
   Truncates `string` to at most `max` bytes on a UTF-8 boundary, marking the cut.
+  Invalid UTF-8, which tool code can return, is replaced, since OpenTelemetry
+  string attributes must be UTF-8.
   """
   def truncate(nil, _max), do: nil
-  def truncate(string, max) when byte_size(string) <= max, do: string
 
   def truncate(string, max) do
-    keep = max(max - byte_size(@truncated), 0)
-    utf8_prefix(string, keep) <> @truncated
+    # Only the bytes that can be kept are checked.
+    string = string |> binary_part(0, min(byte_size(string), max + 1)) |> String.replace_invalid()
+
+    cond do
+      byte_size(string) <= max -> string
+      max < byte_size(@truncated) -> utf8_prefix(string, max)
+      true -> utf8_prefix(string, max - byte_size(@truncated)) <> @truncated
+    end
   end
 
   defp utf8_prefix(string, bytes) do
@@ -170,14 +203,14 @@ defmodule Legion.OpenTelemetry.Attributes do
   end
 
   defp output_messages(result, max) do
-    parts = if result == nil, do: [], else: [text_part(term_text(result), max)]
+    parts = if result == nil, do: [], else: [text_part(term_text(result, max), max)]
     Jason.encode!([%{"role" => "assistant", "parts" => parts, "finish_reason" => "stop"}])
   end
 
   defp parts(content, max) when is_binary(content), do: [text_part(content, max)]
   defp parts(content, max) when is_list(content), do: Enum.map(content, &part(&1, max))
   defp parts(nil, _max), do: []
-  defp parts(content, max), do: [text_part(inspect(content), max)]
+  defp parts(content, max), do: [text_part(inspect_text(content, max), max)]
 
   defp part(%ContentPart{type: :text, text: text}, max), do: text_part(text, max)
 
@@ -185,21 +218,30 @@ defmodule Legion.OpenTelemetry.Attributes do
     drop_nils(%{"type" => Atom.to_string(type), "bytes" => bytes(part.data)})
   end
 
-  defp part(other, max), do: text_part(term_text(other), max)
+  defp part(other, max), do: text_part(term_text(other, max), max)
 
   defp text_part(text, max), do: %{"type" => "text", "content" => truncate(text || "", max)}
 
   defp bytes(data) when is_binary(data), do: byte_size(data)
   defp bytes(_data), do: nil
 
-  defp term_text(text) when is_binary(text), do: text
+  defp term_text(text, _max) when is_binary(text), do: text
 
-  defp term_text(term) do
+  defp term_text(term, max) do
     case Jason.encode(term) do
       {:ok, json} -> json
-      {:error, _} -> inspect(term, limit: :infinity, printable_limit: :infinity)
+      {:error, _} -> inspect_text(term, max)
     end
+  rescue
+    # `Jason.encode/1` raises for terms such as maps with tuple keys.
+    _ -> inspect_text(term, max)
   end
+
+  # The text is cut to `max` bytes anyway. The item budget, shared across the
+  # whole term, keeps ordinary results whole; with strings cut to a quarter of
+  # `max`, the work stays linear in `max` whatever the size of the term, where
+  # a full inspect could cost the agent process seconds.
+  defp inspect_text(term, max), do: inspect(term, limit: 1_000, printable_limit: div(max, 4))
 
   defp put_content(attributes, config, key, fun) do
     case config[:content] do

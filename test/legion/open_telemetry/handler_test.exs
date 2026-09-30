@@ -11,6 +11,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
   @moduletag capture_log: true
 
   alias Legion.OpenTelemetry
+  alias Legion.OpenTelemetry.{Attributes, Handler}
   alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
 
   @model "openai:gpt-4o-mini"
@@ -185,8 +186,8 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert_receive {:otel, :end_span, ^tool, _}
     end
 
-    test "a failed evaluation marks the span as an error" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+    test "a failed evaluation marks the span as an error, with its message when content is on" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       reply_with([eval("error('boom')"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -200,8 +201,8 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert attributes[:"error.type"] == "runtime"
     end
 
-    test "an eval guard denial becomes an event on the span" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+    test "an eval guard denial becomes an event on the span, with its reason when content is on" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       reply_with([eval("return 1"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi", eval_guard: DenyEverything)
@@ -213,6 +214,29 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert attributes[:"legion.eval_guard.reason"] == "the shop is closed"
 
       assert stop_attributes(tool)[:"error.type"] == "guard_denied"
+    end
+
+    test "without content, a failed evaluation's status names only the error type" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      reply_with([eval("error('boom')"), return("done")])
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      {tool, _, _} = span_named(@tool_span)
+      assert_receive {:otel, :set_status, ^tool, :error, "runtime", _}
+    end
+
+    test "without content, an eval guard denial records the guard but not its reason" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      reply_with([eval("return 1"), return("done")])
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi", eval_guard: DenyEverything)
+
+      {tool, _, _} = span_named(@tool_span)
+      assert_receive {:otel, :add_event, ^tool, "legion.eval_guard.denied", attributes, _}
+      assert attributes[:"legion.eval_guard.guard"] == inspect(DenyEverything)
+      refute Map.has_key?(attributes, :"legion.eval_guard.reason")
+      assert_receive {:otel, :set_status, ^tool, :error, "guard_denied", _}
     end
   end
 
@@ -271,6 +295,74 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert String.valid?(content)
       assert String.ends_with?(content, "…[truncated]")
     end
+
+    test "a result JSON cannot encode is recorded as inspected text, and the spans still end" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+
+      reply_with([
+        %{"action" => "eval_and_complete", "code" => "%{{1, 2} => 3}", "result" => ""}
+      ])
+
+      assert {:ok, %{{1, 2} => 3}} =
+               Legion.execute(MathAgent, "hi", sandbox: Legion.Sandbox.Elixir)
+
+      {agent, _, _} = span_named(@agent_span)
+      {tool, _, _} = span_named(@tool_span)
+
+      assert stop_attributes(tool)[:"gen_ai.tool.call.result"] == "%{{1, 2} => 3}"
+      assert_receive {:otel, :end_span, ^tool, _}
+      assert_receive {:otel, :end_span, ^agent, _}
+    end
+
+    test "a result that is not valid UTF-8 is recorded as valid UTF-8" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+
+      reply_with([
+        %{"action" => "eval_and_complete", "code" => "return string.char(255, 1)", "result" => ""}
+      ])
+
+      assert {:ok, <<255, 1>>} = Legion.execute(MathAgent, "hi")
+
+      {agent, _, _} = span_named(@agent_span)
+      {tool, _, _} = span_named(@tool_span)
+
+      assert String.valid?(stop_attributes(tool)[:"gen_ai.tool.call.result"])
+      assert {:ok, _} = Jason.decode(stop_attributes(agent)[:"gen_ai.output.messages"])
+      assert_receive {:otel, :end_span, ^agent, _}
+    end
+
+    test "a small result JSON cannot encode is recorded whole" do
+      config = [content: :attributes, max_attribute_bytes: 20_000]
+      result = for i <- 1..60, do: {i, "name#{i}"}
+
+      attributes = Attributes.execute_tool_stop(%{success: true, result: result}, config)
+
+      assert attributes[:"gen_ai.tool.call.result"] == inspect(result, limit: :infinity)
+    end
+
+    test "a large result JSON cannot encode is cut to the cap" do
+      config = [content: :attributes, max_attribute_bytes: 20_000]
+      result = for i <- 1..2_500, do: {i, String.duplicate("x", 20_000)}
+
+      attributes = Attributes.execute_tool_stop(%{success: true, result: result}, config)
+      text = attributes[:"gen_ai.tool.call.result"]
+
+      assert byte_size(text) == 20_000
+      assert text =~ ~r/^\[\{1, "x+/
+      assert String.ends_with?(text, "…[truncated]")
+    end
+
+    test "truncate/2 replaces invalid UTF-8" do
+      assert Attributes.truncate(<<255, "abc">>, 100) == "\uFFFDabc"
+    end
+
+    test "truncate/2 stays within a cap smaller than the truncation marker" do
+      assert Attributes.truncate("abcdefghijklmnopqrstuvwxyz", 5) == "abcde"
+    end
+
+    test "truncate/2 cuts on a UTF-8 boundary and marks the cut" do
+      assert Attributes.truncate(String.duplicate("ż", 20), 20) == "żżż…[truncated]"
+    end
   end
 
   describe "iteration_spans" do
@@ -299,6 +391,32 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       names = started_span_names(flush())
       assert @agent_span in names
       refute Enum.any?(names, &String.starts_with?(&1, "iteration"))
+    end
+
+    test "every iteration span gets the action its LLM reply chose" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_spans: true)
+      reply_with([eval("return 1"), eval("return 2"), return("done")])
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      actions =
+        for number <- 0..2 do
+          {span, _, _} = span_named("iteration #{number}")
+          assert_receive {:otel, :set_attributes, ^span, %{"legion.action": action}, _}
+          action
+        end
+
+      assert actions == ["eval_and_continue", "eval_and_continue", "return"]
+    end
+
+    test "iteration spans are invoke_workflow operations" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_spans: true)
+      reply_with([return("done")])
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      {_, attributes, _} = span_named("iteration 0")
+      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
     end
   end
 
@@ -339,6 +457,44 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
       refute Enum.any?(started_span_names(flush()), &String.starts_with?(&1, "conversation"))
     end
+
+    test "the conversation span is an invoke_workflow operation" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, conversation_traces: true)
+      reply_with([return("done")])
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+
+      {_, attributes, _} = span_named("conversation Legion.Test.Support.MathAgent")
+      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
+    end
+  end
+
+  describe "chat_attributes/0" do
+    test "outside the agent process, a turn's context still gives the session" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        ctx = Legion.Telemetry.capture_context()
+
+        attributes =
+          Task.async(fn -> Legion.Telemetry.with_context(ctx, &Handler.chat_attributes/0) end)
+          |> Task.await()
+
+        send(test_pid, {:tool_process_attributes, attributes})
+
+        {:ok,
+         %ReqLLM.Response{id: "t", model: "t", context: nil, object: return("done"), usage: %{}}}
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      agent_id = Legion.get_agent_id(pid)
+      assert {:ok, "done"} = Legion.call(pid, "hi")
+
+      assert_receive {:tool_process_attributes, attributes}
+      assert attributes == %{"session.id": agent_id}
+    end
   end
 
   describe "metrics" do
@@ -357,10 +513,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert records["gen_ai.invoke_agent.tool_calls"].value == 1
       assert records["gen_ai.execute_tool.duration"].attributes[:"error.type"] == "runtime"
       assert records["legion.turn.iterations"].attributes == agent
-
-      # Legion.execute starts the agent and stops it again.
-      assert for(%{name: "legion.agents.active"} = r <- all_records, do: {r.kind, r.value}) ==
-               [updown_counter: 1, updown_counter: -1]
 
       assert %{kind: :counter, value: 1, attributes: %{"legion.error.kind": "runtime"}} =
                records["legion.eval.errors"]
@@ -392,6 +544,26 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
       assert metric_records(flush()) == []
+    end
+
+    test "starting and stopping an agent records no metrics" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      :ok = GenServer.stop(pid)
+
+      assert metric_records(flush()) == []
+    end
+
+    test "agent call counts use the GenAI semantic-convention units" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      reply_with([eval("return 1"), return("done")])
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      records = Map.new(metric_records(flush()), &{&1.name, &1})
+      assert records["gen_ai.invoke_agent.inference_calls"].unit == "{inference_call}"
+      assert records["gen_ai.invoke_agent.tool_calls"].unit == "{tool_call}"
     end
   end
 
