@@ -20,10 +20,12 @@ defmodule Legion.OpenTelemetry.Adapter do
   `kind: :counter` and no `:boundaries`). An adapter without
   `record_counter/2` gets histograms only.
 
-  A vendor adapter can also implement `exporter_config/1`, which turns the
-  vendor's settings into the `:opentelemetry` and `:opentelemetry_exporter`
-  application config that ships spans to it; `Legion.OpenTelemetry.configure/2`
-  applies it from `config/runtime.exs`.
+  A vendor adapter also implements `exporter_config/1`, which turns the
+  vendor's settings from `config :legion, <adapter module>` into the OTLP
+  endpoint, headers and resource attributes `Legion.OpenTelemetry.Exporter`
+  sends spans with. It is chosen in config, where both
+  `Legion.OpenTelemetry.attach/1` and the exporter read it:
+  `config :legion, Legion.OpenTelemetry, adapter: MyApp.VendorAdapter`.
 
   ## Example - tag every span with the deployment environment
 
@@ -83,10 +85,13 @@ defmodule Legion.OpenTelemetry.Adapter do
   @callback end_span_at(span :: term(), end_time :: integer(), config :: keyword()) :: :ok
 
   @doc """
-  Application config, as `{app, keyword}` pairs, that exports spans to the
-  adapter's vendor, built from the vendor settings in `opts`.
+  How to export spans to the adapter's vendor, built from the vendor settings
+  in `opts` (raising on invalid ones): `:exporter` is the options map for
+  `opentelemetry_exporter` (`:protocol`, `:endpoints`, `:headers`; the
+  exporter appends `/v1/traces` to the endpoint), and `:resource` holds
+  resource attributes that override the SDK's, e.g. `%{"service.name" => "my-app"}`.
   """
-  @callback exporter_config(opts :: keyword()) :: [{atom(), keyword()}]
+  @callback exporter_config(opts :: keyword()) :: %{exporter: map(), resource: map()}
 
   @optional_callbacks metrics_available?: 0,
                       record_histogram: 2,

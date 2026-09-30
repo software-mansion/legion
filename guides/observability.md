@@ -72,12 +72,26 @@ and an exporter:
 
 ```elixir
 # mix.exs
-{:opentelemetry_exporter, "~> 1.8"},
-{:opentelemetry, "~> 1.5"}
+{:opentelemetry, "~> 1.5"},
+{:opentelemetry_exporter, "~> 1.8"}
 ```
 
 If Legion was compiled before these were added, recompile it once so the
 integration picks up the API: `mix deps.compile legion --force`.
+
+In a release, start the exporter before the SDK, as
+[OpenTelemetry's Erlang exporter docs](https://opentelemetry.io/docs/languages/erlang/exporters/)
+recommend. Otherwise the SDK sets up the exporter before `:inets` runs, and
+the spans of the first seconds after boot are dropped:
+
+```elixir
+# mix.exs
+releases: [
+  my_app: [
+    applications: [opentelemetry_exporter: :permanent, opentelemetry: :temporary]
+  ]
+]
+```
 
 Attach once at startup:
 
@@ -97,17 +111,36 @@ Options, all optional:
 
 ```elixir
 Legion.OpenTelemetry.attach(
-  content: :attributes,          # record messages on spans; default :none
+  content: :attributes,          # the default; :none keeps message content out
   max_attribute_bytes: 20_000,   # cap for content on Legion's own spans
   metrics: true,                 # false turns metrics off
   iteration_spans: false,        # true adds an `iteration N` span per iteration
   conversation_traces: false,    # true puts an agent's turns in one trace
-  adapter: MyApp.OTelAdapter,    # Legion.OpenTelemetry.Adapter; default Adapter.OTel
+  adapter: MyApp.OTelAdapter,    # default: the configured vendor, else Adapter.OTel
   req_llm: [langfuse: true]      # extra ReqLLM.OpenTelemetry.attach/2 options, or false
 )
 ```
 
-`content: :attributes` puts the messages, system instructions and tool
+The same options can live in config; options passed to `attach/1` win:
+
+```elixir
+# config/config.exs
+config :legion, Legion.OpenTelemetry, iteration_spans: true
+```
+
+> #### Message content goes to your tracing backend {: .warning}
+>
+> With the default `content: :attributes`, spans carry the prompts, the
+> model's replies, the code the model wrote, tool results and error messages.
+> Whoever can read your traces can read them. It also sets
+> `config :req_llm, telemetry: [payloads: :raw]` for the whole app (unless you
+> set `:payloads` yourself), so every other ReqLLM telemetry handler you have
+> receives raw prompts and responses too. To keep content out, attach with
+> `content: :none` (or set it in `config :legion, Legion.OpenTelemetry`):
+> spans then keep their structure, timings, token counts and error types, and
+> a failed span's status names only its `error.type`.
+
+With `content: :attributes`, Legion puts the messages, system instructions and tool
 definitions on the `chat` spans as `gen_ai.input.messages`,
 `gen_ai.system_instructions`, `gen_ai.tool.definitions` and
 `gen_ai.output.messages`, each one JSON array string. It also sets `config :req_llm, telemetry: [payloads: :raw]`
@@ -141,7 +174,8 @@ Your own `config :req_llm, telemetry: [...]` is merged into it, not replaced.
 ### Conversations
 
 By default each turn is its own trace, and the turns of one conversation share
-a session: Datadog groups them by `gen_ai.conversation.id`, Langfuse by
+a session: Datadog groups them by `gen_ai.conversation.id`, which
+`Legion.OpenTelemetry.Adapter.Datadog` sets to `session.id`, Langfuse by
 `session.id`, and Braintrust by `metadata.session_id`, which
 `Legion.OpenTelemetry.Adapter.Braintrust` sets (see Vendors). This is how the
 vendors' own integrations model chats.
@@ -194,40 +228,50 @@ metrics; Datadog dashboards can use them.
 
 ## Vendors
 
-All of them take the stock OTLP exporter. For Braintrust and Datadog,
-`Legion.OpenTelemetry.configure/2` writes the exporter config from
-`config/runtime.exs`, and `attach/1` picks up the matching adapter. Both need
-the SDK and exporter:
+All of them take the stock OTLP exporter. For Braintrust and Datadog, Legion
+builds the exporter from the vendor's settings: point the SDK at
+`Legion.OpenTelemetry.Exporter`, name the vendor's adapter in
+`config :legion, Legion.OpenTelemetry, adapter: ...`, put its settings under
+`config :legion, <adapter>`, and attach. The exporter always sends to the
+adapter named in config; an `:adapter` passed to `attach/1` only changes how
+spans are shaped. Both need the SDK and exporter from [Setup](#setup),
+including its release note.
 
-```elixir
-# mix.exs
-{:opentelemetry, "~> 1.5"},
-{:opentelemetry_exporter, "~> 1.8"}
-```
+Set `traces_exporter` next to the vendor config in `config/runtime.exs`,
+under the same condition, as below. It can go in `config/config.exs` only if
+every environment configures the vendor adapter: without one,
+`Legion.OpenTelemetry.Exporter` has nowhere to send spans and logs a warning.
+
+`Legion.OpenTelemetry.attach/1` then uses the vendor's adapter, and raises at
+startup if the vendor settings are missing or invalid, the SDK or exporter is
+missing, or `traces_exporter` is not `Legion.OpenTelemetry.Exporter`.
 
 The SDK has one trace exporter. If your app already exports traces somewhere
-else, `configure/2` would replace that exporter: send traces to an
-[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) and fan
-them out from there, or skip `configure/2` and configure the exporter
-yourself. Call `configure/2` once: a second call merges both vendors' config.
-The standard OpenTelemetry environment variables (`OTEL_EXPORTER_OTLP_*`,
-`OTEL_TRACES_EXPORTER`, `OTEL_SERVICE_NAME`) take precedence over what
-`configure/2` writes, so unset them when you switch to it.
+else, send everything to an
+[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) and fan it
+out from there, or configure `opentelemetry_exporter` yourself instead. The
+standard `OTEL_EXPORTER_OTLP_*` environment variables and
+`config :opentelemetry_exporter, otlp_*` settings take precedence over the
+endpoint, headers and protocol Legion builds, and `OTEL_TRACES_EXPORTER`
+replaces `Legion.OpenTelemetry.Exporter` altogether, so unset them when you
+switch.
 
 ### Braintrust
 
 ```elixir
 # config/runtime.exs
 if config_env() == :prod do
-  Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
+  config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
+  config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Braintrust
+
+  config :legion, Legion.OpenTelemetry.Adapter.Braintrust,
     api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
     project: "my_app",
     region: :us  # :eu for organizations on the EU data plane
-  )
 end
 
 # lib/my_app/application.ex
-:ok = Legion.OpenTelemetry.attach(content: :attributes)
+:ok = Legion.OpenTelemetry.attach()
 ```
 
 `Legion.OpenTelemetry.Adapter.Braintrust` adds `session_id` to every span's
@@ -251,23 +295,28 @@ gets ReqLLM's lists unchanged.
 ```elixir
 # config/runtime.exs
 if config_env() == :prod do
-  Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog,
+  config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
+  config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Datadog
+
+  config :legion, Legion.OpenTelemetry.Adapter.Datadog,
     api_key: System.fetch_env!("DD_API_KEY"),
     site: "datadoghq.com",  # your Datadog site, e.g. "datadoghq.eu"
     ml_app: "my_app"
-  )
 end
 
 # lib/my_app/application.ex
-:ok = Legion.OpenTelemetry.attach(content: :attributes)
+:ok = Legion.OpenTelemetry.attach()
 ```
 
 Spans go straight to Datadog's OTLP intake, with no Datadog Agent in between,
-and are listed under the `ml_app`. Datadog shows each span's input and output
-from its `gen_ai.*` message attributes and `legion.*` attributes as tags.
-Turns of one conversation share `gen_ai.conversation.id`, which Datadog shows
-as one session, so `conversation_traces` is not needed there. Traces take a
-few minutes to appear.
+and are listed under the `ml_app`, which Legion sets as the `service.name`
+resource attribute (over `OTEL_SERVICE_NAME` or the SDK's own). Datadog shows
+each span's input and output from its `gen_ai.*` message attributes and
+`legion.*` attributes as tags. Datadog groups sessions by
+`gen_ai.conversation.id`, which the adapter sets to `session.id`, so the turns
+of a conversation, sub-agents included, are one session and
+`conversation_traces` is not needed there. Traces take a few minutes to
+appear.
 
 ### Others
 

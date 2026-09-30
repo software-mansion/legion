@@ -32,18 +32,22 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
   every span of a trace has the same key, as Group scope requires.
 
       # config/runtime.exs
-      Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
-        api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
-        project: "my_app",
-        region: :eu
-      )
+      if config_env() == :prod do
+        config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
+        config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Braintrust
+
+        config :legion, Legion.OpenTelemetry.Adapter.Braintrust,
+          api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
+          project: "my_app",
+          region: :eu
+      end
 
       # application.ex
-      :ok = Legion.OpenTelemetry.attach(content: :attributes)
+      :ok = Legion.OpenTelemetry.attach()
 
-  `Legion.OpenTelemetry.configure/2` points the OTLP exporter at Braintrust
-  and selects the adapter. Braintrust reads Legion's content attributes as
-  they are. To get one trace per conversation instead, add
+  `Legion.OpenTelemetry.Exporter` sends the spans to the project, and
+  `Legion.OpenTelemetry.attach/1` uses this adapter. Braintrust reads
+  Legion's content attributes as they are. To get one trace per conversation instead, add
   `conversation_traces: true`; the session id stays on every span either way.
 
   ## Options
@@ -96,17 +100,17 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
   def exporter_config(opts) do
     opts = NimbleOptions.validate!(opts, @exporter_schema)
 
-    [
-      opentelemetry: [traces_exporter: :otlp],
-      opentelemetry_exporter: [
-        otlp_protocol: :http_protobuf,
-        otlp_endpoint: Map.fetch!(@endpoints, opts[:region]),
-        otlp_headers: [
+    %{
+      exporter: %{
+        protocol: :http_protobuf,
+        endpoints: [Map.fetch!(@endpoints, opts[:region])],
+        headers: [
           {"authorization", "Bearer " <> opts[:api_key]},
           {"x-bt-parent", "project_name:" <> opts[:project]}
         ]
-      ]
-    ]
+      },
+      resource: %{}
+    }
   end
 
   defp with_session(%{"session.id": session} = attributes) when is_binary(session),

@@ -1,4 +1,5 @@
 Mimic.copy(ReqLLM)
+Mimic.copy(:opentelemetry_exporter)
 
 defmodule Legion.Test.Support.LegionAgentsMigration do
   use Ecto.Migration

@@ -34,6 +34,7 @@ defmodule Legion.MixProject do
           "guides/sandboxes.md": [title: "Sandboxes"],
           "guides/ash.md": [title: "Using Legion with Ash"],
           "guides/observability.md": [title: "Observability"],
+          "guides/local_llms.md": [title: "Local LLMs"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()

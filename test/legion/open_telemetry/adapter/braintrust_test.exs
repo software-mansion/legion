@@ -62,24 +62,23 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
 
   describe "exporter_config/1" do
     test "sends to the US data plane by default" do
-      assert Braintrust.exporter_config(api_key: "key", project: "my_app") == [
-               opentelemetry: [traces_exporter: :otlp],
-               opentelemetry_exporter: [
-                 otlp_protocol: :http_protobuf,
-                 otlp_endpoint: "https://api.braintrust.dev/otel",
-                 otlp_headers: [
+      assert Braintrust.exporter_config(api_key: "key", project: "my_app") == %{
+               exporter: %{
+                 protocol: :http_protobuf,
+                 endpoints: ["https://api.braintrust.dev/otel"],
+                 headers: [
                    {"authorization", "Bearer key"},
                    {"x-bt-parent", "project_name:my_app"}
                  ]
-               ]
-             ]
+               },
+               resource: %{}
+             }
     end
 
     test "region: :eu uses the EU data plane" do
       config = Braintrust.exporter_config(api_key: "key", project: "my_app", region: :eu)
 
-      assert config[:opentelemetry_exporter][:otlp_endpoint] ==
-               "https://api-eu.braintrust.dev/otel"
+      assert config.exporter.endpoints == ["https://api-eu.braintrust.dev/otel"]
     end
 
     test "requires an API key and a project, and a known region" do

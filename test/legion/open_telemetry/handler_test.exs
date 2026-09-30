@@ -168,7 +168,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
   describe "execute_tool" do
     test "each evaluation becomes an execute_tool span" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       reply_with([eval("return 1 + 1"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -217,7 +217,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     end
 
     test "without content, a failed evaluation's status names only the error type" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       reply_with([eval("error('boom')"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -227,7 +227,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     end
 
     test "without content, an eval guard denial records the guard but not its reason" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       reply_with([eval("return 1"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi", eval_guard: DenyEverything)
@@ -262,7 +262,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     end
 
     test "content: :none keeps messages and code off Legion's spans" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       reply_with([eval("return 1 + 1"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
