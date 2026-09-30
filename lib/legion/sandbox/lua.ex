@@ -54,7 +54,7 @@ defmodule Legion.Sandbox.Lua do
   @max_code_size 64 * 1024
 
   # Defined by `use Legion.Tool`, not part of a tool's callable surface.
-  @tool_meta_functions [description: 0, description: 1, extra_allowed_modules: 0]
+  @tool_meta_functions [description: 0, description: 1, summary: 0, extra_allowed_modules: 0]
 
   @module_key "__module"
 
@@ -87,7 +87,7 @@ defmodule Legion.Sandbox.Lua do
       language: "Lua",
       constraints: constraints(),
       tool_usage:
-        "Each tool below is implemented in Elixir and exposed as a global Lua table - call it from Lua as `ShortName.fun(...)`. The source shown is Elixir; call the same function names with positional arguments."
+        "Each tool below is implemented in Elixir and exposed as a global Lua table - call it from Lua as `ShortName.fun(...)`. Its source is Elixir; call the same function names with positional arguments."
     }
   end
 

@@ -1665,6 +1665,13 @@ defmodule Legion.AgentServerTest do
       assert text =~ "alice"
     end
 
+    test "seeds :agent_module so tools can find the agent they run under" do
+      {:ok, pid} = Legion.start_link(VaultAgent)
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.agent_module()")
+      assert text =~ "VaultAgent"
+    end
+
     test "a rejected call runs nothing and saves nothing" do
       opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
 

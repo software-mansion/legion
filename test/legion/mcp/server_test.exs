@@ -2,9 +2,10 @@ defmodule Legion.MCP.ServerTest do
   # Agents the server starts share one named supervisor.
   use ExUnit.Case, async: false
 
-  alias Anubis.Server.{Context, Frame, Handlers}
+  alias Anubis.Server.{Component, Context, Frame, Handlers}
   alias Legion.MCP.Server
   alias Legion.RateLimiter.{ExceededError, Policy, Rule}
+  alias Legion.Sandbox.Lua
   alias Legion.Store.Payload
   alias Legion.Test.Support.{MathAgent, MathTool, MemoryStore, VaultTool}
 
@@ -99,6 +100,58 @@ defmodule Legion.MCP.ServerTest do
     def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:short", idle_timeout: 50]
   end
 
+  defmodule ElixirAgent do
+    @moduledoc "Agent that delegates work from the Elixir sandbox."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool]
+    def config, do: %{sandbox: Legion.Sandbox.Elixir}
+  end
+
+  defmodule ElixirMCP do
+    use Legion.MCP.Server, agent: ElixirAgent, name: "elixir", version: "0.1.0"
+  end
+
+  defmodule FullDocsAgent do
+    @moduledoc "Agent that wants its tools embedded in full."
+    use Legion.Agent
+
+    def tools, do: [MathTool]
+    def config, do: %{tool_docs: :full}
+  end
+
+  defmodule FullDocsMCP do
+    use Legion.MCP.Server, agent: FullDocsAgent, name: "full", version: "0.1.0"
+  end
+
+  defmodule WordySandbox do
+    @moduledoc "Lua sandbox whose rules run past any host's tool description cap."
+    @behaviour Legion.Sandbox
+
+    @impl true
+    defdelegate check(code, allowed), to: Lua
+    @impl true
+    defdelegate execute(code, timeout, allowed, bindings, limits), to: Lua
+    @impl true
+    defdelegate binding_names(bindings), to: Lua
+
+    @impl true
+    def prompt_info do
+      %{Lua.prompt_info() | constraints: String.duplicate("- Rule. ", 400)}
+    end
+  end
+
+  defmodule WordyAgent do
+    @moduledoc "Agent on a sandbox with too many rules."
+    use Legion.Agent
+
+    def config, do: %{sandbox: WordySandbox}
+  end
+
+  defmodule WordyMCP do
+    use Legion.MCP.Server, agent: WordyAgent, name: "wordy", version: "0.1.0"
+  end
+
   setup do
     start_supervised!(MemoryStore)
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
@@ -127,12 +180,28 @@ defmodule Legion.MCP.ServerTest do
     {error?, text, frame}
   end
 
+  defp help(server, frame, arguments) do
+    request = %{
+      "method" => "tools/call",
+      "params" => %{"name" => "help", "arguments" => arguments}
+    }
+
+    {:reply, %{"content" => [%{"text" => text}], "isError" => error?}, %Frame{} = frame} =
+      Handlers.handle(request, server, frame)
+
+    {error?, text, frame}
+  end
+
   describe "generated server" do
-    test "exposes exactly one tool, repl, taking the code to run" do
-      assert [tool] = MathMCP.__components__(:tool)
-      assert tool.name == "repl"
-      assert tool.input_schema["required"] == ["code"]
-      assert tool.description =~ "sandbox"
+    test "exposes repl and help" do
+      tools = MathMCP.__components__(:tool)
+      assert tools |> Enum.map(& &1.name) |> Enum.sort() == ["help", "repl"]
+
+      repl = Enum.find(tools, &(&1.name == "repl"))
+      assert repl.input_schema["required"] == ["code"]
+
+      help = Enum.find(tools, &(&1.name == "help"))
+      assert help.input_schema["required"] in [nil, []]
     end
 
     test "reports the given name and version" do
@@ -155,9 +224,18 @@ defmodule Legion.MCP.ServerTest do
       instructions = MathMCP.server_instructions()
 
       assert instructions =~ "An agent that does math."
-      assert instructions =~ "MathTool"
+      assert instructions =~ "- `MathTool` - This is math tool moduledoc."
       assert instructions =~ "Lua"
       assert instructions =~ "`repl`"
+      assert instructions =~ "`help`"
+      refute instructions =~ "performs math operations"
+    end
+
+    test "tool_docs: :full in the agent config embeds the tools" do
+      instructions = FullDocsMCP.server_instructions()
+
+      assert instructions =~ "### MathTool"
+      assert instructions =~ "performs math operations"
     end
 
     test "tells the model how long variables live" do
@@ -221,13 +299,135 @@ defmodule Legion.MCP.ServerTest do
       assert log =~ "VerboseMCP: server instructions are"
       assert log =~ "cap them at 2048"
       assert log =~ "stop reading after"
-      assert log =~ "drops the sections: Who you are, Available Tools, MathTool"
+      assert log =~ "drops the sections: Available Tools"
       assert log =~ "instructions_budget:"
+    end
+
+    test "warns when the repl tool description exceeds the budget" do
+      log = capture_log(fn -> WordyMCP.child_spec(transport: :stdio) end)
+
+      assert log =~ "WordyMCP: repl tool description is"
+      assert log =~ "cap them at 2048"
     end
 
     test "is quiet with a budget the instructions fit, or :infinity" do
       assert capture_log(fn -> RoomyMCP.child_spec(transport: :stdio) end) == ""
       assert capture_log(fn -> UncheckedMCP.child_spec(transport: :stdio) end) == ""
+    end
+  end
+
+  describe "repl tool description" do
+    test "carries the sandbox language and its rules" do
+      description = Component.get_description(MathMCP.Repl)
+
+      assert description =~ "Lua"
+      assert description =~ String.trim(Lua.prompt_info().constraints)
+    end
+
+    test "names the Elixir sandbox for an Elixir agent" do
+      description = Component.get_description(ElixirMCP.Repl)
+
+      assert description =~ "Elixir"
+      refute description =~ "Lua"
+    end
+
+    test "says whether variables persist" do
+      assert Component.get_description(MathMCP.Repl) =~ "Variables persist"
+
+      assert Component.get_description(ConfiguredMCP.Repl) =~
+               "Variables do not persist"
+    end
+  end
+
+  describe "help tool" do
+    test "with no tool lists every tool with a summary" do
+      frame = initialized(MathMCP, frame())
+
+      assert {false, text, _frame} = help(MathMCP, frame, %{})
+      assert text =~ "- `MathTool` - This is math tool moduledoc."
+      assert text =~ "- `Help` -"
+    end
+
+    test "with a tool name returns its full reference" do
+      frame = initialized(MathMCP, frame())
+
+      assert {false, text, _frame} = help(MathMCP, frame, %{"tool" => "MathTool"})
+      assert text =~ "### MathTool"
+      assert text =~ "performs math operations"
+    end
+
+    test "with an unknown name returns the list instead" do
+      frame = initialized(MathMCP, frame())
+
+      assert {false, text, _frame} = help(MathMCP, frame, %{"tool" => "Nope"})
+      assert text =~ "No tool named"
+      assert text =~ "- `MathTool` -"
+    end
+
+    test "rejects a name that is not a bare word without running anything" do
+      frame = initialized(MathMCP, frame())
+
+      assert {true, text, frame} = help(MathMCP, frame, %{"tool" => ~s|x") os.exit(|})
+      assert text =~ "Tools:"
+      assert text =~ "- `MathTool` -"
+      refute Map.has_key?(frame.assigns, :legion_mcp_agent)
+    end
+
+    test "is a step of the session's conversation" do
+      frame = initialized(MathMCP, frame())
+
+      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
+               help(MathMCP, frame, %{"tool" => "MathTool"})
+
+      [%{type: :assistant, content: code}, %{type: :eval_result, content: result}] =
+        pid |> Legion.get_messages() |> Enum.take(-2)
+
+      assert Jason.decode!(code)["code"] == ~s|return Help.help("MathTool")|
+      assert result =~ "### MathTool"
+    end
+
+    test "writes the call in the agent's sandbox language" do
+      frame = initialized(ElixirMCP, frame())
+
+      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
+               help(ElixirMCP, frame, %{})
+
+      [%{type: :assistant, content: code}, _result] =
+        pid |> Legion.get_messages() |> Enum.take(-2)
+
+      assert Jason.decode!(code)["code"] == "Help.help()"
+    end
+
+    test "is rate limited like repl" do
+      frame = initialized(UserMCP, frame("host", %{sub: "denied"}))
+
+      assert {true, "Rate limit exceeded (max_evals)." <> _, _frame} =
+               help(UserMCP, frame, %{})
+    end
+
+    test "renders the reference for the agent's sandbox" do
+      frame = initialized(ElixirMCP, frame())
+
+      assert {false, text, _frame} = help(ElixirMCP, frame, %{"tool" => "AgentTool"})
+      assert text =~ "{:ok, result} ="
+      refute text =~ "result = response[2]"
+    end
+
+    test "refuses before the session is initialized" do
+      assert {true, text, _frame} = help(MathMCP, frame(), %{})
+      assert text =~ "not initialized"
+    end
+  end
+
+  describe "session tool_docs" do
+    test "over MCP Help is in the sandbox whatever the agent's tool_docs" do
+      frame = initialized(FullDocsMCP, frame())
+
+      assert {false, text, frame} = repl(FullDocsMCP, frame, "return Help == nil")
+      assert text =~ "false"
+
+      assert {false, text, _frame} = help(FullDocsMCP, frame, %{"tool" => "MathTool"})
+      assert text =~ "### MathTool"
     end
   end
 

@@ -3,7 +3,10 @@ defmodule Legion.Tool do
   `use Legion.Tool` to mark a module as a tool available to agents.
 
   By default, `description/0` returns the module's source code so the LLM
-  knows what functions are available.
+  knows what functions are available. An agent running with
+  `tool_docs: :discovery` (see `Legion.Agent`) first sees only each tool's
+  `summary/0`, one sentence, and reads the full description with
+  `Help.help("Name")` when it needs it.
 
   ## Overridable
 
@@ -12,6 +15,11 @@ defmodule Legion.Tool do
     - `description/1` — like `description/0`, but receives the active sandbox
       module, for tools whose usage differs by generated language. Preferred
       over `description/0` when defined.
+    - `summary/0` — override to return the one sentence that stands for the tool
+      in the tool list under `tool_docs: :discovery`. Defaults to the first
+      sentence of the `@moduledoc`, else of a hand-written `description/0`, else
+      the module's short name. The example below has no `@moduledoc`, so its
+      summary is `WeatherTool — fetches current weather data.`
     - `extra_allowed_modules/0` — override to return additional modules that the
       sandbox should alias and permit when this tool is available. Defaults to `[]`.
       Useful for tools like `Legion.Tools.AgentTool` that dispatch to other modules
@@ -55,6 +63,13 @@ defmodule Legion.Tool do
   to the generated language.
   """
   @callback description(sandbox :: module()) :: String.t()
+
+  @doc """
+  One sentence that stands for the tool in the tool list under
+  `tool_docs: :discovery`. Defaults to the first sentence of the `@moduledoc`,
+  else of a hand-written `description/0`, else the module's short name.
+  """
+  @callback summary() :: String.t()
   @callback extra_allowed_modules() :: [module()]
 
   @optional_callbacks description: 1
@@ -64,12 +79,74 @@ defmodule Legion.Tool do
 
     quote do
       @behaviour Legion.Tool
+      @before_compile Legion.Tool
 
       def description, do: unquote(source)
       def extra_allowed_modules, do: []
 
       defoverridable description: 0, extra_allowed_modules: 0
     end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    unless Module.defines?(env.module, {:summary, 0}) do
+      sentence =
+        case Module.get_attribute(env.module, :moduledoc) do
+          {_line, doc} when is_binary(doc) -> first_sentence(doc)
+          _ -> nil
+        end
+
+      quote do
+        def summary, do: Legion.Tool.default_summary(__MODULE__, unquote(sentence))
+      end
+    end
+  end
+
+  @doc false
+  # The one-line summary of any module listed as a tool, whether or not it
+  # `use`s Legion.Tool: the first sentence of its moduledoc, else of a
+  # hand-written `description/0`, else its short name. The default
+  # `description/0` is the module's source, which has no first sentence.
+  def default_summary(module), do: default_summary(module, moduledoc_sentence(module))
+
+  @doc false
+  def default_summary(module, moduledoc_sentence) do
+    Code.ensure_loaded!(module)
+
+    cond do
+      moduledoc_sentence -> moduledoc_sentence
+      sentence = description_sentence(module) -> sentence
+      true -> module |> Module.split() |> List.last()
+    end
+  end
+
+  defp moduledoc_sentence(module) do
+    case Code.fetch_docs(module) do
+      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) -> first_sentence(doc)
+      _ -> nil
+    end
+  end
+
+  defp description_sentence(module) do
+    if function_exported?(module, :description, 0) do
+      text = module.description()
+      if String.starts_with?(text, "defmodule"), do: nil, else: first_sentence(text)
+    end
+  end
+
+  defp first_sentence(text) do
+    sentence =
+      text
+      |> String.trim()
+      |> String.split("\n\n", parts: 2)
+      |> List.first()
+      |> String.replace("\n", " ")
+      |> String.split(~r/(?<=[.!?])\s/, parts: 2)
+      |> List.first()
+      |> String.trim()
+
+    if sentence == "", do: nil, else: sentence
   end
 
   @doc false

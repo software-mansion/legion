@@ -81,4 +81,66 @@ defmodule Legion.AgentPromptTest do
       refute prompt =~ "result = response[2]"
     end
   end
+
+  describe "tool_docs: :discovery" do
+    test "lists tools by name and summary instead of their source" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ "- `MathTool` - This is math tool moduledoc."
+      assert prompt =~ "- `Help` -"
+      refute prompt =~ "MathTool — performs math operations"
+      refute prompt =~ "random_add"
+    end
+
+    test "steers the model to Help before the first use of a tool" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ ~s|Help.help("Name")|
+      assert prompt =~ "Help.help()"
+      refute prompt =~ "Examine the tool source code below"
+    end
+
+    test "keeps the rest of the executor prompt" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+
+      assert prompt =~ "## How you work"
+      assert prompt =~ "An agent that does math."
+      assert prompt =~ "**Constraints:**"
+    end
+
+    test "an explicit :full renders the same prompt as the default" do
+      assert AgentPrompt.system_prompt(MathAgent, %{tool_docs: :full}) ==
+               AgentPrompt.system_prompt(MathAgent)
+    end
+  end
+
+  describe "mode: :mcp" do
+    test "defaults to tool_docs: :discovery" do
+      prompt = AgentPrompt.system_prompt(MathAgent, nil, mode: :mcp)
+
+      assert prompt =~ "- `MathTool` - This is math tool moduledoc."
+      assert prompt =~ "- `Help` -"
+      assert prompt =~ "`help`"
+      refute prompt =~ "MathTool — performs math operations"
+      refute prompt =~ "**Constraints:**"
+    end
+
+    test "keeps the agent's purpose and the repl mechanics" do
+      prompt = AgentPrompt.system_prompt(MathAgent, nil, mode: :mcp)
+
+      assert prompt =~ "An agent that does math."
+      assert prompt =~ "`repl`"
+      assert prompt =~ "Variables persist"
+      assert prompt =~ "Lua"
+    end
+
+    test "tool_docs: :full renders the full tools section over MCP" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :full}, mode: :mcp)
+
+      assert prompt =~ "### MathTool"
+      assert prompt =~ "MathTool — performs math operations"
+      assert prompt =~ "**Constraints:**"
+      refute prompt =~ "`help`"
+    end
+  end
 end

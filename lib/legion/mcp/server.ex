@@ -1,7 +1,8 @@
 if Code.ensure_loaded?(Anubis.Server) do
   defmodule Legion.MCP.Server do
     @moduledoc """
-    Exposes a `Legion.Agent` to MCP hosts as a server with a single `repl` tool.
+    Exposes a `Legion.Agent` to MCP hosts as a server with two tools, `repl`
+    and `help`.
 
         defmodule MyApp.Assistant do
           @moduledoc "Sales assistant for The Mansion catalogue."
@@ -14,18 +15,25 @@ if Code.ensure_loaded?(Anubis.Server) do
           use Legion.MCP.Server, agent: MyApp.Assistant, name: "mansion", version: "1.0.0"
         end
 
-        # supervision tree, after Legion
-        {MyApp.MCP, transport: :stdio}
-
-        # or, behind Phoenix/Plug:
-        {MyApp.MCP, transport: :streamable_http}
+        # over HTTP: start it after Legion and mount the plug in your router
+        # (start: true also starts it outside `mix phx.server`, e.g. in tests)
+        {MyApp.MCP, transport: {:streamable_http, start: true}}
         forward "/mcp", to: Legion.MCP.Plug, server: MyApp.MCP
 
-    An MCP host brings its own model. That model reads the agent's system
-    prompt as the server `instructions`, writes code, and the server runs it
-    with `Legion.eval/3`. The agent makes no LLM request of its own; what a
-    call costs is one evaluation, plus whatever its tools do (`AgentTool`,
-    for one).
+        # or over stdio; stdout carries the protocol, so keep logs off it:
+        # config :logger, :default_handler, config: [type: :standard_error]
+        {MyApp.MCP, transport: :stdio}
+
+    An MCP host brings its own model. That model reads the server
+    `instructions`: the agent's `@moduledoc` and its tools, each by name and
+    one-line summary. It reads a tool in full with `help` before the first
+    call, and the sandbox language and rules from the `repl` tool's
+    description. The model then writes code, and the server runs it with
+    `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
+    session's agent, so a lookup is a step of the conversation, saved, rate
+    limited and traced like a `repl` call. The agent makes no LLM request of
+    its own; what a call costs is one evaluation, plus whatever its tools do
+    (`AgentTool`, for one).
 
     Built on the optional `:anubis_mcp` dependency, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -38,8 +46,8 @@ if Code.ensure_loaded?(Anubis.Server) do
       - `:capabilities` - what `use Anubis.Server` takes, for a server that adds
         components of its own; `:tools` is always among them, since `repl` is one
       - `:instructions_budget` - how many characters of `server_instructions/0`
-        the hosts you target read; see "Instruction size". Defaults to 2048,
-        `:infinity` disables the check
+        and of the `repl` tool description the hosts you target read; see
+        "Instruction size". Defaults to 2048, `:infinity` disables the check
 
     Every other option is passed to `use Anubis.Server`, `:authorization`
     above all; see "Who is calling". The child spec takes what
@@ -75,14 +83,25 @@ if Code.ensure_loaded?(Anubis.Server) do
     Hosts read only so much of the instructions. Claude Code cuts them at
     2,048 characters (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` raises it, per
     user, not per server) and appends "[truncated]"; it cuts every tool
-    description at the same length. The generated instructions carry the
-    agent's `@moduledoc` and every tool's description, so an agent with a few
-    tools is over the line. When the server starts, it renders the
-    instructions and logs a warning if they are longer than
-    `:instructions_budget`, naming the last words the host will read and the
-    sections after them. Answer it by overriding `server_instructions/0`, or
-    by giving tools a `description/0` shorter than their source, and set the
-    budget to what your hosts read if it is not Claude Code's.
+    description at the same length. So over MCP the instructions follow
+    `tool_docs: :discovery` unless the agent's `config/0` says otherwise
+    (see `Legion.Agent`). They then carry the agent's
+    `@moduledoc` and one line per tool; the model reads a tool in full with
+    `help`. For an agent with a one-line `@moduledoc` and one tool that is
+    about 1,000 characters, and each tool adds a line. The sandbox rules
+    are in the `repl` tool description instead: about 1,450 characters for
+    Lua, 1,950 for Elixir. When the server starts, it renders both and logs
+    a warning for either that is longer than `:instructions_budget`, naming
+    the last words the host will read and any sections after them. For the
+    instructions, answer it by shortening the agent's `@moduledoc` or
+    overriding `server_instructions/0`; for `repl`, by shortening the
+    sandbox's rules. Set the budget to what your hosts read if it is not
+    Claude Code's.
+
+    `tool_docs: :full` in `config/0` embeds every tool's description in the
+    instructions instead, as chat does, and brings the sandbox rules back
+    with them. That alone is past Claude Code's cap before the first tool,
+    so expect the warning; `server_instructions/0` is the way out.
 
     ## Sessions are agents
 
@@ -98,11 +117,15 @@ if Code.ensure_loaded?(Anubis.Server) do
       - With rate limit rules, every call is checked before it runs. A denied
         call runs nothing and comes back as a tool error the model can read.
         A running call counts towards `:max_running_agents` like a turn does.
+        Rules need a limiter; see `Legion.RateLimiter`.
       - Two sessions that resolve to one agent id share one process, so their
         calls are serialised and nothing is overwritten.
 
     Which agent a call belongs to is what `session/1` decides. It receives
     the call's frame and returns the options the agent is started with:
+
+        # no token over stdio: an anonymous agent per session
+        def session(%{context: %{auth: nil}}), do: []
 
         def session(frame) do
           user = MyApp.Users.from_claims!(frame.context.auth)
@@ -162,8 +185,11 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     Authentication is Anubis's: pass `authorization:` to `use` and the
     transport rejects requests without a valid bearer token before they reach
-    the server, serves the OAuth protected-resource metadata hosts discover,
-    and puts the token's claims in `frame.context.auth`:
+    the server and puts the token's claims in `frame.context.auth`. Hosts
+    also look for the OAuth protected-resource metadata at the root of the
+    site, which a mount under `/mcp` does not reach; Anubis's
+    [authorization guide](https://hexdocs.pm/anubis_mcp/authorization.html)
+    shows how to serve it:
 
         use Legion.MCP.Server,
           agent: MyApp.Assistant,
@@ -189,15 +215,15 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     ## Telemetry
 
-    Every `repl` call is a `[:legion, :mcp, :call]` span carrying the MCP
-    session id and the agent id it ran in; the agent's own events fire
-    inside it. See `Legion.Telemetry`.
+    Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
+    the MCP session id and the agent id it ran in; the agent's own events
+    fire inside it. See `Legion.Telemetry`.
     """
 
     require Logger
 
-    alias Anubis.Server.Frame
-    alias Legion.{Agent, AgentPrompt, AgentServer}
+    alias Anubis.Server.{Component, Frame, Response}
+    alias Legion.{Agent, AgentPrompt, AgentServer, Telemetry}
 
     # What Claude Code reads of the instructions (and of each tool description)
     # before cutting: its `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` default.
@@ -221,7 +247,13 @@ if Code.ensure_loaded?(Anubis.Server) do
       quote do
         use Anubis.Server, unquote(anubis_opts)
 
-        component Legion.MCP.Repl, name: "repl"
+        defmodule Repl do
+          @moduledoc false
+          use Legion.MCP.Repl, agent: unquote(agent)
+        end
+
+        component __MODULE__.Repl, name: "repl"
+        component Legion.MCP.Help, name: "help"
 
         @doc false
         def __legion_agent__, do: unquote(agent)
@@ -311,6 +343,40 @@ if Code.ensure_loaded?(Anubis.Server) do
     def stop_anonymous_agent(_frame), do: :ok
 
     @doc false
+    # One `Legion.eval/3` on the session's agent, answered as a tool result:
+    # `repl` runs the host's code through it, `help` its own `Help.help/1`
+    # call. The agent owns the variables, saves the step and enforces the
+    # rate limit.
+    def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code) do
+      {agent, agent_id, vault, frame} = resolve_agent(frame)
+
+      metadata = %{
+        agent: server.__legion_agent__(),
+        agent_id: agent_id,
+        session_id: frame.context.session_id,
+        code: code
+      }
+
+      Telemetry.span([:legion, :mcp, :call], metadata, fn ->
+        case Legion.eval(agent, code, vault: vault) do
+          {:ok, text} ->
+            {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
+
+          {:error, error} ->
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
+
+          {:cancel, {:rate_limited, violations}} ->
+            limits = Enum.join(violations, ", ")
+            error = "Rate limit exceeded (#{limits}). Try again later."
+
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
+        end
+      end)
+    end
+
+    @doc false
     # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
     # returns the live process that already owns the agent id.
     def agent(agent_module, opts) do
@@ -330,14 +396,43 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
+    # The sandbox a session's agent runs: the agent's config, overridden by
+    # the session's `:sandbox` option if it passes one. Resolved from those
+    # alone, so callers need no call into the agent process.
+    def sandbox(agent_module, session_opts) do
+      Agent.resolve_config(agent_module, Keyword.take(session_opts, [:sandbox])).sandbox
+    end
+
+    @doc false
     # Logged once, when the supervisor builds the child spec, so an oversize
-    # prompt is a boot-time warning and not a silently confused host. Counted
-    # in characters, as Claude Code slices a JavaScript string; for the ASCII
-    # prompts Legion renders the two agree.
+    # prompt is a boot-time warning and not a silently confused host. Hosts
+    # cut the `repl` tool description at the same length, and it carries the
+    # sandbox rules, so it is measured too. Counted in characters, as Claude
+    # Code slices a JavaScript string; for the ASCII prompts Legion renders
+    # the two agree.
     def check_instructions(_server, :infinity), do: :ok
 
     def check_instructions(server, budget) when is_integer(budget) do
-      text = server.server_instructions()
+      check_size(
+        server,
+        "server instructions are",
+        server.server_instructions(),
+        budget,
+        "Override server_instructions/0 with something shorter, or pass "
+      )
+
+      check_size(
+        server,
+        "repl tool description is",
+        Component.get_description(Module.concat(server, Repl)),
+        budget,
+        "Shorten the sandbox's constraints, or pass "
+      )
+
+      :ok
+    end
+
+    defp check_size(server, what, text, budget, advice) do
       size = String.length(text)
 
       if size > budget do
@@ -357,16 +452,15 @@ if Code.ensure_loaded?(Anubis.Server) do
           end
 
         Logger.warning(
-          "#{inspect(server)}: server instructions are #{size} characters, and hosts that " <>
+          "#{inspect(server)}: #{what} #{size} characters, and hosts that " <>
             "cap them at #{budget} (Claude Code does) stop reading after \"…#{last_words}\"." <>
             lost_sections <>
-            " Override server_instructions/0 with something shorter, or pass " <>
+            " " <>
+            advice <>
             "instructions_budget: to `use Legion.MCP.Server` (an integer, or :infinity " <>
             "to skip this check)."
         )
       end
-
-      :ok
     end
 
     @doc false

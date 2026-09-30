@@ -78,8 +78,10 @@ defmodule Legion.EvalTest do
     test "checks and executes the code with the agent's tools and their extra modules allowed" do
       assert {:ok, _} = Eval.run(ExtraAgent, "x = 1", config(), [])
 
-      assert_received {:check, "x = 1", [ExtraTool, Jason]}
-      assert_received {:execute, "x = 1", _timeout, [ExtraTool, Jason], [], _limits}
+      assert_received {:check, "x = 1", [ExtraTool, Legion.Tools.Help, Jason]}
+
+      assert_received {:execute, "x = 1", _timeout, [ExtraTool, Legion.Tools.Help, Jason], [],
+                       _limits}
     end
 
     test "passes the timeout and resource limits from the config to the sandbox" do
@@ -116,7 +118,11 @@ defmodule Legion.EvalTest do
       Eval.run(ExtraAgent, "x = 1", config(%{eval_guard: DenyGuard}), [])
 
       assert_received {:guard_context,
-                       %{agent: ExtraAgent, agent_id: "agent-7", tools: [ExtraTool]}}
+                       %{
+                         agent: ExtraAgent,
+                         agent_id: "agent-7",
+                         tools: [ExtraTool, Legion.Tools.Help]
+                       }}
     end
 
     test "emits a sandbox eval span with the outcome" do
