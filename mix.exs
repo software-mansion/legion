@@ -36,6 +36,7 @@ defmodule Legion.MixProject do
           "guides/local_llms.md": [title: "Local LLMs"],
           "guides/mcp.md": [title: "Serving an agent over MCP"],
           "guides/observability.md": [title: "Observability"],
+          "guides/local_llms.md": [title: "Local LLMs"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()

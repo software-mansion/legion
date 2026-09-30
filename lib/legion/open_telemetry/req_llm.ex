@@ -49,9 +49,13 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     adapter(config).start_span(name, attributes, legion_config(config))
   end
 
+  # ReqLLM repeats its start attributes when the request ends. The conversation
+  # id was set at start, where an adapter may have rewritten it (Datadog puts
+  # the session there), so the repeat is dropped.
   @impl true
   def set_attributes(span, attributes, config) do
-    adapter(config).set_attributes(span, join_content(attributes), legion_config(config))
+    attributes = attributes |> Map.drop([:"gen_ai.conversation.id"]) |> join_content()
+    adapter(config).set_attributes(span, attributes, legion_config(config))
   end
 
   @impl true

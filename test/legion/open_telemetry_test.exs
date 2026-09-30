@@ -2,12 +2,10 @@ defmodule Legion.OpenTelemetryTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  import ExUnit.CaptureIO
-
   setup :set_mimic_global
 
   alias Legion.OpenTelemetry
-  alias Legion.OpenTelemetry.Adapter.{Braintrust, Datadog, OTel}
+  alias Legion.OpenTelemetry.Adapter.Datadog
   alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
 
   @model "openai:gpt-4o-mini"
@@ -75,6 +73,19 @@ defmodule Legion.OpenTelemetryTest do
     stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
       ReqLLMTelemetry.emit_request(@model, opts)
       {:ok, llm_response(result)}
+    end)
+  end
+
+  # Sets an app env key for one test.
+  defp put_env(app, key, value) do
+    previous = Application.fetch_env(app, key)
+    Application.put_env(app, key, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(app, key, value)
+        :error -> Application.delete_env(app, key)
+      end
     end)
   end
 
@@ -151,6 +162,16 @@ defmodule Legion.OpenTelemetryTest do
       assert opts[:telemetry] == [conversation_id: agent_id]
     end
 
+    test "chat spans carry message content by default" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      stub_llm("done")
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      assert_receive {:otel, :start_span, _, @span_name, attrs, _}
+      assert Map.has_key?(attrs, :"gen_ai.input.messages")
+    end
+
     test "content: :attributes records chat content as one JSON array string per attribute" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       stub_llm("done")
@@ -164,7 +185,7 @@ defmodule Legion.OpenTelemetryTest do
     end
 
     test "content: :none keeps messages off chat spans" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       stub_llm("done")
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -235,89 +256,38 @@ defmodule Legion.OpenTelemetryTest do
     end
   end
 
-  describe "attach/1 with config :legion, :open_telemetry" do
-    setup do
-      app_config = Application.get_env(:legion, :open_telemetry)
+  describe "attach/1 with a vendor adapter in config" do
+    @datadog [api_key: "key", site: "datadoghq.eu", ml_app: "my-app"]
 
-      on_exit(fn ->
-        if app_config,
-          do: Application.put_env(:legion, :open_telemetry, app_config),
-          else: Application.delete_env(:legion, :open_telemetry)
-      end)
-    end
-
-    test "takes its options from the app config" do
-      Application.put_env(:legion, :open_telemetry, adapter: Braintrust, iteration_spans: true)
+    test "uses the vendor adapter and takes the other options from config" do
+      put_env(:legion, OpenTelemetry, adapter: Datadog, iteration_spans: true)
+      put_env(:legion, Datadog, @datadog)
+      put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
 
       :ok = OpenTelemetry.attach()
 
-      assert OpenTelemetry.config()[:adapter] == Braintrust
+      assert OpenTelemetry.config()[:adapter] == Datadog
       assert OpenTelemetry.config()[:iteration_spans] == true
     end
 
-    test "options given to attach/1 win over the app config" do
-      Application.put_env(:legion, :open_telemetry, adapter: Braintrust)
+    test "raises on invalid vendor options, naming the option but not its value" do
+      put_env(:legion, OpenTelemetry, adapter: Datadog)
+      put_env(:legion, Datadog, api_key: 12_345, ml_app: "my-app")
+      put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
 
-      :ok = OpenTelemetry.attach(adapter: OTel)
-
-      assert OpenTelemetry.config()[:adapter] == OTel
+      error = assert_raise ArgumentError, fn -> OpenTelemetry.attach() end
+      assert Exception.message(error) =~ ":api_key"
+      refute Exception.message(error) =~ "12345"
     end
 
-    test "an app config that is not a keyword list is a clear error" do
-      Application.put_env(:legion, :open_telemetry, %{adapter: Braintrust})
+    test "raises with the config line to add when the SDK does not export through Legion" do
+      put_env(:legion, OpenTelemetry, adapter: Datadog)
+      put_env(:legion, Datadog, @datadog)
+      put_env(:opentelemetry, :traces_exporter, :none)
 
-      assert_raise ArgumentError, ~r/must be a keyword list/, fn -> OpenTelemetry.attach() end
-    end
-  end
-
-  describe "configure/2" do
-    # Evaluates `body` as a config/runtime.exs file, the way Mix and releases
-    # do; the result is returned, not applied to the app env.
-    defp runtime_config(body), do: Config.Reader.eval!("runtime.exs", "import Config\n" <> body)
-
-    test "writes the adapter's exporter config and selects the adapter for attach/1" do
-      config =
-        runtime_config("""
-        Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog,
-          api_key: "key", site: "datadoghq.eu", ml_app: "my_app")
-        """)
-
-      assert config[:legion][:open_telemetry] == [adapter: Datadog]
-
-      assert config[:opentelemetry] == [
-               traces_exporter: :otlp,
-               resource: [service: [name: "my_app"]]
-             ]
-
-      assert config[:opentelemetry_exporter][:otlp_endpoint] == "https://otlp.datadoghq.eu"
-    end
-
-    test "warns when the same config already set a trace exporter" do
-      stderr =
-        capture_io(:stderr, fn ->
-          runtime_config("""
-          config :opentelemetry, traces_exporter: {:otel_exporter_stdout, []}
-          Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
-            api_key: "key", project: "my_app")
-          """)
-        end)
-
-      assert stderr =~ "traces_exporter"
-      assert stderr =~ "Collector"
-    end
-
-    test "rejects invalid vendor options" do
-      assert_raise NimbleOptions.ValidationError, ~r/required :api_key option not found/, fn ->
-        runtime_config("""
-        Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Datadog, ml_app: "my_app")
-        """)
-      end
-    end
-
-    test "raises for an adapter without exporter config" do
-      assert_raise ArgumentError, ~r/has no exporter_config\/1/, fn ->
-        runtime_config("Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.OTel, [])")
-      end
+      assert_raise ArgumentError,
+                   ~r/config :opentelemetry, traces_exporter: \{Legion.OpenTelemetry.Exporter, \[\]\}/,
+                   fn -> OpenTelemetry.attach() end
     end
   end
 
