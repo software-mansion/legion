@@ -1,4 +1,23 @@
 defmodule Legion.OpenTelemetry.Adapter.Braintrust do
+  @exporter_schema NimbleOptions.new!(
+                     api_key: [type: :string, required: true, doc: "Braintrust API key."],
+                     project: [
+                       type: :string,
+                       required: true,
+                       doc: "Braintrust project the traces are logged to."
+                     ],
+                     region: [
+                       type: {:in, [:us, :eu]},
+                       default: :us,
+                       doc: "Data plane of the organization: `:us` or `:eu`."
+                     ]
+                   )
+
+  @endpoints %{
+    us: "https://api.braintrust.dev/otel",
+    eu: "https://api-eu.braintrust.dev/otel"
+  }
+
   @moduledoc """
   `Legion.OpenTelemetry.Adapter` for Braintrust, on top of
   `Legion.OpenTelemetry.Adapter.OTel`.
@@ -12,11 +31,24 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
   agent the conversation is with, shared by the sub-agents its turns call, so
   every span of a trace has the same key, as Group scope requires.
 
-      Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Braintrust, content: :attributes)
+      # config/runtime.exs
+      Legion.OpenTelemetry.configure(Legion.OpenTelemetry.Adapter.Braintrust,
+        api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
+        project: "my_app",
+        region: :eu
+      )
 
-  Braintrust reads Legion's content attributes as they are. To get one trace
-  per conversation instead, add `conversation_traces: true`; the session id
-  stays on every span either way.
+      # application.ex
+      :ok = Legion.OpenTelemetry.attach(content: :attributes)
+
+  `Legion.OpenTelemetry.configure/2` points the OTLP exporter at Braintrust
+  and selects the adapter. Braintrust reads Legion's content attributes as
+  they are. To get one trace per conversation instead, add
+  `conversation_traces: true`; the session id stays on every span either way.
+
+  ## Options
+
+  #{NimbleOptions.docs(@exporter_schema)}
   """
 
   @behaviour Legion.OpenTelemetry.Adapter
@@ -58,6 +90,23 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
   @impl true
   def start_child_span(parent, name, attributes, opts, config) do
     OTel.start_child_span(parent, name, with_session(attributes), opts, config)
+  end
+
+  @impl true
+  def exporter_config(opts) do
+    opts = NimbleOptions.validate!(opts, @exporter_schema)
+
+    [
+      opentelemetry: [traces_exporter: :otlp],
+      opentelemetry_exporter: [
+        otlp_protocol: :http_protobuf,
+        otlp_endpoint: Map.fetch!(@endpoints, opts[:region]),
+        otlp_headers: [
+          {"authorization", "Bearer " <> opts[:api_key]},
+          {"x-bt-parent", "project_name:" <> opts[:project]}
+        ]
+      ]
+    ]
   end
 
   defp with_session(%{"session.id": session} = attributes) when is_binary(session),

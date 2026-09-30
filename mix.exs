@@ -98,7 +98,8 @@ defmodule Legion.MixProject do
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:mimic, "~> 1.7", only: :test},
       {:bandit, "~> 1.0", only: :test},
-      {:opentelemetry, "~> 1.5", only: :test}
+      {:opentelemetry, "~> 1.5", only: :test},
+      {:opentelemetry_exporter, "~> 1.8", only: :test}
     ]
   end
 

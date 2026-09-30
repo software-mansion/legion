@@ -9,8 +9,11 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   options as `:legion_config`; the Legion adapter is called with the latter plus
   `span_kind: :client`.
 
-  A `chat` span started during an agent turn also gets `gen_ai.agent.name`,
-  `gen_ai.conversation.id` and `legion.iteration`; values ReqLLM sets win.
+  A `chat` span started in the agent process during a turn, and the
+  `execute_tool` spans ReqLLM adds under it for provider-side tools, also get
+  `gen_ai.agent.name`, `gen_ai.conversation.id`, `session.id` and
+  `legion.iteration`; one started from tool code gets `session.id` only.
+  Values ReqLLM sets win.
 
   ReqLLM records message content (`gen_ai.input.messages`,
   `gen_ai.output.messages`, `gen_ai.system_instructions`,
@@ -80,7 +83,7 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     adapter = adapter(config)
     legion_config = legion_config(config, Map.get(opts, :kind, :internal))
 
-    attributes = join_content(attributes)
+    attributes = Handler.chat_attributes() |> Map.merge(attributes) |> join_content()
 
     if function_exported?(adapter, :start_child_span, 5),
       do: adapter.start_child_span(parent, name, attributes, opts, legion_config),
