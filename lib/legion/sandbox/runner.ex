@@ -79,6 +79,7 @@ defmodule Legion.Sandbox.Runner do
   # footprint. Only relevant when one of those limits is set - either budget
   # can be overshot by up to one interval's worth of work.
   @poll_interval_ms 50
+  @limit_error "evaluation exceeded the "
 
   defp await_result(pid, ref, deadline, max_reductions, max_heap_bytes) do
     receive do
@@ -107,7 +108,8 @@ defmodule Legion.Sandbox.Runner do
             kill(pid, ref)
 
             {:error,
-             "evaluation exceeded the reduction (CPU) limit after ~#{reductions} reductions and was killed"}
+             @limit_error <>
+               "reduction (CPU) limit after ~#{reductions} reductions and was killed"}
 
           binary_bytes != nil ->
             kill(pid, ref)
@@ -119,7 +121,14 @@ defmodule Legion.Sandbox.Runner do
     end
   end
 
-  defp memory_limit_error, do: "evaluation exceeded the memory limit and was killed"
+  defp memory_limit_error, do: @limit_error <> "memory limit and was killed"
+
+  @doc false
+  # What kind of failure an eval error from `run/5` is, for telemetry.
+  def error_kind(:timeout), do: :timeout
+  def error_kind({:process_crashed, _reason}), do: :crash
+  def error_kind(@limit_error <> _), do: :limit
+  def error_kind(_error), do: :runtime
 
   defp kill_eval_when_parent_dies(parent) do
     eval = self()

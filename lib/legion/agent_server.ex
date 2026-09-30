@@ -83,11 +83,11 @@ defmodule Legion.AgentServer do
   end
 
   def call(agent, message, timeout \\ :infinity) do
-    GenServer.call(agent, {:message, message, Telemetry.capture_context()}, timeout)
+    GenServer.call(agent, with_otel_context({:message, message}), timeout)
   end
 
   def cast(agent, message) do
-    GenServer.cast(agent, {:message, message, Telemetry.capture_context()})
+    GenServer.cast(agent, with_otel_context({:message, message}))
   end
 
   @doc false
@@ -96,7 +96,16 @@ defmodule Legion.AgentServer do
   # Returns `{:ok, text}`, `{:error, text}` or `{:cancel, {:rate_limited, violations}}`.
   def eval(agent, code, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, :infinity)
-    GenServer.call(agent, {:eval, code, opts, Telemetry.capture_context()}, timeout)
+    GenServer.call(agent, with_otel_context({:eval, code, opts}), timeout)
+  end
+
+  # Without an OpenTelemetry context the request keeps its old shape, which
+  # agents on nodes running an earlier Legion still accept.
+  defp with_otel_context(request) do
+    case Telemetry.capture_context() do
+      nil -> request
+      ctx -> Tuple.insert_at(request, tuple_size(request), ctx)
+    end
   end
 
   def get_messages(agent) do

@@ -196,20 +196,53 @@ defmodule Legion.OpenTelemetryTest do
       refute Map.has_key?(attrs, :"gen_ai.output.messages")
     end
 
-    test "content: :attributes turns on raw payloads in the :req_llm config" do
+    test "content: :attributes asks for raw payloads on Legion's own ReqLLM calls only" do
       Application.delete_env(:req_llm, :telemetry)
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+        send(test_pid, {:llm_opts, opts})
+        {:ok, llm_response("done")}
+      end)
 
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
-      assert Application.get_env(:req_llm, :telemetry)[:payloads] == :raw
+      assert_receive {:llm_opts, opts}
+      assert opts[:telemetry][:payloads] == :raw
+      assert Application.get_env(:req_llm, :telemetry) == nil
     end
 
     test "leaves a :payloads setting the host configured alone" do
       Application.put_env(:req_llm, :telemetry, payloads: :none)
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+        send(test_pid, {:llm_opts, opts})
+        {:ok, llm_response("done")}
+      end)
 
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
-      assert Application.get_env(:req_llm, :telemetry) == [payloads: :none]
+      assert_receive {:llm_opts, opts}
+      assert opts[:telemetry][:payloads] == :none
+    end
+
+    test "content: :none asks for no payloads" do
+      Application.delete_env(:req_llm, :telemetry)
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+        send(test_pid, {:llm_opts, opts})
+        {:ok, llm_response("done")}
+      end)
+
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
+
+      assert_receive {:llm_opts, opts}
+      refute Keyword.has_key?(opts[:telemetry], :payloads)
     end
 
     test "req_llm: [adapter: ...] hands ReqLLM spans to the host's adapter instead" do
@@ -267,6 +300,7 @@ defmodule Legion.OpenTelemetryTest do
       :ok = OpenTelemetry.attach()
 
       assert OpenTelemetry.config()[:adapter] == Datadog
+      assert OpenTelemetry.config()[:tracer] == Legion.OpenTelemetry.Adapter.OTel
       assert OpenTelemetry.config()[:iteration_spans] == true
     end
 
@@ -292,8 +326,7 @@ defmodule Legion.OpenTelemetryTest do
   end
 
   describe "detach/0" do
-    test "removes the ReqLLM handler and restores the :req_llm telemetry config" do
-      Application.put_env(:req_llm, :telemetry, [])
+    test "removes the Legion and ReqLLM handlers" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
 
       assert OpenTelemetry.detach() == :ok
@@ -302,7 +335,6 @@ defmodule Legion.OpenTelemetryTest do
       refute OpenTelemetry.req_llm_handler_id() in handler_ids
       legion_ids = Enum.map(:telemetry.list_handlers([:legion]), & &1.id)
       refute "legion-otel" in legion_ids
-      assert Application.get_env(:req_llm, :telemetry) == []
       assert OpenTelemetry.config() == nil
     end
 

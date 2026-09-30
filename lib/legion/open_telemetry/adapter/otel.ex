@@ -9,7 +9,9 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
   they do not override.
 
   Spans start under the tracer named `legion` with the span kind taken from
-  `config[:span_kind]` (`:internal` by default). Metrics go to the meter named
+  `config[:span_kind]` (`:internal` by default), and their start attributes go
+  through `c:Legion.OpenTelemetry.Adapter.span_attributes/1` of
+  `config[:adapter]` when it has one. Metrics go to the meter named
   `legion` and need `opentelemetry_api_experimental` (and an SDK that reads
   it) in the host; without it `metrics_available?/0` returns `false` and
   metrics are skipped.
@@ -23,7 +25,10 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
 
     @impl true
     def start_span(name, attributes, config) do
-      :otel_tracer.start_span(tracer(), name, %{kind: span_kind(config), attributes: attributes})
+      :otel_tracer.start_span(tracer(), name, %{
+        kind: span_kind(config),
+        attributes: shape(attributes, config)
+      })
     end
 
     @impl true
@@ -66,8 +71,9 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
     end
 
     @impl true
-    def start_child_span(parent, name, attributes, opts, _config) do
+    def start_child_span(parent, name, attributes, opts, config) do
       ctx = OpenTelemetry.Tracer.set_current_span(OpenTelemetry.Ctx.get_current(), parent)
+      attributes = shape(attributes, config)
 
       span_opts =
         case Map.get(opts, :start_time) do
@@ -203,6 +209,17 @@ defmodule Legion.OpenTelemetry.Adapter.OTel do
     defp unit(%{unit: unit}) when is_binary(unit), do: Map.get(@units, unit, :undefined)
     defp unit(%{unit: unit}) when is_atom(unit), do: unit
     defp unit(_record), do: :undefined
+
+    # The configured adapter's `span_attributes/1`, when it has one: a vendor
+    # adapter traced by this one shapes every span's start attributes here.
+    defp shape(attributes, config) do
+      adapter = Keyword.get(config, :adapter)
+
+      if is_atom(adapter) and adapter != __MODULE__ and
+           function_exported?(adapter, :span_attributes, 1),
+         do: adapter.span_attributes(attributes),
+         else: attributes
+    end
 
     defp scope, do: :opentelemetry.get_application_scope(__MODULE__)
 

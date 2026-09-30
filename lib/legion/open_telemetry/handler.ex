@@ -101,7 +101,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
     span =
       case conversation_parent(meta, session, config) do
-        nil -> config[:adapter].start_span(name, attributes, config)
+        nil -> config[:tracer].start_span(name, attributes, config)
         parent -> start_child_span(parent, name, attributes, config)
       end
 
@@ -214,14 +214,13 @@ defmodule Legion.OpenTelemetry.Handler do
     attributes =
       meta |> Attributes.execute_tool_start(iteration, config) |> with_session(current_session())
 
-    span = config[:adapter].start_span("execute_tool sandbox", attributes, config)
+    span = config[:tracer].start_span("execute_tool sandbox", attributes, config)
 
     push(%{
       kind: :eval,
       span: span,
       token: attach_span(span),
-      agent: meta.agent,
-      guard_denied?: false
+      agent: meta.agent
     })
   end
 
@@ -230,7 +229,7 @@ defmodule Legion.OpenTelemetry.Handler do
       error_kind =
         if meta[:success],
           do: nil,
-          else: Attributes.eval_error_kind(meta[:error], frame.guard_denied?)
+          else: Atom.to_string(meta[:error_kind] || :runtime)
 
       closing(frame, config, fn -> end_eval(frame, meta, error_kind, config) end)
 
@@ -256,7 +255,7 @@ defmodule Legion.OpenTelemetry.Handler do
     session = meta[:session_id] || meta[:agent_id]
     attributes = meta |> Attributes.mcp_call_start(config) |> with_session(session)
     name = "tools/call " <> (meta[:tool] || "repl")
-    span = config[:adapter].start_span(name, attributes, Keyword.put(config, :span_kind, :server))
+    span = config[:tracer].start_span(name, attributes, Keyword.put(config, :span_kind, :server))
 
     push(%{kind: :mcp, span: span, token: attach_span(span, session), agent: meta.agent})
   end
@@ -277,10 +276,9 @@ defmodule Legion.OpenTelemetry.Handler do
 
   defp handle([:legion, :eval_guard, :denied], _measurements, meta, config) do
     case stack() do
-      [%{kind: :eval} = frame | rest] ->
+      [%{kind: :eval} = frame | _rest] ->
         attributes = Attributes.eval_guard_denied(meta, config)
-        config[:adapter].add_event(frame.span, "legion.eval_guard.denied", attributes, config)
-        put_stack([%{frame | guard_denied?: true} | rest])
+        config[:tracer].add_event(frame.span, "legion.eval_guard.denied", attributes, config)
 
       _ ->
         :ok
@@ -314,7 +312,7 @@ defmodule Legion.OpenTelemetry.Handler do
   # so a span left open for the conversation would hide every turn until the
   # agent stops. Turns started later still parent on it.
   defp start_conversation(meta, session, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
     name = "conversation " <> Attributes.agent_name(meta.agent)
 
     span =
@@ -342,7 +340,7 @@ defmodule Legion.OpenTelemetry.Handler do
   defp with_session(attributes, _no_session), do: attributes
 
   defp start_child_span(parent, name, attributes, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
 
     if function_exported?(adapter, :start_child_span, 5),
       do: adapter.start_child_span(parent, name, attributes, %{kind: :internal}, config),
@@ -359,7 +357,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
     with reason when is_binary(reason) <- reason,
          %{} = agent <- find(:agent) do
-      config[:adapter].add_event(
+      config[:tracer].add_event(
         agent.span,
         "legion.retry",
         %{"legion.retry.reason": reason, "legion.iteration": number},
@@ -448,7 +446,7 @@ defmodule Legion.OpenTelemetry.Handler do
         attributes =
           agent.agent |> Attributes.iteration(agent.agent_id, number) |> with_session(agent)
 
-        config[:adapter].start_span("iteration #{number}", attributes, config)
+        config[:tracer].start_span("iteration #{number}", attributes, config)
       else
         _ -> nil
       end
@@ -466,7 +464,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
   # Records a finished turn on its span, returning `error.type`.
   defp end_agent(frame, meta, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
     attributes = Attributes.invoke_agent_stop(meta, frame.model, config)
     error_type = attributes[:"error.type"]
 
@@ -476,7 +474,7 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp end_eval(frame, meta, error_kind, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
 
     if error_kind do
       message = Attributes.status_message(meta[:error], error_kind, config)
@@ -492,7 +490,7 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp end_mcp_call(frame, meta, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
     attributes = Attributes.mcp_call_stop(meta, config)
 
     if error_type = attributes[:"error.type"] do
@@ -507,13 +505,13 @@ defmodule Legion.OpenTelemetry.Handler do
   defp put_action(_span, nil = _action, _config), do: :ok
 
   defp put_action(span, action, config),
-    do: config[:adapter].set_attributes(span, %{"legion.action": action}, config)
+    do: config[:tracer].set_attributes(span, %{"legion.action": action}, config)
 
   defp cancel_attributes(agent, reason), do: Map.put(agent, :"legion.cancel.reason", reason)
 
   # Marks `frame`'s span failed from an `:exception` event, returning `error.type`.
   defp fail(frame, meta, config) do
-    adapter = config[:adapter]
+    adapter = config[:tracer]
     error_type = Attributes.exception_type(meta[:kind], meta[:reason])
     message = Attributes.status_message(meta[:reason], error_type, config)
 
@@ -532,7 +530,7 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp finish(frame, config) do
-    if frame.span, do: config[:adapter].end_span(frame.span, config)
+    if frame.span, do: config[:tracer].end_span(frame.span, config)
   after
     detach_span(frame.token)
   end

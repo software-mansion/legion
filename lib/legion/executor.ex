@@ -9,7 +9,7 @@ defmodule Legion.Executor do
   context across turns.
   """
 
-  alias Legion.{Eval, Telemetry}
+  alias Legion.{Eval, OpenTelemetry, Telemetry}
   alias Legion.Sandbox.Runner
 
   @default_config %{
@@ -256,19 +256,33 @@ defmodule Legion.Executor do
     )
   end
 
-  # A per-call `:telemetry` option replaces `config :req_llm, telemetry:` in
-  # ReqLLM, so the app config is merged in rather than overridden.
-  defp telemetry_opts do
+  @doc false
+  # The `:telemetry` option for Legion's ReqLLM calls. A per-call option
+  # replaces `config :req_llm, telemetry:` in ReqLLM, so the app config is
+  # merged in rather than overridden.
+  def telemetry_opts do
     env = Application.get_env(:req_llm, :telemetry, [])
 
-    case Vault.get(:agent_id) do
-      nil -> env
-      agent_id when is_map(env) -> Map.put(env, :conversation_id, agent_id)
-      agent_id when is_list(env) -> Keyword.put(env, :conversation_id, agent_id)
-      # ReqLLM ignores any other value, so there is nothing to keep.
-      agent_id -> [conversation_id: agent_id]
-    end
+    opts =
+      case Vault.get(:agent_id) do
+        nil -> env
+        agent_id when is_map(env) -> Map.put(env, :conversation_id, agent_id)
+        agent_id when is_list(env) -> Keyword.put(env, :conversation_id, agent_id)
+        # ReqLLM ignores any other value, so there is nothing to keep.
+        agent_id -> [conversation_id: agent_id]
+      end
+
+    if OpenTelemetry.req_llm_content?(), do: raw_payloads(opts), else: opts
   end
+
+  # ReqLLM only maps message content onto `chat` spans when payloads are raw.
+  # A `:payloads` the host configured is kept.
+  defp raw_payloads(opts) when is_list(opts), do: Keyword.put_new(opts, :payloads, :raw)
+
+  defp raw_payloads(opts) when is_map(opts) and not is_map_key(opts, "payloads"),
+    do: Map.put_new(opts, :payloads, :raw)
+
+  defp raw_payloads(opts), do: opts
 
   defp handle_llm_response(response, messages, message_count, turn_usage) do
     usage =

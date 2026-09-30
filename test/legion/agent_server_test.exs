@@ -1618,7 +1618,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "runs code without an LLM and keeps variables between calls" do
-      reject(&ReqLLM.generate_object/3)
+      reject(&ReqLLM.generate_object/4)
       {:ok, pid} = Legion.start_link(MathAgent)
 
       assert {:ok, _text} = AgentServer.eval(pid, "x = MathTool.random_add(1, 0)")
@@ -1692,7 +1692,7 @@ defmodule Legion.AgentServerTest do
 
   describe "idle_timeout" do
     test "stops the agent once nobody has called for that long" do
-      reject(&ReqLLM.generate_object/3)
+      reject(&ReqLLM.generate_object/4)
       {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 50)
       ref = Process.monitor(pid)
 
@@ -1700,7 +1700,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "every call starts the wait over" do
-      reject(&ReqLLM.generate_object/3)
+      reject(&ReqLLM.generate_object/4)
       {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 100)
 
       Process.sleep(60)

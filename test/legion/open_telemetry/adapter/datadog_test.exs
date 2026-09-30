@@ -9,7 +9,7 @@ defmodule Legion.OpenTelemetry.Adapter.DatadogTest do
 
   require Record
 
-  alias Legion.OpenTelemetry.Adapter.Datadog
+  alias Legion.OpenTelemetry.Adapter.{Datadog, OTel}
 
   Record.defrecordp(
     :span,
@@ -42,16 +42,16 @@ defmodule Legion.OpenTelemetry.Adapter.DatadogTest do
   describe "spans" do
     test "are grouped by the session, not by a sub-agent's own conversation" do
       :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
-      config = [span_kind: :internal]
+      config = [adapter: Datadog, span_kind: :internal]
 
       span =
-        Datadog.start_span(
+        OTel.start_span(
           "invoke_agent Sub",
           %{"session.id": "top", "gen_ai.conversation.id": "sub"},
           config
         )
 
-      Datadog.end_span(span, config)
+      OTel.end_span(span, config)
 
       assert_receive {:span, span(name: "invoke_agent Sub", attributes: attributes)}
       assert :otel_attributes.map(attributes)[:"gen_ai.conversation.id"] == "top"

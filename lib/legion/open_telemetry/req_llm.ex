@@ -1,12 +1,14 @@
 defmodule Legion.OpenTelemetry.ReqLLM do
   @moduledoc """
   `ReqLLM.OpenTelemetry.Adapter` that forwards ReqLLM's `chat` spans to the
-  `Legion.OpenTelemetry.Adapter` chosen in `Legion.OpenTelemetry.attach/1`.
+  tracer `Legion.OpenTelemetry.attach/1` resolved: the chosen
+  `Legion.OpenTelemetry.Adapter` when it traces spans itself, otherwise
+  `Legion.OpenTelemetry.Adapter.OTel`.
 
   Installed by `Legion.OpenTelemetry.attach/1` unless the host passes its own
   `req_llm: [adapter: ...]`. Every callback receives ReqLLM's bridge config,
-  which carries the Legion adapter as `:legion_adapter` and the Legion attach
-  options as `:legion_config`; the Legion adapter is called with the latter plus
+  which carries that tracer as `:legion_adapter` and the Legion attach
+  options as `:legion_config`; the tracer is called with the latter plus
   `span_kind: :client`.
 
   A `chat` span started in the agent process during a turn, and the
@@ -31,7 +33,7 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   def available? do
     case Legion.OpenTelemetry.config() do
       nil -> false
-      config -> config[:adapter].available?()
+      config -> config[:tracer].available?()
     end
   end
 

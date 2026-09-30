@@ -132,10 +132,10 @@ config :legion, Legion.OpenTelemetry, iteration_spans: true
 >
 > With the default `content: :attributes`, spans carry the prompts, the
 > model's replies, the code the model wrote, tool results and error messages.
-> Whoever can read your traces can read them. It also sets
-> `config :req_llm, telemetry: [payloads: :raw]` for the whole app (unless you
-> set `:payloads` yourself), so every other ReqLLM telemetry handler you have
-> receives raw prompts and responses too. To keep content out, attach with
+> Whoever can read your traces can read them. This is the opposite of
+> `ReqLLM.OpenTelemetry`'s default (`:none`), because the vendors Legion ships
+> adapters for are LLM observability tools and show little without content.
+> To keep content out, attach with
 > `content: :none` (or set it in `config :legion, Legion.OpenTelemetry`):
 > spans then keep their structure, timings, token counts and error types, and
 > a failed span's status names only its `error.type`.
@@ -143,9 +143,11 @@ config :legion, Legion.OpenTelemetry, iteration_spans: true
 With `content: :attributes`, Legion puts the messages, system instructions and tool
 definitions on the `chat` spans as `gen_ai.input.messages`,
 `gen_ai.system_instructions`, `gen_ai.tool.definitions` and
-`gen_ai.output.messages`, each one JSON array string. It also sets `config :req_llm, telemetry: [payloads: :raw]`
-unless you configured `:payloads` yourself, because ReqLLM only maps content
-when payloads are raw. On Legion's own spans it records the user message and
+`gen_ai.output.messages`, each one JSON array string. ReqLLM only maps
+content when payloads are raw, so Legion passes `payloads: :raw` to its own
+ReqLLM calls unless you configured `:payloads` yourself; your app's other
+ReqLLM calls need `config :req_llm, telemetry: [payloads: :raw]` for their
+content. On Legion's own spans it records the user message and
 the turn's result on `invoke_agent` (`gen_ai.input.messages`,
 `gen_ai.output.messages`, each one JSON string) and the evaluated code and its
 result on `execute_tool` (`gen_ai.tool.call.arguments`,
@@ -336,42 +338,34 @@ Langfuse: point the exporter at `/api/public/otel` with Basic auth and pass
 
 ## Custom adapters
 
-`Legion.OpenTelemetry.Adapter` mirrors `ReqLLM.OpenTelemetry.Adapter`, so one
-module can implement both. Delegate what you keep to
-`Legion.OpenTelemetry.Adapter.OTel` and override the rest. This one tags every
-span with the deployment environment:
+Most adapters only need `span_attributes/1`, which rewrites the attributes
+every span starts with; `Legion.OpenTelemetry.Adapter.OTel` does the tracing.
+This one tags every span with the deployment environment:
 
 ```elixir
 defmodule MyApp.OTelAdapter do
   @behaviour Legion.OpenTelemetry.Adapter
 
-  alias Legion.OpenTelemetry.Adapter.OTel
-
-  defdelegate available?(), to: OTel
-  defdelegate add_event(span, name, attrs, config), to: OTel
-  defdelegate set_status(span, kind, message, config), to: OTel
-  defdelegate end_span(span, config), to: OTel
-  defdelegate metrics_available?(), to: OTel
-  defdelegate record_histogram(record, config), to: OTel
-  defdelegate record_counter(record, config), to: OTel
-  defdelegate start_child_span(parent, name, attrs, opts, config), to: OTel
-  defdelegate end_span_at(span, end_time, config), to: OTel
-  defdelegate set_attributes(span, attrs, config), to: OTel
-
-  def start_span(name, attrs, config) do
-    attrs = Map.put(attrs, :"deployment.environment.name", "production")
-    OTel.start_span(name, attrs, config)
-  end
+  @impl true
+  def span_attributes(attrs),
+    do: Map.put(attrs, :"deployment.environment.name", "production")
 end
 
 Legion.OpenTelemetry.attach(adapter: MyApp.OTelAdapter)
 ```
 
-Attribute keys arrive as atoms. `config` is the keyword given to `attach/1`
-plus `:span_kind`: `:client` for `chat` spans, `:internal` for Legion's own.
-Only span handles that are OpenTelemetry span contexts become the current
-span, so an adapter that returns something else still sees every span, but
-nothing nests under Legion's spans.
+Attribute keys arrive as atoms, except the ones ReqLLM sets under a string
+key. Add `exporter_config/1` to make it a vendor adapter
+`Legion.OpenTelemetry.Exporter` can send to, as
+`Legion.OpenTelemetry.Adapter.Datadog` does.
+
+An adapter that implements `start_span/3` is its own tracer and implements
+the rest of the tracer callbacks, which mirror `ReqLLM.OpenTelemetry.Adapter`,
+so one module can implement both. `config` is then the keyword given to
+`attach/1` plus `:span_kind`: `:client` for `chat` spans, `:internal` for
+Legion's own. Only span handles that are OpenTelemetry span contexts become
+the current span, so a tracer that returns something else still sees every
+span, but nothing nests under Legion's spans.
 
 ## Hosts that already attach ReqLLM
 

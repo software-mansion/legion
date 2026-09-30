@@ -33,10 +33,21 @@ defmodule Legion.OpenTelemetry do
   Options can also be set in `config :legion, Legion.OpenTelemetry`; options
   given to `attach/1` win.
 
+  > #### Message content is recorded by default {: .warning}
+  >
+  > Unlike `ReqLLM.OpenTelemetry`, which defaults to `content: :none`, Legion
+  > defaults to `content: :attributes`: the vendors it ships adapters for are
+  > LLM observability tools, and a trace without prompts and replies shows
+  > little there. Prompts, replies, the code the model wrote and tool results,
+  > including any record fields your tools return, then reach the tracing
+  > backend and whoever can read it. Attach with `content: :none` to keep them
+  > out.
+
   ## Options
 
     * `:adapter` - a `Legion.OpenTelemetry.Adapter` module. Defaults to
-      `Legion.OpenTelemetry.Adapter.OTel`. `Legion.OpenTelemetry.Exporter`
+      `Legion.OpenTelemetry.Adapter.OTel`, which also traces for an adapter
+      without its own `start_span/3`. `Legion.OpenTelemetry.Exporter`
       exports to the vendor adapter (one with
       `c:Legion.OpenTelemetry.Adapter.exporter_config/1`) named in
       `config :legion, Legion.OpenTelemetry`; an `:adapter` given to
@@ -45,9 +56,10 @@ defmodule Legion.OpenTelemetry do
       tracing backend: prompts, replies, the code the model wrote, tool
       results and error messages. `:none` turns that off. With `:attributes`,
       messages, system instructions and tool definitions go on the `chat`
-      spans as `gen_ai.*` attributes. Also turns on
-      `config :req_llm, telemetry: [payloads: :raw]` unless the host configured
-      `:payloads` itself.
+      spans as `gen_ai.*` attributes; Legion passes `payloads: :raw` to its
+      own ReqLLM calls for that, unless the host configured `:payloads` in
+      `config :req_llm, telemetry:`. The host's own ReqLLM calls need
+      `config :req_llm, telemetry: [payloads: :raw]` for their content.
       Legion's own spans then record the user message
       (`gen_ai.input.messages`), the turn's result (`gen_ai.output.messages`)
       and the evaluated code and its result (`gen_ai.tool.call.arguments`,
@@ -201,13 +213,23 @@ defmodule Legion.OpenTelemetry do
     with {adapter, vendor_opts} <- vendor_in(defaults), do: check_vendor!(adapter, vendor_opts)
 
     config = defaults |> Keyword.merge(opts) |> NimbleOptions.validate!(@schema)
+    config = Keyword.put(config, :tracer, tracer(config[:adapter]))
 
-    if config[:adapter].available?() do
+    if config[:tracer].available?() do
       detach()
       do_attach(config)
     else
       {:error, :opentelemetry_unavailable}
     end
+  end
+
+  # An adapter without its own `start_span/3` only shapes spans
+  # (`span_attributes/1`) or exports them (`exporter_config/1`), and is traced
+  # by `Adapter.OTel`.
+  defp tracer(adapter) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :start_span, 3),
+      do: adapter,
+      else: Legion.OpenTelemetry.Adapter.OTel
   end
 
   defp check_vendor!(adapter, vendor_opts) do
@@ -275,8 +297,8 @@ defmodule Legion.OpenTelemetry do
   defp do_attach(config) do
     config =
       Keyword.merge(config,
-        metrics?: config[:metrics] and Metrics.available?(config[:adapter]),
-        req_llm_telemetry_env: Application.get_env(:req_llm, :telemetry)
+        metrics?: config[:metrics] and Metrics.available?(config[:tracer]),
+        req_llm_content?: req_llm_content?(config)
       )
 
     :persistent_term.put(@config_key, config)
@@ -287,15 +309,13 @@ defmodule Legion.OpenTelemetry do
     else
       {:error, _} = error ->
         Handler.detach()
-        restore_req_llm_env(config[:req_llm_telemetry_env])
         :persistent_term.erase(@config_key)
         error
     end
   end
 
   @doc """
-  Detaches the integration and restores the `:req_llm` telemetry config
-  `attach/1` may have changed.
+  Detaches the integration.
   """
   @spec detach() :: :ok | {:error, :not_found}
   def detach do
@@ -306,7 +326,6 @@ defmodule Legion.OpenTelemetry do
       config ->
         Handler.detach()
         if config[:req_llm] != false, do: ReqLLM.OpenTelemetry.detach(@req_llm_handler_id)
-        restore_req_llm_env(config[:req_llm_telemetry_env])
         :persistent_term.erase(@config_key)
         :ok
     end
@@ -317,6 +336,27 @@ defmodule Legion.OpenTelemetry do
   """
   @spec config() :: keyword() | nil
   def config, do: :persistent_term.get(@config_key, nil)
+
+  @doc false
+  # Whether Legion's ReqLLM handler records message content, which ReqLLM only
+  # maps when a call's telemetry payloads are `:raw`.
+  @spec req_llm_content?() :: boolean()
+  def req_llm_content? do
+    case config() do
+      nil -> false
+      config -> config[:req_llm_content?]
+    end
+  end
+
+  defp req_llm_content?(config) do
+    case config[:req_llm] do
+      false ->
+        false
+
+      req_llm_opts ->
+        Keyword.get(req_llm_opts, :content, config[:content]) not in [nil, :none, false]
+    end
+  end
 
   defp attach_req_llm(config) do
     case config[:req_llm] do
@@ -329,36 +369,13 @@ defmodule Legion.OpenTelemetry do
             [
               content: config[:content],
               adapter: Legion.OpenTelemetry.ReqLLM,
-              legion_adapter: config[:adapter],
+              legion_adapter: config[:tracer],
               legion_config: config
             ],
             req_llm_opts
           )
 
-        if opts[:content] not in [nil, :none, false], do: enable_req_llm_payloads()
         ReqLLM.OpenTelemetry.attach(@req_llm_handler_id, opts)
     end
   end
-
-  # ReqLLM only maps message content when its telemetry payloads are `:raw`;
-  # content capture would otherwise be a silent no-op.
-  defp enable_req_llm_payloads do
-    case Application.get_env(:req_llm, :telemetry, []) do
-      env when is_list(env) ->
-        unless Keyword.has_key?(env, :payloads),
-          do: Application.put_env(:req_llm, :telemetry, Keyword.put(env, :payloads, :raw))
-
-      env when is_map(env) ->
-        unless Map.has_key?(env, :payloads) or Map.has_key?(env, "payloads"),
-          do: Application.put_env(:req_llm, :telemetry, Map.put(env, :payloads, :raw))
-
-      _ ->
-        :ok
-    end
-
-    :ok
-  end
-
-  defp restore_req_llm_env(nil), do: Application.delete_env(:req_llm, :telemetry)
-  defp restore_req_llm_env(env), do: Application.put_env(:req_llm, :telemetry, env)
 end

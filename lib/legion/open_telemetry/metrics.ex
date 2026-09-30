@@ -75,7 +75,7 @@ defmodule Legion.OpenTelemetry.Metrics do
   """
   def record(records, config) do
     if config[:metrics?] do
-      Enum.each(records, &record_one(&1, config[:adapter], config))
+      Enum.each(records, &record_one(&1, config[:tracer], config))
     end
 
     :ok

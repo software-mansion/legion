@@ -51,7 +51,8 @@ defmodule Legion.Telemetry do
 
   - `[:legion, :sandbox, :eval, :start | :stop | :exception]`
     - Metadata includes: `agent`, `agent_id`, `code`
-    - Stop adds: `success` and `result` or `error`.
+    - Stop adds: `success` and `result`, or `error` and `error_kind`
+      (`:guard_denied`, `:timeout`, `:crash`, `:limit` or `:runtime`).
 
   ## Eval Guard Events
 
@@ -213,12 +214,17 @@ defmodule Legion.Telemetry do
 
   @doc """
   Captures the calling process's OpenTelemetry context so it can be restored in
-  another process with `with_context/2`. Returns `nil` when `opentelemetry_api`
-  is not available.
+  another process with `with_context/2`. Returns `nil` when there is no
+  context or `opentelemetry_api` is not available.
   """
   @spec capture_context() :: term() | nil
   if @otel? do
-    def capture_context, do: OpenTelemetry.Ctx.get_current()
+    def capture_context do
+      case OpenTelemetry.Ctx.get_current() do
+        ctx when map_size(ctx) == 0 -> nil
+        ctx -> ctx
+      end
+    end
   else
     def capture_context, do: nil
   end

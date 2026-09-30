@@ -50,44 +50,8 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
 
   @behaviour Legion.OpenTelemetry.Adapter
 
-  alias Legion.OpenTelemetry.Adapter.OTel
-
   @impl true
-  defdelegate available?(), to: OTel
-
-  @impl true
-  def start_span(name, attributes, config) do
-    OTel.start_span(name, with_session(attributes), config)
-  end
-
-  @impl true
-  defdelegate set_attributes(span, attributes, config), to: OTel
-
-  @impl true
-  defdelegate add_event(span, name, attributes, config), to: OTel
-
-  @impl true
-  defdelegate set_status(span, status, message, config), to: OTel
-
-  @impl true
-  defdelegate end_span(span, config), to: OTel
-
-  @impl true
-  def start_child_span(parent, name, attributes, opts, config) do
-    OTel.start_child_span(parent, name, with_session(attributes), opts, config)
-  end
-
-  @impl true
-  defdelegate end_span_at(span, end_time, config), to: OTel
-
-  @impl true
-  defdelegate metrics_available?(), to: OTel
-
-  @impl true
-  defdelegate record_histogram(record, config), to: OTel
-
-  @impl true
-  defdelegate record_counter(record, config), to: OTel
+  def span_attributes(attributes), do: with_session(attributes)
 
   @impl true
   def exporter_config(opts) do

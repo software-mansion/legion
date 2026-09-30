@@ -119,16 +119,6 @@ defmodule Legion.OpenTelemetry.Attributes do
   end
 
   @doc """
-  Classifies a failed eval for `legion.eval.errors` and `error.type`.
-  """
-  def eval_error_kind(_error, true = _guard_denied?), do: "guard_denied"
-  def eval_error_kind(:timeout, _), do: "timeout"
-  def eval_error_kind({:process_crashed, _}, _), do: "crash"
-  def eval_error_kind("refused by " <> _, _), do: "guard_denied"
-  def eval_error_kind("evaluation exceeded " <> _, _), do: "limit"
-  def eval_error_kind(_error, _), do: "runtime"
-
-  @doc """
   The status message of a failed span. Error messages can quote tool data, so
   they are recorded only with `content: :attributes`; otherwise the status
   names just the `error.type`.
