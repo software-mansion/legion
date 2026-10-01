@@ -25,7 +25,7 @@ defmodule Legion.Integration.StepPersistenceTest do
     test_pid = self()
     request_count = :counters.new(1, [:atomics])
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       :counters.add(request_count, 1, 1)
 
       case :counters.get(request_count, 1) do

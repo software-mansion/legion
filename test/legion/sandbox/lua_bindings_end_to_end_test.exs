@@ -198,7 +198,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
   defp evaluate(pid, chunks) do
     requests = :counters.new(1, [:atomics])
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       :counters.add(requests, 1, 1)
       index = :counters.get(requests, 1)
       action = if index == length(chunks), do: "eval_and_complete", else: "eval_and_continue"

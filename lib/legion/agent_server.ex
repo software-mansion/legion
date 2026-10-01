@@ -83,11 +83,11 @@ defmodule Legion.AgentServer do
   end
 
   def call(agent, message, timeout \\ :infinity) do
-    GenServer.call(agent, {:message, message}, timeout)
+    GenServer.call(agent, with_otel_context({:message, message}), timeout)
   end
 
   def cast(agent, message) do
-    GenServer.cast(agent, {:message, message})
+    GenServer.cast(agent, with_otel_context({:message, message}))
   end
 
   @doc false
@@ -96,7 +96,16 @@ defmodule Legion.AgentServer do
   # Returns `{:ok, text}`, `{:error, text}` or `{:cancel, {:rate_limited, violations}}`.
   def eval(agent, code, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, :infinity)
-    GenServer.call(agent, {:eval, code, opts}, timeout)
+    GenServer.call(agent, with_otel_context({:eval, code, opts}), timeout)
+  end
+
+  # Without an OpenTelemetry context the request keeps its old shape, which
+  # agents on nodes running an earlier Legion still accept.
+  defp with_otel_context(request) do
+    case Telemetry.capture_context() do
+      nil -> request
+      ctx -> Tuple.insert_at(request, tuple_size(request), ctx)
+    end
   end
 
   def get_messages(agent) do
@@ -219,21 +228,33 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_call({:message, message}, _from, state) do
-    {reply, state} = handle_message(message, state)
+  def handle_call({:message, message, ctx}, _from, state) do
+    {reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:reply, reply, state, idle_timeout(state)}
   end
 
-  @impl true
-  def handle_call({:eval, code, opts}, _from, state) do
-    {reply, state} = handle_eval(code, opts, state)
-    {:reply, reply, state, idle_timeout(state)}
+  def handle_call({:message, message}, from, state) do
+    handle_call({:message, message, nil}, from, state)
   end
 
   @impl true
-  def handle_cast({:message, message}, state) do
-    {_reply, state} = handle_message(message, state)
+  def handle_call({:eval, code, opts, ctx}, _from, state) do
+    {reply, state} = Telemetry.with_context(ctx, fn -> handle_eval(code, opts, state) end)
+    {:reply, reply, state, idle_timeout(state)}
+  end
+
+  def handle_call({:eval, code, opts}, from, state) do
+    handle_call({:eval, code, opts, nil}, from, state)
+  end
+
+  @impl true
+  def handle_cast({:message, message, ctx}, state) do
+    {_reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:noreply, state, idle_timeout(state)}
+  end
+
+  def handle_cast({:message, message}, state) do
+    handle_cast({:message, message, nil}, state)
   end
 
   # Nobody has called for `:idle_timeout` milliseconds.

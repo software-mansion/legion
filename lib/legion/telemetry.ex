@@ -51,7 +51,8 @@ defmodule Legion.Telemetry do
 
   - `[:legion, :sandbox, :eval, :start | :stop | :exception]`
     - Metadata includes: `agent`, `agent_id`, `code`
-    - Stop adds: `success` and `result` or `error`.
+    - Stop adds: `success` and `result`, or `error` and `error_kind`
+      (`:guard_denied`, `:timeout`, `:crash`, `:limit` or `:runtime`).
 
   ## Eval Guard Events
 
@@ -71,15 +72,16 @@ defmodule Legion.Telemetry do
   ## MCP Events
 
   A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
-  sandbox and rate limit events above. On top of those, every `repl` call is
-  a span that ties them to the MCP session:
+  sandbox and rate limit events above. On top of those, every `repl` and
+  `help` call is a span that ties them to the MCP session:
 
   - `[:legion, :mcp, :call, :start | :stop | :exception]` — one MCP tool call
     (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
     denied call has no eval span)
-    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
-    - Stop adds: `success`, and `error` with the text the host's model was
-      given when the code failed or the call was rate limited.
+    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), tool: "repl" | "help", code: String.t()}`
+    - Stop adds: `success`, `result` with the text the host's model was given
+      when the call succeeded, and `error` with that text when the code failed
+      or the call was rate limited.
 
   ## Default Logger
 
@@ -204,6 +206,49 @@ defmodule Legion.Telemetry do
   """
   def emit(event, measurements \\ %{}, metadata) do
     :telemetry.execute(event, measurements, with_agent_id(metadata))
+  end
+
+  # -- OpenTelemetry context carry --
+
+  @otel? Code.ensure_loaded?(OpenTelemetry.Ctx)
+
+  @doc """
+  Captures the calling process's OpenTelemetry context so it can be restored in
+  another process with `with_context/2`. Returns `nil` when there is no
+  context or `opentelemetry_api` is not available.
+  """
+  @spec capture_context() :: term() | nil
+  if @otel? do
+    def capture_context do
+      case OpenTelemetry.Ctx.get_current() do
+        ctx when map_size(ctx) == 0 -> nil
+        ctx -> ctx
+      end
+    end
+  else
+    def capture_context, do: nil
+  end
+
+  @doc """
+  Runs `fun` with `ctx` (from `capture_context/0`) attached as the current
+  OpenTelemetry context, detaching it afterwards even if `fun` raises. Runs
+  `fun` unchanged when `ctx` is `nil`.
+  """
+  @spec with_context(term() | nil, (-> result)) :: result when result: term()
+  def with_context(nil, fun), do: fun.()
+
+  if @otel? do
+    def with_context(ctx, fun) do
+      token = OpenTelemetry.Ctx.attach(ctx)
+
+      try do
+        fun.()
+      after
+        OpenTelemetry.Ctx.detach(token)
+      end
+    end
+  else
+    def with_context(_ctx, fun), do: fun.()
   end
 
   defp with_agent_id(metadata) do
