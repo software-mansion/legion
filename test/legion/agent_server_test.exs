@@ -415,17 +415,17 @@ defmodule Legion.AgentServerTest do
       assert content =~ "[... truncated 40 bytes ...]"
     end
 
-    test "default of 20_000 applies when no override is given anywhere" do
+    test "default of 40_000 applies when no override is given anywhere" do
       Application.delete_env(:legion, :config)
       on_exit(fn -> Application.delete_env(:legion, :config) end)
 
       capture_user_content(self())
 
       {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 25_000))
+      {:ok, _} = Legion.call(pid, String.duplicate("a", 45_000))
 
       assert_received {:user_content, content}
-      assert String.starts_with?(content, String.duplicate("a", 20_000))
+      assert String.starts_with?(content, String.duplicate("a", 40_000))
       assert content =~ "[... truncated 5000 bytes ...]"
     end
   end

@@ -84,7 +84,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     2,048 characters (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` raises it, per
     user, not per server) and appends "[truncated]"; it cuts every tool
     description at the same length. So over MCP the instructions follow
-    `tool_docs: :discovery` unless the agent's `config/0` says otherwise
+    `tool_docs: :on_demand` unless the agent's `config/0` says otherwise
     (see `Legion.Agent`). They then carry the agent's
     `@moduledoc` and one line per tool; the model reads a tool in full with
     `help`. For an agent with a one-line `@moduledoc` and one tool that is
@@ -98,7 +98,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     sandbox's rules. Set the budget to what your hosts read if it is not
     Claude Code's.
 
-    `tool_docs: :full` in `config/0` embeds every tool's description in the
+    `tool_docs: :inline` in `config/0` embeds every tool's description in the
     instructions instead, as chat does, and brings the sandbox rules back
     with them. That alone is past Claude Code's cap before the first tool,
     so expect the warning; `server_instructions/0` is the way out.

@@ -117,7 +117,7 @@ defmodule Legion.MCP.ServerTest do
     use Legion.Agent
 
     def tools, do: [MathTool]
-    def config, do: %{tool_docs: :full}
+    def config, do: %{tool_docs: :inline}
   end
 
   defmodule FullDocsMCP do
@@ -231,7 +231,7 @@ defmodule Legion.MCP.ServerTest do
       refute instructions =~ "performs math operations"
     end
 
-    test "tool_docs: :full in the agent config embeds the tools" do
+    test "tool_docs: :inline in the agent config embeds the tools" do
       instructions = FullDocsMCP.server_instructions()
 
       assert instructions =~ "### MathTool"

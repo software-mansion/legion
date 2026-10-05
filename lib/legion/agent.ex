@@ -85,7 +85,7 @@ defmodule Legion.Agent do
         content is truncated with a `[... truncated N bytes ...]` marker.
         Applies to text content only: each text part of a multipart message is
         truncated individually, while image data and URLs pass through untouched.
-        Defaults to `20_000`. Set to `:infinity` to disable truncation.
+        Defaults to `40_000`. Set to `:infinity` to disable truncation.
       - `max_bindings_bytes` — max size, as `:erlang.external_size/1` measures
         it, of the variables a code execution leaves behind. An execution that
         would exceed it fails with an error the agent reads, and the previous
@@ -94,10 +94,10 @@ defmodule Legion.Agent do
       - `idle_timeout` — milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
       - `tool_docs` — how the system prompt documents the agent's tools:
-        `:full` embeds every tool's description, `:discovery` lists them by
+        `:inline` embeds every tool's description, `:on_demand` lists them by
         `summary/0` and names the built-in `Legion.Tools.Help` tool, which is
         in the sandbox either way; see `Legion.Tools.Help` and
-        `Legion.MCP.Server` (default: `:full`, or `:discovery` over MCP)
+        `Legion.MCP.Server` (default: `:inline`, or `:on_demand` over MCP)
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.

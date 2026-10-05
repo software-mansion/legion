@@ -170,6 +170,25 @@ defmodule Legion.EvalTest do
       assert text =~ "[... truncated"
       refute text =~ String.duplicate("a", 100)
     end
+
+    test "a string past inspect's own 4096 limit is shown whole under max_message_length" do
+      text = Eval.format_result(String.duplicate("a", 10_000), [], config())
+
+      assert text =~ String.duplicate("a", 10_000)
+      refute text =~ "<> ..."
+      refute text =~ "[... truncated"
+    end
+
+    test "max_message_length: :infinity lifts inspect's limit too" do
+      text =
+        Eval.format_result(
+          String.duplicate("a", 50_000),
+          [],
+          config(%{max_message_length: :infinity})
+        )
+
+      assert text =~ String.duplicate("a", 50_000)
+    end
   end
 
   describe "format_error/1" do

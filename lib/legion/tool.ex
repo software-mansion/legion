@@ -4,9 +4,9 @@ defmodule Legion.Tool do
 
   By default, `description/0` returns the module's source code so the LLM
   knows what functions are available. An agent running with
-  `tool_docs: :discovery` (see `Legion.Agent`) first sees only each tool's
+  `tool_docs: :on_demand` (see `Legion.Agent`) first sees only each tool's
   `summary/0`, one sentence, and reads the full description with
-  `Help.help("Name")` when it needs it.
+  `Help.help(Name)` when it needs it.
 
   ## Overridable
 
@@ -16,7 +16,7 @@ defmodule Legion.Tool do
       module, for tools whose usage differs by generated language. Preferred
       over `description/0` when defined.
     - `summary/0` — override to return the one sentence that stands for the tool
-      in the tool list under `tool_docs: :discovery`. Defaults to the first
+      in the tool list under `tool_docs: :on_demand`. Defaults to the first
       sentence of the `@moduledoc`, else of a hand-written `description/0`, else
       the module's short name. The example below has no `@moduledoc`, so its
       summary is `WeatherTool — fetches current weather data.`
@@ -66,7 +66,7 @@ defmodule Legion.Tool do
 
   @doc """
   One sentence that stands for the tool in the tool list under
-  `tool_docs: :discovery`. Defaults to the first sentence of the `@moduledoc`,
+  `tool_docs: :on_demand`. Defaults to the first sentence of the `@moduledoc`,
   else of a hand-written `description/0`, else the module's short name.
   """
   @callback summary() :: String.t()

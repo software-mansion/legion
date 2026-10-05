@@ -35,7 +35,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @doc false
     # What the host reads about `repl`: the language, whether variables
     # survive between calls, and the sandbox rules in full, since the
-    # instructions under `tool_docs: :discovery` no longer carry them.
+    # instructions under `tool_docs: :on_demand` no longer carry them.
     def description(agent) do
       config = Agent.resolve_config(agent)
       info = config.sandbox.prompt_info()
