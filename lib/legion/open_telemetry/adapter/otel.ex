@@ -1,20 +1,12 @@
 defmodule Legion.OpenTelemetry.Adapter.OTel do
   @moduledoc """
   Default `Legion.OpenTelemetry.Adapter`, backed by the OpenTelemetry API.
+  Without `opentelemetry_api` every callback is a no-op. Public so custom
+  adapters can `defdelegate` to it.
 
-  Compiled against `opentelemetry_api` when it is present; without it every
-  callback is a no-op and `available?/0` returns `false`, so
-  `Legion.OpenTelemetry.attach/1` reports `{:error, :opentelemetry_unavailable}`
-  instead of raising. Public so custom adapters can `defdelegate` the callbacks
-  they do not override.
-
-  Spans start under the tracer named `legion` with the span kind taken from
-  `config[:span_kind]` (`:internal` by default), and their start attributes go
-  through `c:Legion.OpenTelemetry.Adapter.span_attributes/1` of
-  `config[:adapter]` when it has one. Metrics go to the meter named
-  `legion` and need `opentelemetry_api_experimental` (and an SDK that reads
-  it) in the host; without it `metrics_available?/0` returns `false` and
-  metrics are skipped.
+  It applies the configured adapter's `span_attributes/1` to every span.
+  Metrics need `opentelemetry_api_experimental` and an SDK that reads it in
+  the host; without them they are skipped.
   """
 
   @behaviour Legion.OpenTelemetry.Adapter

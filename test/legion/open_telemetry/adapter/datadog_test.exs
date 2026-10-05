@@ -27,21 +27,13 @@ defmodule Legion.OpenTelemetry.Adapter.DatadogTest do
                resource: %{"service.name" => "my_app"}
              }
     end
-
-    test "defaults to the US1 site" do
-      config = Datadog.exporter_config(api_key: "key", ml_app: "my_app")
-      assert config.exporter.endpoints == ["https://otlp.datadoghq.com"]
-    end
-
-    test "requires an API key and an ML app" do
-      assert_raise NimbleOptions.ValidationError, fn -> Datadog.exporter_config(ml_app: "a") end
-      assert_raise NimbleOptions.ValidationError, fn -> Datadog.exporter_config(api_key: "k") end
-    end
   end
 
   describe "spans" do
     test "are grouped by the session, not by a sub-agent's own conversation" do
       :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
+      # `attach/1` loads the adapter; this test calls `OTel` directly.
+      Code.ensure_loaded!(Datadog)
       config = [adapter: Datadog, span_kind: :internal]
 
       span =

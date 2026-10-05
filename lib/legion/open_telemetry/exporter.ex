@@ -1,39 +1,16 @@
 defmodule Legion.OpenTelemetry.Exporter do
   @moduledoc """
-  OpenTelemetry trace exporter that sends spans to the vendor whose adapter is
-  named in `config :legion, Legion.OpenTelemetry, adapter: ...`, with the
-  settings under `config :legion, <adapter>`.
+  OpenTelemetry trace exporter that sends spans to the vendor adapter named in
+  `config :legion, Legion.OpenTelemetry, adapter: ...`, using its
+  `c:Legion.OpenTelemetry.Adapter.exporter_config/1`:
 
-      # config/runtime.exs
-      if config_env() == :prod do
-        config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
-        config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Datadog
+      config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
 
-        config :legion, Legion.OpenTelemetry.Adapter.Datadog,
-          api_key: System.fetch_env!("DD_API_KEY"),
-          site: "datadoghq.eu",
-          ml_app: "my-app"
-      end
-
-  Set `traces_exporter` wherever the vendor is configured; it can go in
-  `config/config.exs` only when every environment configures the vendor.
-
-  The SDK starts it with its span processor. It asks the vendor adapter's
-  `c:Legion.OpenTelemetry.Adapter.exporter_config/1` for the OTLP endpoint,
-  headers and extra resource attributes, and hands the spans to
-  `opentelemetry_exporter`, with the extra resource attributes winning over
-  the SDK's (so Datadog's `ml_app` becomes `service.name`).
-
-  The standard `OTEL_EXPORTER_OTLP_*` environment variables and
-  `config :opentelemetry_exporter, otlp_*` settings still take precedence over
-  the endpoint, headers and protocol the vendor gives, as they do for
-  `opentelemetry_exporter` itself.
-
-  Without a vendor adapter in config it logs a warning, and with missing or
-  invalid vendor settings an error, once
-  per VM (the SDK retries a failed exporter every few seconds), and the SDK
-  runs without an exporter. Option values are never logged. Needs the
-  `opentelemetry` and `opentelemetry_exporter` dependencies in the host.
+  `OTEL_EXPORTER_OTLP_*` variables and `config :opentelemetry_exporter`
+  settings still take precedence, and `OTEL_TRACES_EXPORTER` replaces this
+  exporter altogether. Without a valid vendor it logs once and
+  exports nothing. Needs `opentelemetry` and `opentelemetry_exporter` in the
+  host.
   """
 
   # Implements the SDK's `otel_exporter_traces` behaviour (`init/1`,

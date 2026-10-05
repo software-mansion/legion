@@ -14,16 +14,10 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
                    )
 
   @moduledoc """
-  `Legion.OpenTelemetry.Adapter` for Datadog LLM Observability.
-
-  Datadog reads Legion's spans as they are: `invoke_agent`, `execute_tool` and
-  `chat` show their input and output from the `gen_ai.*` message attributes,
-  and `legion.*` attributes appear as tags. Datadog groups spans into sessions
-  by `gen_ai.conversation.id`, so this adapter sets it to Legion's `session.id`:
-  the conversation with the top agent, which the sub-agents its turns call
-  share. A sub-agent keeps its own id in `gen_ai.agent.id`. Otherwise the spans
-  go through `Legion.OpenTelemetry.Adapter.OTel` unchanged; the adapter also
-  adds the export to Datadog, through `Legion.OpenTelemetry.Exporter`:
+  `Legion.OpenTelemetry.Adapter` for Datadog LLM Observability. Exports
+  straight to Datadog's OTLP intake, listed under `ml_app`, and sets
+  `gen_ai.conversation.id` to Legion's `session.id`, so a conversation and
+  the sub-agents its turns call are one Datadog session.
 
       # config/runtime.exs
       if config_env() == :prod do
@@ -38,10 +32,6 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
 
       # application.ex
       :ok = Legion.OpenTelemetry.attach()
-
-  Spans go straight to Datadog's OTLP intake at `https://otlp.<site>/v1/traces`,
-  with no Datadog Agent in between, listed under `ml_app`, which becomes the
-  `service.name` resource attribute.
 
   ## Options
 

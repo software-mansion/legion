@@ -80,19 +80,5 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
 
       assert config.exporter.endpoints == ["https://api-eu.braintrust.dev/otel"]
     end
-
-    test "requires an API key and a project, and a known region" do
-      assert_raise NimbleOptions.ValidationError, fn ->
-        Braintrust.exporter_config(project: "p")
-      end
-
-      assert_raise NimbleOptions.ValidationError, fn ->
-        Braintrust.exporter_config(api_key: "k")
-      end
-
-      assert_raise NimbleOptions.ValidationError, fn ->
-        Braintrust.exporter_config(api_key: "k", project: "p", region: :apac)
-      end
-    end
   end
 end

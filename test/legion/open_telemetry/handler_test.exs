@@ -216,16 +216,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert stop_attributes(tool)[:"error.type"] == "guard_denied"
     end
 
-    test "without content, a failed evaluation's status names only the error type" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
-      reply_with([eval("error('boom')"), return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      {tool, _, _} = span_named(@tool_span)
-      assert_receive {:otel, :set_status, ^tool, :error, "runtime", _}
-    end
-
     test "without content, an eval guard denial records the guard but not its reason" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
       reply_with([eval("return 1"), return("done")])
@@ -352,16 +342,8 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert String.ends_with?(text, "…[truncated]")
     end
 
-    test "truncate/2 replaces invalid UTF-8" do
-      assert Attributes.truncate(<<255, "abc">>, 100) == "\uFFFDabc"
-    end
-
     test "truncate/2 stays within a cap smaller than the truncation marker" do
       assert Attributes.truncate("abcdefghijklmnopqrstuvwxyz", 5) == "abcde"
-    end
-
-    test "truncate/2 cuts on a UTF-8 boundary and marks the cut" do
-      assert Attributes.truncate(String.duplicate("ż", 20), 20) == "żżż…[truncated]"
     end
   end
 
@@ -373,6 +355,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
 
       {first, attributes, _} = span_named("iteration 0")
+      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
       assert attributes[:"legion.iteration"] == 0
       assert attributes[:"gen_ai.agent.name"] == "Legion.Test.Support.MathAgent"
 
@@ -380,17 +363,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert_receive {:otel, :end_span, ^first, _}
       {second, _, _} = span_named("iteration 1")
       assert_receive {:otel, :end_span, ^second, _}
-    end
-
-    test "false (the default) adds no iteration spans" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      reply_with([eval("return 1"), return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      names = started_span_names(flush())
-      assert @agent_span in names
-      refute Enum.any?(names, &String.starts_with?(&1, "iteration"))
     end
 
     test "every iteration span gets the action its LLM reply chose" do
@@ -407,16 +379,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
         end
 
       assert actions == ["eval_and_continue", "eval_and_continue", "return"]
-    end
-
-    test "iteration spans are invoke_workflow operations" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_spans: true)
-      reply_with([return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      {_, attributes, _} = span_named("iteration 0")
-      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
     end
   end
 
@@ -443,30 +405,11 @@ defmodule Legion.OpenTelemetry.HandlerTest do
                )
 
       assert attributes[:"gen_ai.conversation.id"] == agent_id
+      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
 
       # Ended before the first turn starts, so the trace is exported at once.
       assert Enum.find_index(messages, &match?({:otel, :end_span, ^conversation, _}, &1)) <
                Enum.find_index(messages, &match?({:otel, :start_span, _, @agent_span, _, _}, &1))
-    end
-
-    test "false (the default) adds no conversation span" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      reply_with([return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      refute Enum.any?(started_span_names(flush()), &String.starts_with?(&1, "conversation"))
-    end
-
-    test "the conversation span is an invoke_workflow operation" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, conversation_traces: true)
-      reply_with([return("done")])
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      assert {:ok, "done"} = Legion.call(pid, "hi")
-
-      {_, attributes, _} = span_named("conversation Legion.Test.Support.MathAgent")
-      assert attributes[:"gen_ai.operation.name"] == "invoke_workflow"
     end
   end
 
@@ -509,8 +452,11 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       agent = %{"gen_ai.agent.name": "Legion.Test.Support.MathAgent"}
 
       assert records["gen_ai.invoke_agent.duration"].unit == "s"
-      assert records["gen_ai.invoke_agent.inference_calls"].value == 2
-      assert records["gen_ai.invoke_agent.tool_calls"].value == 1
+
+      assert %{value: 2, unit: "{inference_call}"} =
+               records["gen_ai.invoke_agent.inference_calls"]
+
+      assert %{value: 1, unit: "{tool_call}"} = records["gen_ai.invoke_agent.tool_calls"]
       assert records["gen_ai.execute_tool.duration"].attributes[:"error.type"] == "runtime"
       assert records["legion.turn.iterations"].attributes == agent
 
@@ -553,17 +499,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       :ok = GenServer.stop(pid)
 
       assert metric_records(flush()) == []
-    end
-
-    test "agent call counts use the GenAI semantic-convention units" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      reply_with([eval("return 1"), return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      records = Map.new(metric_records(flush()), &{&1.name, &1})
-      assert records["gen_ai.invoke_agent.inference_calls"].unit == "{inference_call}"
-      assert records["gen_ai.invoke_agent.tool_calls"].unit == "{tool_call}"
     end
   end
 

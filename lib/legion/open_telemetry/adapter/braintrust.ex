@@ -19,17 +19,10 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
   }
 
   @moduledoc """
-  `Legion.OpenTelemetry.Adapter` for Braintrust, on top of
-  `Legion.OpenTelemetry.Adapter.OTel`.
-
-  Each agent turn is its own trace, and Braintrust shows one row per trace.
-  Braintrust's own integrations tie the turns of a conversation together with
-  a session id in metadata: grouping the logs by `metadata.session_id` opens a
-  whole conversation in Thread view, and online scorers with Group scope score
-  it as one. This adapter does the same, adding `braintrust.metadata` with
-  `session_id` to every span. The value is Legion's `session.id`: the id of the
-  agent the conversation is with, shared by the sub-agents its turns call, so
-  every span of a trace has the same key, as Group scope requires.
+  `Legion.OpenTelemetry.Adapter` for Braintrust. Exports to the project and
+  adds `braintrust.metadata` with Legion's `session.id` as `session_id` to
+  every span, so grouping the logs by `session_id` shows a conversation in
+  Thread view.
 
       # config/runtime.exs
       if config_env() == :prod do
@@ -44,11 +37,6 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
 
       # application.ex
       :ok = Legion.OpenTelemetry.attach()
-
-  `Legion.OpenTelemetry.Exporter` sends the spans to the project, and
-  `Legion.OpenTelemetry.attach/1` uses this adapter. Braintrust reads
-  Legion's content attributes as they are. To get one trace per conversation instead, add
-  `conversation_traces: true`; the session id stays on every span either way.
 
   ## Options
 

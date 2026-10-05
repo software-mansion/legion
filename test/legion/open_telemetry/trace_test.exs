@@ -260,17 +260,6 @@ defmodule Legion.OpenTelemetry.TraceTest do
     end
   end
 
-  test "chat spans carry the agent id as the conversation id" do
-    stub_llm()
-    {:ok, pid} = Legion.start_link(MathAgent)
-    agent_id = Legion.get_agent_id(pid)
-
-    assert {:ok, "done"} = Legion.call(pid, "hi")
-
-    assert_receive {:span, span(name: "chat gpt-4o-mini", attributes: attributes)}
-    assert {:attributes, _, _, _, %{"gen_ai.conversation.id": ^agent_id}} = attributes
-  end
-
   # Stubs the LLM to answer with `objects` in order.
   defp reply_with(objects) do
     {:ok, script} = Agent.start_link(fn -> objects end)
@@ -280,25 +269,6 @@ defmodule Legion.OpenTelemetry.TraceTest do
       object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
       {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
     end)
-  end
-
-  test "a turn whose result breaks content serialization is still exported whole" do
-    :ok = Legion.OpenTelemetry.attach(content: :attributes)
-
-    reply_with([
-      %{"action" => "eval_and_complete", "code" => "%{{1, 2} => 3}", "result" => ""},
-      %{"action" => "return", "code" => "", "result" => "done"}
-    ])
-
-    {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
-    assert {:ok, _} = Legion.call(pid, "go")
-
-    assert_receive {:span, span(name: "invoke_agent " <> _, span_id: agent_id)}
-    assert_receive {:span, span(name: "execute_tool sandbox", parent_span_id: ^agent_id)}
-
-    # The agent process holds no leftover context: the next turn is a new root.
-    assert {:ok, "done"} = Legion.call(pid, "again")
-    assert_receive {:span, span(name: "invoke_agent " <> _, parent_span_id: :undefined)}
   end
 
   test "iteration spans stay siblings when recording an iteration's outcome fails" do

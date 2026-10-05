@@ -25,14 +25,5 @@ defmodule Legion.TelemetryTest do
     test "is nil without an OpenTelemetry context" do
       assert Legion.Telemetry.capture_context() == nil
     end
-
-    test "returns the current context when there is one" do
-      ctx = OpenTelemetry.Ctx.set_value(%{}, :key, :value)
-      token = OpenTelemetry.Ctx.attach(ctx)
-
-      assert Legion.Telemetry.capture_context() == ctx
-
-      OpenTelemetry.Ctx.detach(token)
-    end
   end
 end

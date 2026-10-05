@@ -1,107 +1,44 @@
 defmodule Legion.OpenTelemetry do
   @moduledoc """
-  OpenTelemetry integration for Legion.
+  Turns Legion's work into OpenTelemetry traces: an `invoke_agent <agent>`
+  span per turn, an `execute_tool sandbox` span per code evaluation, and
+  ReqLLM's `chat` spans, which Legion attaches under its own handler. See the
+  Observability guide for the trace shape and vendor setup.
 
-  `attach/1` wires Legion into the host's OpenTelemetry pipeline in one call.
-  Each agent turn becomes a GenAI `invoke_agent <agent>` span, each code
-  evaluation an `execute_tool sandbox` span under it, and every LLM request a
-  `chat` span from `ReqLLM.OpenTelemetry`, which Legion attaches under its own
-  handler id with the same content setting and adapter. All of them carry
-  `gen_ai.agent.name`, `gen_ai.conversation.id` (the agent id) and
-  `session.id` (the id of the agent the conversation is with, shared by the
-  sub-agents its turns call).
-
-  The OpenTelemetry context follows the work across processes:
-  `Legion.call/3`, `Legion.cast/2`, `Legion.parallel/2` and the sandbox
-  process all run under the caller's context, so a sub-agent started from
-  tool code nests under the `execute_tool` span that started it, and the whole
-  tree nests under the host's own request or job span.
-
-  Retries and eval guard denials are recorded as span events (`legion.retry`,
-  `legion.eval_guard.denied`); a cancelled turn sets `legion.status`,
-  `legion.cancel.reason` and `error.type`. A rate-limit denial comes before
-  the turn starts, so it has no span and only counts in the
-  `legion.rate_limit.exceeded` metric.
-
-  Exporting is the host's job: add `opentelemetry` and `opentelemetry_exporter`
-  and configure the OTLP endpoint. For Datadog and Braintrust, name the
-  vendor's adapter in `config :legion, Legion.OpenTelemetry, adapter: ...`,
-  put its settings under `config :legion, <adapter>`, and export through
-  `Legion.OpenTelemetry.Exporter` (see the Observability guide). Legion only depends on `opentelemetry_api`, optionally; without it
-  `attach/1` returns `{:error, :opentelemetry_unavailable}`.
-
-  Options can also be set in `config :legion, Legion.OpenTelemetry`; options
-  given to `attach/1` win.
+  Legion only depends on `opentelemetry_api`, optionally; without it
+  `attach/1` returns `{:error, :opentelemetry_unavailable}`. Options can also
+  be set in `config :legion, Legion.OpenTelemetry`; options given to
+  `attach/1` win.
 
   > #### Message content is recorded by default {: .warning}
   >
-  > Unlike `ReqLLM.OpenTelemetry`, which defaults to `content: :none`, Legion
-  > defaults to `content: :attributes`: the vendors it ships adapters for are
-  > LLM observability tools, and a trace without prompts and replies shows
-  > little there. Prompts, replies, the code the model wrote and tool results,
-  > including any record fields your tools return, then reach the tracing
-  > backend and whoever can read it. Attach with `content: :none` to keep them
-  > out.
+  > Unlike `ReqLLM.OpenTelemetry`, Legion defaults to `content: :attributes`,
+  > so prompts, replies, generated code and tool results reach the tracing
+  > backend. Attach with `content: :none` to keep them out.
 
   ## Options
 
-    * `:adapter` - a `Legion.OpenTelemetry.Adapter` module. Defaults to
-      `Legion.OpenTelemetry.Adapter.OTel`, which also traces for an adapter
-      without its own `start_span/3`. `Legion.OpenTelemetry.Exporter`
-      exports to the vendor adapter (one with
-      `c:Legion.OpenTelemetry.Adapter.exporter_config/1`) named in
-      `config :legion, Legion.OpenTelemetry`; an `:adapter` given to
-      `attach/1` only changes how spans are shaped.
-    * `:content` - `:attributes` (default) sends message content to the
-      tracing backend: prompts, replies, the code the model wrote, tool
-      results and error messages. `:none` turns that off. With `:attributes`,
-      messages, system instructions and tool definitions go on the `chat`
-      spans as `gen_ai.*` attributes; Legion passes `payloads: :raw` to its
-      own ReqLLM calls for that, unless the host configured `:payloads` in
-      `config :req_llm, telemetry:`. The host's own ReqLLM calls need
-      `config :req_llm, telemetry: [payloads: :raw]` for their content.
-      Legion's own spans then record the user message
-      (`gen_ai.input.messages`), the turn's result (`gen_ai.output.messages`)
-      and the evaluated code and its result (`gen_ai.tool.call.arguments`,
-      `gen_ai.tool.call.result`), a failed span's status carries the error's
-      message, and `legion.eval_guard.denied` the guard's reason. With
-      `:none` a failed span's status is just its `error.type`, since error
-      messages can quote tool data.
-    * `:max_attribute_bytes` - longest content attribute on Legion's own
-      spans, in bytes; `chat` span content is sent whole. Longer values are
-      cut on a UTF-8 boundary and end in `…[truncated]`, and invalid UTF-8 is
-      replaced. Results JSON cannot encode are inspected with at most 1,000
-      items and each string cut to a quarter of the cap, so they may be
-      shortened with `...` before reaching it. Defaults to `20_000`. The hard
-      cap on every attribute is the SDK's
-      `attribute_value_length_limit` (`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT`),
-      which cuts values mid-string, JSON included.
-    * `:metrics` - `false` turns off metrics, both Legion's and ReqLLM's.
-      Defaults to `true`. Metrics also need the adapter to support them; see
-      `Legion.OpenTelemetry.Adapter.OTel`.
+    * `:adapter` - a `Legion.OpenTelemetry.Adapter`. Defaults to
+      `Legion.OpenTelemetry.Adapter.OTel`. `Legion.OpenTelemetry.Exporter`
+      always exports to the vendor adapter named in config.
+    * `:content` - `:attributes` (default) records message content, `:none`
+      leaves it out, and a failed span's status then names only its
+      `error.type`.
+    * `:max_attribute_bytes` - longest content attribute on Legion's own spans,
+      cut on a UTF-8 boundary. Defaults to `20_000`.
+    * `:metrics` - `false` turns off Legion's and ReqLLM's metrics. Defaults to
+      `true`; see `Legion.OpenTelemetry.Adapter.OTel` for what they need.
     * `:iteration_spans` - `true` adds an `iteration N` span per executor
-      iteration between `invoke_agent` and its `chat` and `execute_tool`
-      spans. Defaults to `false`; every child span carries `legion.iteration`
-      either way.
-    * `:conversation_traces` - `true` puts every turn of an agent process in
-      one trace, under a `conversation <agent>` root span created on the
-      first turn. Only turns called without a current span join it; a
-      caller's span always wins. The root span is ended as soon as it starts
-      (a trace only shows up once its root is exported), so its duration is
-      zero. Defaults to `false`: one trace per turn, the turns of a
-      conversation sharing `session.id`, the way vendors group sessions.
-    * `:req_llm` - extra options for `ReqLLM.OpenTelemetry.attach/2`, e.g.
-      `[langfuse: true]` or `[adapter: MyApp.ReqLLMAdapter]` (which replaces
-      `Legion.OpenTelemetry.ReqLLM`). `false` leaves ReqLLM alone, for hosts
-      that attach `ReqLLM.OpenTelemetry` themselves.
+      iteration. Defaults to `false`.
+    * `:conversation_traces` - `true` puts an agent's turns in one trace under
+      a `conversation <agent>` root span. Defaults to `false`.
+    * `:req_llm` - extra options for `ReqLLM.OpenTelemetry.attach/2`, or
+      `false` for hosts that attach it themselves.
 
   ## Example
 
       # application.ex
       :ok = Legion.OpenTelemetry.attach()
-
-      # or, keeping message content out of traces
-      :ok = Legion.OpenTelemetry.attach(content: :none)
   """
 
   require Logger
@@ -181,21 +118,10 @@ defmodule Legion.OpenTelemetry do
 
   @doc """
   Attaches the OpenTelemetry integration. See the module docs for options.
-  They default to `config :legion, Legion.OpenTelemetry`; options given here
-  win, `:adapter` included, but `Legion.OpenTelemetry.Exporter` always exports
-  to the vendor adapter named in config.
 
-  Safe to call more than once: a second call that succeeds replaces the
-  earlier attachment with the new options, so an application restart or a
-  code reload never fails on it. Returns `{:error, :opentelemetry_unavailable}`
-  when the adapter reports the OpenTelemetry API missing.
-
-  Raises `NimbleOptions.ValidationError` on unknown options, and
-  `ArgumentError` when `config :legion, Legion.OpenTelemetry` is not a keyword
-  list, or when a vendor adapter is configured and its options under
-  `config :legion, <adapter>` are missing or invalid (the message names the
-  option, never its value), the SDK and exporter are missing, or
-  `config :opentelemetry, traces_exporter:` is not `Legion.OpenTelemetry.Exporter`.
+  Safe to call again: the new options replace the earlier attachment. Raises
+  on unknown options, and on an incomplete vendor setup in config (naming the
+  option, never its value).
   """
   @spec attach(keyword()) :: :ok | {:error, term()}
   def attach(opts \\ []) do

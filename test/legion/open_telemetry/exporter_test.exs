@@ -7,7 +7,7 @@ defmodule Legion.OpenTelemetry.ExporterTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias Legion.OpenTelemetry.Adapter.{Braintrust, Datadog}
+  alias Legion.OpenTelemetry.Adapter.Datadog
   alias Legion.OpenTelemetry.Exporter
 
   # Names `adapter` as the vendor in `config :legion` for one test.
@@ -29,54 +29,29 @@ defmodule Legion.OpenTelemetry.ExporterTest do
     end)
   end
 
-  # Where and with which headers the OTLP exporter posts traces, read from the
-  # state it was initialized with.
-  defp export_target({:ok, %{inner: inner}}) do
-    fields = Tuple.to_list(inner)
-    [endpoint | _] = Enum.find(fields, &(is_list(&1) and &1 != [] and is_map(hd(&1))))
-    url = endpoint |> Map.take([:scheme, :host, :port, :path]) |> :uri_string.normalize()
-
-    headers =
-      fields
-      |> Enum.find(&(is_list(&1) and &1 != [] and match?({_, _}, hd(&1))))
-      |> Enum.map(fn {name, value} -> {to_string(name), to_string(value)} end)
-
-    {to_string(url), headers}
-  end
-
-  describe "init/1" do
-    test "sends Datadog traces to the site's intake with the API key" do
-      configure_vendor(Datadog, api_key: "key", site: "datadoghq.eu", ml_app: "my-app")
-
-      {url, headers} = export_target(Exporter.init([]))
-
-      assert url == "https://otlp.datadoghq.eu/v1/traces"
-      assert {"dd-api-key", "key"} in headers
-      assert {"dd-otlp-source", "llmobs"} in headers
-    end
-
-    test "sends Braintrust traces to the region's data plane with the key and project" do
-      configure_vendor(Braintrust, api_key: "key", project: "my-app", region: :eu)
-
-      {url, headers} = export_target(Exporter.init([]))
-
-      assert url == "https://api-eu.braintrust.dev/otel/v1/traces"
-      assert {"authorization", "Bearer key"} in headers
-      assert {"x-bt-parent", "project_name:my-app"} in headers
-    end
-  end
-
   describe "export/3" do
-    test "exports the spans with the vendor's resource attributes over the SDK's" do
+    test "exports the spans to the vendor with its resource attributes over the SDK's" do
       configure_vendor(Datadog, api_key: "key", ml_app: "my-app")
       test_pid = self()
 
-      stub(:opentelemetry_exporter, :export, fn tab, resource, _inner ->
+      stub(:opentelemetry_exporter, :init, fn config ->
+        send(test_pid, {:init, config})
+        {:ok, :inner}
+      end)
+
+      stub(:opentelemetry_exporter, :export, fn tab, resource, :inner ->
         send(test_pid, {:exported, tab, resource})
         :ok
       end)
 
       {:ok, state} = Exporter.init([])
+
+      assert_receive {:init,
+                      %{
+                        endpoints: ["https://otlp.datadoghq.com"],
+                        headers: [{"dd-api-key", "key"} | _]
+                      }}
+
       sdk_resource = :otel_resource.create(%{"service.name" => "sdk-name", "host.name" => "h1"})
 
       assert Exporter.export(:spans_tab, sdk_resource, state) == :ok

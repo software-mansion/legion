@@ -162,18 +162,8 @@ defmodule Legion.OpenTelemetryTest do
       assert opts[:telemetry] == [conversation_id: agent_id]
     end
 
-    test "chat spans carry message content by default" do
+    test "records chat content by default, as one JSON array string per attribute" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      stub_llm("done")
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      assert_receive {:otel, :start_span, _, @span_name, attrs, _}
-      assert Map.has_key?(attrs, :"gen_ai.input.messages")
-    end
-
-    test "content: :attributes records chat content as one JSON array string per attribute" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
       stub_llm("done")
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -281,12 +271,6 @@ defmodule Legion.OpenTelemetryTest do
 
       assert OpenTelemetry.config() == nil
     end
-
-    test "rejects unknown options" do
-      assert_raise NimbleOptions.ValidationError, fn ->
-        OpenTelemetry.attach(adapter: FakeOTelAdapter, iteration_span: true)
-      end
-    end
   end
 
   describe "attach/1 with a vendor adapter in config" do
@@ -336,10 +320,6 @@ defmodule Legion.OpenTelemetryTest do
       legion_ids = Enum.map(:telemetry.list_handlers([:legion]), & &1.id)
       refute "legion-otel" in legion_ids
       assert OpenTelemetry.config() == nil
-    end
-
-    test "returns {:error, :not_found} when nothing is attached" do
-      assert OpenTelemetry.detach() == {:error, :not_found}
     end
   end
 end

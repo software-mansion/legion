@@ -1,28 +1,10 @@
 defmodule Legion.OpenTelemetry.ReqLLM do
   @moduledoc """
-  `ReqLLM.OpenTelemetry.Adapter` that forwards ReqLLM's `chat` spans to the
-  tracer `Legion.OpenTelemetry.attach/1` resolved: the chosen
-  `Legion.OpenTelemetry.Adapter` when it traces spans itself, otherwise
-  `Legion.OpenTelemetry.Adapter.OTel`.
-
-  Installed by `Legion.OpenTelemetry.attach/1` unless the host passes its own
-  `req_llm: [adapter: ...]`. Every callback receives ReqLLM's bridge config,
-  which carries that tracer as `:legion_adapter` and the Legion attach
-  options as `:legion_config`; the tracer is called with the latter plus
-  `span_kind: :client`.
-
-  A `chat` span started in the agent process during a turn, and the
-  `execute_tool` spans ReqLLM adds under it for provider-side tools, also get
-  `gen_ai.agent.name`, `gen_ai.conversation.id`, `session.id` and
-  `legion.iteration`; one started from tool code gets `session.id` only.
-  Values ReqLLM sets win.
-
-  ReqLLM records message content (`gen_ai.input.messages`,
-  `gen_ai.output.messages`, `gen_ai.system_instructions`,
-  `gen_ai.tool.definitions`) as a list of JSON strings, one per entry. The shim
-  joins each list into one JSON array string, the form the GenAI semantic
-  conventions give for span attributes and the only one Braintrust parses, so
-  `chat` content matches Legion's own spans.
+  `ReqLLM.OpenTelemetry.Adapter` that `Legion.OpenTelemetry.attach/1`
+  installs, unless the host passes `req_llm: [adapter: ...]`. It forwards
+  ReqLLM's `chat` spans to Legion's tracer, adds the agent, session and
+  iteration of the running turn, and joins ReqLLM's content lists into one
+  JSON array string each, the form Braintrust parses.
   """
 
   alias Legion.OpenTelemetry.Handler
