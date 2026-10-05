@@ -11,12 +11,11 @@ API key.
 ## 1. Install
 
 The MCP server is built on [anubis_mcp](https://hexdocs.pm/anubis_mcp) (Anubis
-for short), an optional dependency of Legion, so add it next to Legion:
+for short), which Legion depends on, so Legion alone is enough:
 
 ```elixir
 # mix.exs
-{:legion, "~> 0.6"},
-{:anubis_mcp, "~> 2.0"}
+{:legion, "~> 0.6"}
 ```
 
 ## 2. Write the agent

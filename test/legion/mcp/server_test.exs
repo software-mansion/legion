@@ -321,8 +321,8 @@ defmodule Legion.MCP.ServerTest do
     end
 
     test "warns when the repl tool description exceeds the budget" do
-      # Not through child_spec: WordySandbox is not Legion.Sandbox.Lua, so that raises first.
-      log = capture_log(fn -> Legion.MCP.Server.check_instructions(WordyMCP, 2048) end)
+      # Not through child_spec: WordySandbox is not Legion.Sandbox.Lua, so that refuses first.
+      log = capture_log(fn -> Server.check_instructions(WordyMCP, 2048) end)
 
       assert log =~ "WordyMCP: repl tool description is"
       assert log =~ "cap them at 2048"
