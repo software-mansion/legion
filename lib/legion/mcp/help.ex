@@ -11,8 +11,8 @@ defmodule Legion.MCP.Help do
 
   alias Anubis.Server.Frame
   alias Anubis.Server.Response
+  alias Legion.AgentPrompt
   alias Legion.MCP.Server
-  alias Legion.Tools.Help
 
   schema do
     field :tool, :string,
@@ -28,7 +28,7 @@ defmodule Legion.MCP.Help do
       :error ->
         message =
           "Tool names are single words, as listed. Tools:\n" <>
-            Help.index(server.__legion_agent__())
+            AgentPrompt.tool_index(server.__legion_agent__())
 
         {:reply, Response.error(Response.tool(), message), frame}
     end

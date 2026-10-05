@@ -171,11 +171,20 @@ defmodule Legion do
   saved to the store after it ran, and `{:cancel, {:rate_limited, violations}}`
   when a rate limit denied the call before it ran.
 
+  An agent whose `action_types/0` allow neither `"eval_and_continue"` nor
+  `"eval_and_complete"` runs no code, so it refuses every call with
+  `{:error, text}`, before the rate limit and without saving a step.
+
   ## Options
 
-    - `:vault` - a keyword list put in the agent process's `Vault` before the
-      code runs, for tools to read; the per-call form of the `:vault` option
-      of `start_link/2`
+    - `:vault` - a keyword list put in the agent process's `Vault` for this
+      call only, for tools to read; the per-call form of the `:vault` option
+      of `start_link/2`. The agent's vault is restored after the call, and
+      the keys Legion sets itself (`:agent_id`, `:parent_agent_id`,
+      `:agent_module`, `:sandbox`, `:store`, `:rate_limit`) are ignored
+    - `:require_sandbox` - a sandbox module; the call is refused like the
+      above unless the agent runs it. For a caller that reaches an agent by
+      id and cannot know how it was started
     - `:timeout` - how long to wait for the call (default: `:infinity`)
 
   ## Examples

@@ -19,47 +19,60 @@ defmodule Legion.Tools.HelpTest do
     def tools, do: [Legion.Tools.AgentTool]
   end
 
-  describe "index/1" do
+  describe "AgentPrompt.tool_index/1" do
     test "one line per tool, name and summary" do
-      index = Help.index(ToolsAgent)
+      index = AgentPrompt.tool_index(ToolsAgent)
 
       assert index =~ "- `MathTool` - This is math tool moduledoc."
       assert index =~ "- `SummaryTool` - Custom summary."
     end
 
     test "lists Help itself" do
-      assert Help.index(ToolsAgent) =~ "- `Help` - Lists the tools available"
+      assert AgentPrompt.tool_index(ToolsAgent) =~ "- `Help` - Lists the tools available"
     end
 
     test "carries no signatures or source" do
-      index = Help.index(ToolsAgent)
+      index = AgentPrompt.tool_index(ToolsAgent)
 
       refute index =~ "random_add"
       refute index =~ "defmodule"
     end
   end
 
-  describe "reference/2" do
+  describe "AgentPrompt.tool_help/3" do
     test "returns the block the :inline executor prompt renders for that tool" do
-      assert {:ok, text} = Help.reference(MathAgent, Legion.Sandbox.Lua, "MathTool")
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "MathTool")
       assert text == AgentPrompt.tool_reference(MathTool, Legion.Sandbox.Lua)
       assert AgentPrompt.system_prompt(MathAgent) =~ text
     end
 
     test "describes Help itself" do
-      assert {:ok, text} = Help.reference(MathAgent, Legion.Sandbox.Lua, "Help")
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, Help)
       assert text =~ "### Help"
       assert text =~ "def help(tool)"
     end
 
-    test "an unknown name is an error carrying the index" do
-      assert {:error, text} = Help.reference(MathAgent, Legion.Sandbox.Lua, "Nope")
+    test "an unknown name returns the index" do
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "Nope")
       assert text =~ ~s|No tool named "Nope". Tools:|
       assert text =~ "- `MathTool` -"
     end
   end
 
   describe "inside the sandbox" do
+    test "no function takes another agent, so its tools stay unread" do
+      {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
+
+      for code <- [
+            "Help.index(#{inspect(ToolsAgent)})",
+            ~s|Help.reference(#{inspect(ToolsAgent)}, Legion.Sandbox.Elixir, "SummaryTool")|,
+            "Legion.AgentPrompt.tool_index(#{inspect(ToolsAgent)})"
+          ] do
+        assert {:error, text} = AgentServer.eval(pid, code), code
+        refute text =~ "SummaryTool"
+      end
+    end
+
     test "help/1 returns a tool's reference under tool_docs: :on_demand" do
       {:ok, pid} = Legion.start_link(MathAgent, tool_docs: :on_demand)
 

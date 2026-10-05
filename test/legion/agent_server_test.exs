@@ -62,6 +62,13 @@ defmodule Legion.AgentServerTest do
     use Legion.Agent
   end
 
+  defmodule ReadOnlyAgent do
+    @moduledoc "Agent that answers without running code."
+    use Legion.Agent
+
+    def action_types, do: ~w(return done)
+  end
+
   defmodule DelegatingAgent do
     @moduledoc "Agent that delegates work to ChildAgent."
     use Legion.Agent
@@ -1671,6 +1678,43 @@ defmodule Legion.AgentServerTest do
       assert text =~ "alice"
     end
 
+    test "a per-call :vault holds for that call only" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "owner"])
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()",
+                 vault: [current_user: "alice", token: "alice-secret"]
+               )
+
+      assert text =~ "alice-secret"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()", vault: [current_user: "bob"])
+
+      refute text =~ "alice-secret"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
+      assert text =~ "owner"
+    end
+
+    test "a per-call :vault cannot replace the keys Legion sets" do
+      {:ok, pid} = Legion.start_link(VaultAgent, agent_id: "eval-own-keys", store: MemoryStore)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_id()",
+                 vault: [agent_id: "forged", agent_module: MathAgent]
+               )
+
+      assert text =~ "eval-own-keys"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_module()",
+                 vault: [agent_module: MathAgent]
+               )
+
+      assert text =~ "VaultAgent"
+    end
+
     test "seeds :agent_module so tools can find the agent they run under" do
       {:ok, pid} = Legion.start_link(VaultAgent)
 
@@ -1687,6 +1731,36 @@ defmodule Legion.AgentServerTest do
       assert {:cancel, {:rate_limited, [:max_agents]}} = AgentServer.eval(pid, "return 1")
       assert_received {:enforced, "eval-denied", _identity, _policy}
       assert MemoryStore.load("eval-denied") == :error
+    end
+
+    test "an agent whose action_types allow no evaluation refuses, before the rate limit" do
+      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      {:ok, pid} =
+        Legion.start_link(ReadOnlyAgent, [store: MemoryStore, agent_id: "eval-read-only"] ++ opts)
+
+      assert {:error, text} = AgentServer.eval(pid, "return 1")
+      assert text =~ "ReadOnlyAgent runs no code"
+      refute_received {:enforced, _agent_id, _identity, _policy}
+      assert MemoryStore.load("eval-read-only") == :error
+    end
+
+    test ":require_sandbox refuses an agent that runs another sandbox" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "eval-elixir",
+          sandbox: Legion.Sandbox.Elixir
+        )
+
+      assert {:error, text} =
+               AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Lua)
+
+      assert text =~ "requires Legion.Sandbox.Lua"
+      assert text =~ "runs Legion.Sandbox.Elixir"
+      assert MemoryStore.load("eval-elixir") == :error
+
+      assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
     end
   end
 

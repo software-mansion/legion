@@ -112,6 +112,12 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: ElixirAgent, name: "elixir", version: "0.1.0"
   end
 
+  defmodule PresetMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "preset", version: "0.1.0"
+
+    def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:preset"]
+  end
+
   defmodule ElixirSessionMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "elixir-session", version: "0.1.0"
 
@@ -456,6 +462,20 @@ defmodule Legion.MCP.ServerTest do
 
       assert {true, text, _frame} = repl(ElixirSessionMCP, frame, "return 1")
       assert text =~ "Legion.Sandbox.Lua agents only"
+    end
+
+    test "refuses a named agent already running another sandbox" do
+      {:ok, _pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "mcp:user:preset",
+          sandbox: Legion.Sandbox.Elixir
+        )
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {true, text, _frame} = repl(PresetMCP, frame, "1 + 1")
+      assert text =~ "requires Legion.Sandbox.Lua"
     end
 
     test "uses an overridden request_timeout/0" do

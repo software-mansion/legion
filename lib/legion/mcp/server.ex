@@ -42,8 +42,10 @@ defmodule Legion.MCP.Server do
   from whoever reaches the endpoint, not from a model the application
   prompts, and the Lua VM has nothing of the host's but the agent's tools.
   A server whose agent's config names another sandbox fails to start, with
-  the reason in the supervisor's report; a call whose `session/1` names one
-  is answered with a tool error.
+  the reason in the supervisor's report; a call whose `session/1` names one,
+  or that reaches a named agent started elsewhere on another, is answered
+  with a tool error. So is every call to an agent whose `action_types/0`
+  allow no evaluation.
 
   ## Options
 
@@ -157,14 +159,16 @@ defmodule Legion.MCP.Server do
   another host, continues the same conversation. `:agent_id` needs a store;
   see `Legion.Store`.
 
-  `:vault` is put in the agent before every call, so it may change from
-  request to request: a refreshed token, a tenant switch. It is how tools
-  learn who is calling.
+  `:vault` is put in the agent for one call and taken out after it, so it
+  may change from request to request: a refreshed token, a tenant switch.
+  A key one call passed is gone by the next, whichever session sends it.
+  It is how tools learn who is calling.
 
   Every other option is read once, by whoever starts the agent, and holds
   until it stops. An agent already running under that id, started by
   `Legion.start_link/2` before the MCP call arrived, keeps its own
-  `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused.
+  `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. Its
+  sandbox must still be Lua, or every call to it is refused.
 
   `:idle_timeout` stops the agent once nobody calls, after thirty minutes
   by default. The store then holds the conversation and the next call
@@ -387,7 +391,7 @@ defmodule Legion.MCP.Server do
     }
 
     Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-      case Legion.eval(agent, code, vault: vault) do
+      case Legion.eval(agent, code, vault: vault, require_sandbox: Legion.Sandbox.Lua) do
         {:ok, text} ->
           {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 

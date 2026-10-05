@@ -24,7 +24,7 @@ defmodule Legion.Executor do
     eval_guard: nil,
     binding_scope: :turn,
     max_message_length: 40_000,
-    max_bindings_bytes: :infinity
+    max_bindings_bytes: 10_000_000
   }
 
   @doc false
@@ -456,8 +456,21 @@ defmodule Legion.Executor do
 
   def truncate_content(content, max)
       when is_binary(content) and is_integer(max) and byte_size(content) > max do
-    binary_part(content, 0, max) <> "\n\n[... truncated #{byte_size(content) - max} bytes ...]"
+    kept = binary_part(content, 0, character_start(content, max, 3))
+    kept <> "\n\n[... truncated #{byte_size(content) - byte_size(kept)} bytes ...]"
   end
 
   def truncate_content(content, _max), do: content
+
+  # A cut before a UTF-8 continuation byte (0b10xxxxxx) splits a character,
+  # and the half left behind is invalid UTF-8 that no JSON encoder takes:
+  # step back to the character's first byte, at most three.
+  defp character_start(content, cut, steps) when cut > 0 and steps > 0 do
+    case :binary.at(content, cut) do
+      byte when byte in 0x80..0xBF -> character_start(content, cut - 1, steps - 1)
+      _byte -> cut
+    end
+  end
+
+  defp character_start(_content, cut, _steps), do: cut
 end

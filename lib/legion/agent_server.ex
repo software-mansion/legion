@@ -18,6 +18,10 @@ defmodule Legion.AgentServer do
   alias Legion.Store.Payload
   alias ReqLLM.Message.ContentPart
 
+  # What `init/1` puts in the Vault for Legion and its tools; a per-call
+  # vault cannot replace them.
+  @legion_vault_keys ~w(agent_id parent_agent_id agent_module sandbox store rate_limit)a
+
   defstruct [
     :agent_module,
     :messages,
@@ -313,14 +317,13 @@ defmodule Legion.AgentServer do
   # answered as an error and forgotten, so the conversation on record and the
   # one in memory stay the same.
   defp handle_eval(code, opts, state) do
-    case enforce_rate_limit(state) do
+    case eval_refusal(opts, state) || enforce_rate_limit(state) do
       :ok ->
-        for {key, value} <- Keyword.get(opts, :vault, []), do: Vault.unsafe_put(key, value)
-
         action = %{"action" => "eval_and_continue", "code" => code}
         action_message = Executor.message(:assistant, Jason.encode!(action))
 
-        {reply, result_message, bindings} = run_eval(code, state)
+        {reply, result_message, bindings} =
+          with_call_vault(Keyword.get(opts, :vault, []), fn -> run_eval(code, state) end)
 
         entry = %{
           "at" => System.system_time(:millisecond),
@@ -344,6 +347,52 @@ defmodule Legion.AgentServer do
 
       {:rate_limited, violations} ->
         {{:cancel, {:rate_limited, violations}}, state}
+
+      {:refused, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  # Checked before the rate limiter, so a refused call runs, saves and counts
+  # nothing. An agent whose `action_types/0` allow no evaluation never runs
+  # code, whoever sends it. `:require_sandbox` is the caller's condition on
+  # the agent it reached: `Legion.MCP.Server` finds named agents with
+  # `Legion.lookup/1`, and one started elsewhere may run any sandbox.
+  defp eval_refusal(opts, %{agent_module: agent_module, config: config}) do
+    required = Keyword.get(opts, :require_sandbox, config.sandbox)
+
+    evaluates? =
+      Enum.any?(agent_module.action_types(), &(&1 in ~w(eval_and_continue eval_and_complete)))
+
+    cond do
+      not evaluates? ->
+        {:refused,
+         "#{inspect(agent_module)} runs no code: its action_types/0 allow no evaluation"}
+
+      required != config.sandbox ->
+        {:refused,
+         "This call requires #{inspect(required)}; " <>
+           "#{inspect(agent_module)} runs #{inspect(config.sandbox)}"}
+
+      true ->
+        nil
+    end
+  end
+
+  # The per-call vault holds for that call only: merged over the agent's
+  # vault, minus the keys `init/1` sets for Legion, and the vault as it was
+  # put back after. A key one caller passed never reaches the next call or a
+  # later turn, and no caller replaces the agent's store or identity.
+  defp with_call_vault(call_vault, fun) do
+    saved = Vault.vault(propagate_vault: :none)
+    Vault.unsafe_merge(Keyword.drop(call_vault, @legion_vault_keys))
+
+    try do
+      fun.()
+    after
+      # ponytail: Vault has no replace or delete, so this writes its process
+      # dictionary key directly; switch once Vault can drop keys itself.
+      Process.put(:__vault__, saved)
     end
   end
 

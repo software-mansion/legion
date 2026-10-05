@@ -171,6 +171,20 @@ defmodule Legion.EvalTest do
       refute text =~ String.duplicate("a", 100)
     end
 
+    test "a cut through a multibyte character leaves valid UTF-8" do
+      for character <- ["é", "€", "🙂"], max <- 40..44 do
+        text =
+          Eval.format_result(
+            String.duplicate(character, 100),
+            [],
+            config(%{max_message_length: max})
+          )
+
+        assert String.valid?(text), "#{character} at #{max} bytes"
+        assert text =~ "[... truncated"
+      end
+    end
+
     test "a string past inspect's own 4096 limit is shown whole under max_message_length" do
       text = Eval.format_result(String.duplicate("a", 10_000), [], config())
 
