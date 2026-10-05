@@ -3,9 +3,9 @@ defmodule Legion.Tools.Help do
   Lists the tools available to this agent and describes one of them in full.
 
   In every agent's sandbox, added by Legion itself. Under
-  `tool_docs: :discovery` the system prompt names each tool with a one-line
+  `tool_docs: :on_demand` the system prompt names each tool with a one-line
   summary and the model calls `Help.help(Name)` to read a tool's
-  functions, arguments and return shapes before using it; under `:full` the
+  functions, arguments and return shapes before using it; under `:inline` the
   prompt embeds the tools and does not mention it. Over MCP the server's
   `help` tool is this module run for the host. Not a tool to list in
   `tools/0`.
@@ -32,7 +32,7 @@ defmodule Legion.Tools.Help do
   end
 
   @doc false
-  # The index the `:discovery` prompt shows: one `- \`Name\` - summary` line
+  # The index the `:on_demand` prompt shows: one `- \`Name\` - summary` line
   # per tool, `Help` last.
   def index(agent) do
     agent
@@ -41,7 +41,7 @@ defmodule Legion.Tools.Help do
   end
 
   @doc false
-  # The block the `:full` prompt would render for `name` on `sandbox` (the
+  # The block the `:inline` prompt would render for `name` on `sandbox` (the
   # one the agent runs, so a tool's `description/1` picks the right
   # language), or an error naming the tools that exist.
   def reference(agent, sandbox, name) do

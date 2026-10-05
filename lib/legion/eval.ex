@@ -33,7 +33,7 @@ defmodule Legion.Eval do
   def run(agent_module, code, config, bindings) do
     Telemetry.span([:legion, :sandbox, :eval], %{agent: agent_module, code: code}, fn ->
       # `Help` is in every sandbox; the prompt names it only under
-      # `tool_docs: :discovery`, where it lists the tools by summary.
+      # `tool_docs: :on_demand`, where it lists the tools by summary.
       tools = agent_module.tools() ++ [Legion.Tools.Help]
 
       allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
