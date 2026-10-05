@@ -364,9 +364,8 @@ defmodule Legion.MCP.Server do
   def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code) do
     opts = server.session(frame)
 
-    with :ok <- session_sandbox(server.__legion_agent__(), opts) do
-      run(frame, code, opts)
-    else
+    case session_sandbox(server.__legion_agent__(), opts) do
+      :ok -> run(frame, code, opts)
       {:error, message} -> {:reply, Response.error(Response.tool(), message), frame}
     end
   end
