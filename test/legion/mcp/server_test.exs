@@ -112,6 +112,29 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: ElixirAgent, name: "elixir", version: "0.1.0"
   end
 
+  defmodule PresetMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "preset", version: "0.1.0"
+
+    def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:preset"]
+  end
+
+  defmodule ElixirSessionMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "elixir-session", version: "0.1.0"
+
+    def session(_frame), do: [sandbox: Legion.Sandbox.Elixir]
+  end
+
+  defmodule AgentToolAgent do
+    @moduledoc "Agent that delegates work."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool]
+  end
+
+  defmodule AgentToolMCP do
+    use Legion.MCP.Server, agent: AgentToolAgent, name: "agent-tool", version: "0.1.0"
+  end
+
   defmodule FullDocsAgent do
     @moduledoc "Agent that wants its tools embedded in full."
     use Legion.Agent
@@ -304,7 +327,8 @@ defmodule Legion.MCP.ServerTest do
     end
 
     test "warns when the repl tool description exceeds the budget" do
-      log = capture_log(fn -> WordyMCP.child_spec(transport: :stdio) end)
+      # Not through child_spec: WordySandbox is not Legion.Sandbox.Lua, so that refuses first.
+      log = capture_log(fn -> Server.check_instructions(WordyMCP, 2048) end)
 
       assert log =~ "WordyMCP: repl tool description is"
       assert log =~ "cap them at 2048"
@@ -324,11 +348,8 @@ defmodule Legion.MCP.ServerTest do
       assert description =~ String.trim(Lua.prompt_info().constraints)
     end
 
-    test "names the Elixir sandbox for an Elixir agent" do
-      description = Component.get_description(ElixirMCP.Repl)
-
-      assert description =~ "Elixir"
-      refute description =~ "Lua"
+    test "names the Lua sandbox" do
+      assert Component.get_description(MathMCP.Repl) =~ "Run Lua code"
     end
 
     test "says whether variables persist" do
@@ -386,18 +407,6 @@ defmodule Legion.MCP.ServerTest do
       assert result =~ "### MathTool"
     end
 
-    test "writes the call in the agent's sandbox language" do
-      frame = initialized(ElixirMCP, frame())
-
-      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
-               help(ElixirMCP, frame, %{})
-
-      [%{type: :assistant, content: code}, _result] =
-        pid |> Legion.get_messages() |> Enum.take(-2)
-
-      assert Jason.decode!(code)["code"] == "Help.help()"
-    end
-
     test "is rate limited like repl" do
       frame = initialized(UserMCP, frame("host", %{sub: "denied"}))
 
@@ -405,12 +414,12 @@ defmodule Legion.MCP.ServerTest do
                help(UserMCP, frame, %{})
     end
 
-    test "renders the reference for the agent's sandbox" do
-      frame = initialized(ElixirMCP, frame())
+    test "renders the Lua reference of a tool with a per-sandbox description" do
+      frame = initialized(AgentToolMCP, frame())
 
-      assert {false, text, _frame} = help(ElixirMCP, frame, %{"tool" => "AgentTool"})
-      assert text =~ "{:ok, result} ="
-      refute text =~ "result = response[2]"
+      assert {false, text, _frame} = help(AgentToolMCP, frame, %{"tool" => "AgentTool"})
+      assert text =~ "result = response[2]"
+      refute text =~ "{:ok, result} ="
     end
 
     test "refuses before the session is initialized" do
@@ -436,6 +445,37 @@ defmodule Legion.MCP.ServerTest do
       %{start: {_, _, [_, opts]}} = ConfiguredMCP.child_spec(transport: :stdio)
       assert opts[:request_timeout] == 31_000
       assert opts[:transport] == :stdio
+    end
+
+    test "refuses to start for an agent that is not on the Lua sandbox" do
+      %{start: {module, function, arguments}} = ElixirMCP.child_spec(transport: :stdio)
+
+      assert {:error, message} = apply(module, function, arguments)
+      assert message =~ "Legion.Sandbox.Lua agents only"
+      assert message =~ "ElixirAgent runs Legion.Sandbox.Elixir"
+    end
+  end
+
+  describe "session/1 naming a sandbox" do
+    test "answers the call with a tool error unless it is Lua" do
+      frame = initialized(ElixirSessionMCP, frame())
+
+      assert {true, text, _frame} = repl(ElixirSessionMCP, frame, "return 1")
+      assert text =~ "Legion.Sandbox.Lua agents only"
+    end
+
+    test "refuses a named agent already running another sandbox" do
+      {:ok, _pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "mcp:user:preset",
+          sandbox: Legion.Sandbox.Elixir
+        )
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {true, text, _frame} = repl(PresetMCP, frame, "1 + 1")
+      assert text =~ "requires Legion.Sandbox.Lua"
     end
 
     test "uses an overridden request_timeout/0" do

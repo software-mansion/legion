@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(Anubis.Server.Component) do
+if Code.ensure_loaded?(Anubis.Server) do
   defmodule Legion.MCP.Repl do
     @moduledoc """
     The `repl` tool of a `Legion.MCP.Server`.

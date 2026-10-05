@@ -90,7 +90,7 @@ defmodule Legion.Agent do
         it, of the variables a code execution leaves behind. An execution that
         would exceed it fails with an error the agent reads, and the previous
         variables stand. Bounds what a conversation holds in memory and, with
-        a store, on disk. Set to `:infinity` to disable (default: `:infinity`)
+        a store, on disk. Set to `:infinity` to disable (default: `10_000_000`)
       - `idle_timeout` — milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
       - `tool_docs` — how the system prompt documents the agent's tools:
@@ -102,7 +102,8 @@ defmodule Legion.Agent do
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.
       Override to restrict the agent - for example, a read-only agent that should
-      never execute code can use `~w(return done)`.
+      never execute code can use `~w(return done)`. Such an agent also refuses
+      code sent with `Legion.eval/3`, so it cannot be served over MCP.
   """
 
   @callback tools() :: [module()]

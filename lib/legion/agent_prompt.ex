@@ -35,7 +35,7 @@ defmodule Legion.AgentPrompt do
     {tool_references, tool_index} =
       case tool_docs do
         :inline -> {Enum.map(agent.tools(), &tool_reference(&1, sandbox)), nil}
-        :on_demand -> {[], Help.index(agent)}
+        :on_demand -> {[], tool_index(agent)}
       end
 
     assigns = [
@@ -74,6 +74,45 @@ defmodule Legion.AgentPrompt do
     "### #{name}\n\n````#{lang}\n#{content}\n````"
   end
 
+  @doc false
+  # The index the `:on_demand` prompt shows and `Help.help/0` returns: one
+  # `- \`Name\` - summary` line per tool, `Help` last. Here and not in `Help`,
+  # whose public functions sandbox code can call: these take any agent.
+  def tool_index(agent) do
+    agent
+    |> listed_tools()
+    |> Enum.map_join("\n", fn module -> "- `#{short_name(module)}` - #{summary(module)}" end)
+  end
+
+  @doc false
+  # What `Help.help/1` returns for `tool`, a module or its short name: the
+  # block the `:inline` prompt would render for it on `sandbox` (the one the
+  # agent runs, so a tool's `description/1` picks the right language), or
+  # the index when the agent has no such tool.
+  def tool_help(agent, sandbox, tool) do
+    name = short_name(tool)
+
+    case Enum.find(listed_tools(agent), &(short_name(&1) == name)) do
+      nil -> "No tool named #{inspect(name)}. Tools:\n" <> tool_index(agent)
+      module -> tool_reference(module, sandbox)
+    end
+  end
+
+  # Help lists itself: the model must know it exists.
+  defp listed_tools(agent), do: agent.tools() ++ [Help]
+
+  defp summary(module) do
+    Code.ensure_loaded!(module)
+
+    if function_exported?(module, :summary, 0),
+      do: module.summary(),
+      else: Legion.Tool.default_summary(module)
+  end
+
+  # A string is the name itself; kept for code that types it, not documented.
+  defp short_name(name) when is_binary(name), do: name
+  defp short_name(module), do: module |> Module.split() |> List.last()
+
   defp tool_description(module, sandbox) do
     Code.ensure_loaded!(module)
 
@@ -89,7 +128,6 @@ defmodule Legion.AgentPrompt do
           Legion.SourceRegistry.source!(module)
       end
 
-    short_name = module |> Module.split() |> List.last()
-    {short_name, String.trim(content)}
+    {short_name(module), String.trim(content)}
   end
 end

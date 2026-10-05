@@ -22,47 +22,8 @@ defmodule Legion.Tools.Help do
   """
   def help(tool \\ nil)
 
-  def help(nil), do: index(Vault.fetch!(:agent_module))
+  def help(nil), do: AgentPrompt.tool_index(Vault.fetch!(:agent_module))
 
-  def help(tool) do
-    case reference(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), short_name(tool)) do
-      {:ok, text} -> text
-      {:error, text} -> text
-    end
-  end
-
-  @doc false
-  # The index the `:on_demand` prompt shows: one `- \`Name\` - summary` line
-  # per tool, `Help` last.
-  def index(agent) do
-    agent
-    |> listed_tools()
-    |> Enum.map_join("\n", fn module -> "- `#{short_name(module)}` - #{summary(module)}" end)
-  end
-
-  @doc false
-  # The block the `:inline` prompt would render for `name` on `sandbox` (the
-  # one the agent runs, so a tool's `description/1` picks the right
-  # language), or an error naming the tools that exist.
-  def reference(agent, sandbox, name) do
-    case Enum.find(listed_tools(agent), &(short_name(&1) == name)) do
-      nil -> {:error, "No tool named #{inspect(name)}. Tools:\n" <> index(agent)}
-      module -> {:ok, AgentPrompt.tool_reference(module, sandbox)}
-    end
-  end
-
-  # Help lists itself: the model must know it exists.
-  defp listed_tools(agent), do: agent.tools() ++ [__MODULE__]
-
-  defp summary(module) do
-    Code.ensure_loaded!(module)
-
-    if function_exported?(module, :summary, 0),
-      do: module.summary(),
-      else: Legion.Tool.default_summary(module)
-  end
-
-  # A string is the name itself; kept for code that types it, not documented.
-  defp short_name(name) when is_binary(name), do: name
-  defp short_name(module), do: module |> Module.split() |> List.last()
+  def help(tool),
+    do: AgentPrompt.tool_help(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), tool)
 end
