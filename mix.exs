@@ -86,7 +86,7 @@ defmodule Legion.MixProject do
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
       {:anubis_mcp, "~> 1.8 or ~> 2.0"},
-      {:plug, "~> 1.18", optional: true},
+      {:plug, "~> 1.18"},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
