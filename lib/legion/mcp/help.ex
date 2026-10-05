@@ -21,15 +21,15 @@ defmodule Legion.MCP.Help do
 
   @impl true
   def execute(params, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
-    agent = server.__legion_agent__()
-    sandbox = Server.sandbox(agent, server.session(frame))
-
-    case code(sandbox, Map.get(params, :tool)) do
+    case code(Map.get(params, :tool)) do
       {:ok, code} ->
         Server.run(frame, code)
 
       :error ->
-        message = "Tool names are single words, as listed. Tools:\n" <> Help.index(agent)
+        message =
+          "Tool names are single words, as listed. Tools:\n" <>
+            Help.index(server.__legion_agent__())
+
         {:reply, Response.error(Response.tool(), message), frame}
     end
   end
@@ -39,17 +39,14 @@ defmodule Legion.MCP.Help do
     {:reply, Response.error(Response.tool(), message), frame}
   end
 
-  # Lua needs the `return`; Elixir, and any other sandbox, takes the bare
-  # call. The name is interpolated into code, so only a bare word passes:
-  # anything else would be a syntax error saved as a failed step.
-  defp code(sandbox, nil), do: {:ok, prefix(sandbox) <> "Help.help()"}
+  # Lua, the only sandbox served, needs the `return`. The name is
+  # interpolated into code, so only a bare word passes: anything else would
+  # be a syntax error saved as a failed step.
+  defp code(nil), do: {:ok, "return Help.help()"}
 
-  defp code(sandbox, name) do
+  defp code(name) do
     if name =~ ~r/\A\w+\z/,
-      do: {:ok, prefix(sandbox) <> ~s|Help.help("#{name}")|},
+      do: {:ok, ~s|return Help.help("#{name}")|},
       else: :error
   end
-
-  defp prefix(Legion.Sandbox.Lua), do: "return "
-  defp prefix(_sandbox), do: ""
 end
