@@ -301,7 +301,7 @@ config :legion, :config, %{model: "openai:gpt-5.4", max_iterations: 10}
 | `max_iterations`         | `10`                 | Successful execution steps before the turn is stopped.                                                                                                  |
 | `max_retries`            | `3`                  | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                                               |
 | `binding_scope`          | `:turn`              | How long variables live: `:iteration`, `:turn`, or `:conversation`.                                                                                     |
-| `max_message_length`     | `20_000`             | Byte limit for a single message; longer content is truncated. `:infinity` disables it.                                                                  |
+| `max_message_length`     | `40_000`             | Byte limit for a single message; longer content is truncated. `:infinity` disables it.                                                                  |
 | `sandbox_timeout`        | `60_000`             | Milliseconds one evaluation may run before it is killed. `:infinity` disables it, leaving `sandbox_max_reductions` as the only stop for a runaway eval. |
 | `sandbox_max_heap`       | `256_000_000`        | Memory budget in bytes for the eval process. `:infinity` disables it.                                                                                   |
 | `sandbox_max_reductions` | `:infinity`          | CPU budget in reductions, polled every ~50ms, so a hot loop dies before the clock runs out.                                                             |

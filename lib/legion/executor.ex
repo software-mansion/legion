@@ -23,7 +23,7 @@ defmodule Legion.Executor do
     sandbox_priority: :low,
     eval_guard: nil,
     binding_scope: :turn,
-    max_message_length: 20_000,
+    max_message_length: 40_000,
     max_bindings_bytes: :infinity
   }
 

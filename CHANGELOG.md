@@ -4,6 +4,7 @@
 
 ### Changes
 
+- `max_message_length` defaults to `40_000` bytes, and a string result is no longer cut at `inspect`'s own 4,096-character limit before it applies
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps recorded code evaluations per window; usage entries carry `"evals" => 1` when the request's action ran code
 - MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as `repl` and `help` tools, with stdio and Streamable HTTP transports (mounted with [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html)), OAuth 2.1, a `session/1` callback choosing the agent per call, and a `request_timeout/0` derived from the sandbox timeout
 - `use Legion.MCP.Server` warns at start when the instructions or the `repl` tool description are longer than `:instructions_budget` (default 2048, Claude Code's cap)

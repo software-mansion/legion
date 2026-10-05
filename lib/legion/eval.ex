@@ -72,13 +72,16 @@ defmodule Legion.Eval do
   @doc false
   # Renders a successful eval as the text the model reads back: the inspected
   # value (truncated to `max_message_length`) plus the variables now in scope.
+  # `inspect` has its own cap on strings, 4096 characters by default, so it is
+  # raised to the configured one; the byte-level truncation below still rules.
   def format_result(result, bindings, config) do
     variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")
+    max_length = config[:max_message_length] || :infinity
 
     inspected =
       result
-      |> inspect(pretty: true, limit: 1000)
-      |> Executor.truncate_content(config[:max_message_length])
+      |> inspect(pretty: true, limit: 1000, printable_limit: max_length)
+      |> Executor.truncate_content(max_length)
 
     base = """
     Code executed successfully. Result:
