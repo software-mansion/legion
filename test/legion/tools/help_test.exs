@@ -142,6 +142,14 @@ defmodule Legion.Tools.HelpTest do
       refute text =~ "result = response[2]"
     end
 
+    test "help/1 renders the Lua reference on the Lua sandbox" do
+      {:ok, pid} = Legion.start_link(AgentToolAgent, tool_docs: :on_demand)
+
+      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(AgentTool)")
+      assert text =~ "result = response[2]"
+      refute text =~ "{:ok, result} ="
+    end
+
     test "Help is in the Elixir sandbox under :inline too" do
       {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
 

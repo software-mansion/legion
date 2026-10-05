@@ -1762,6 +1762,20 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
     end
+
+    test ":refuse_tools refuses an agent that lists one of them" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-refused-tool")
+
+      assert {:error, text} =
+               AgentServer.eval(pid, "return 1", refuse_tools: [Legion.Test.Support.MathTool])
+
+      assert text =~ "refuses agents with Legion.Test.Support.MathTool, which"
+      assert MemoryStore.load("eval-refused-tool") == :error
+
+      assert {:ok, _text} =
+               AgentServer.eval(pid, "return 1", refuse_tools: [Legion.Tools.AgentTool])
+    end
   end
 
   describe "idle_timeout" do

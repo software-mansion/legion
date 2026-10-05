@@ -355,11 +355,15 @@ defmodule Legion.AgentServer do
 
   # Checked before the rate limiter, so a refused call runs, saves and counts
   # nothing. An agent whose `action_types/0` allow no evaluation never runs
-  # code, whoever sends it. `:require_sandbox` is the caller's condition on
-  # the agent it reached: `Legion.MCP.Server` finds named agents with
-  # `Legion.lookup/1`, and one started elsewhere may run any sandbox.
+  # code, whoever sends it. `:require_sandbox` and `:refuse_tools` are the
+  # caller's conditions on the agent it reached: `Legion.MCP.Server` finds
+  # named agents with `Legion.lookup/1`, and one started elsewhere may run
+  # any sandbox and list any tool.
   defp eval_refusal(opts, %{agent_module: agent_module, config: config}) do
     required = Keyword.get(opts, :require_sandbox, config.sandbox)
+
+    refused_tools =
+      Enum.filter(agent_module.tools(), &(&1 in Keyword.get(opts, :refuse_tools, [])))
 
     evaluates? =
       Enum.any?(agent_module.action_types(), &(&1 in ~w(eval_and_continue eval_and_complete)))
@@ -373,6 +377,11 @@ defmodule Legion.AgentServer do
         {:refused,
          "This call requires #{inspect(required)}; " <>
            "#{inspect(agent_module)} runs #{inspect(config.sandbox)}"}
+
+      refused_tools != [] ->
+        {:refused,
+         "This call refuses agents with #{Enum.map_join(refused_tools, ", ", &inspect/1)}, " <>
+           "which #{inspect(agent_module)} lists"}
 
       true ->
         nil

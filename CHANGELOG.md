@@ -6,7 +6,7 @@
 
 - `max_message_length` defaults to `40_000` bytes, and a string result is no longer cut at `inspect`'s own 4,096-character limit before it applies
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps recorded code evaluations per window; usage entries carry `"evals" => 1` when the request's action ran code
-- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as `repl` and `help` tools, for agents on `Legion.Sandbox.Lua` only, with stdio and Streamable HTTP transports (mounted with [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html)), OAuth 2.1, a `session/1` callback choosing the agent per call, and a `request_timeout/0` derived from the sandbox timeout
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as `repl` and `help` tools, for agents on `Legion.Sandbox.Lua` only and without `Legion.Tools.AgentTool`, with stdio and Streamable HTTP transports (mounted with [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html)), OAuth 2.1, a `session/1` callback choosing the agent per call, and a `request_timeout/0` derived from the sandbox timeout
 - `use Legion.MCP.Server` warns at start when the instructions or the `repl` tool description are longer than `:instructions_budget` (default 2048, Claude Code's cap)
 - [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
 - `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` (default `10_000_000`) bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
@@ -14,6 +14,7 @@
 - MCP server - `tool_docs` defaults to `:on_demand` over MCP, so the [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) instructions carry the agent's `@moduledoc` and list its tools by name and one-line summary; a second tool, `help`, evaluates `Help.help/1` on the session's agent and returns a tool's full description, so a lookup is saved and counted like a `repl` call; each server's `repl` tool description carries its own sandbox's language and rules, and the `:instructions_budget` warning covers that description too
 - `use Legion.Agent` warns at compile time when two of an agent's tools share a short name, the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) included
 - LLM usage tracking - `:step` stores now persist usage with every step checkpoint instead of only at turn end
+- [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) parses code inside the sandbox process, under its timeout and memory limits, so `check/2` no longer reports syntax errors; they come back from `execute/5`, and an input the parser crashes on is an error instead of a crashed agent
 
 ## v0.5.1 - 2026-09-25
 

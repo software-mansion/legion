@@ -9,6 +9,8 @@ defmodule Legion.Tools.AgentTool do
 
   Only listed agents can be invoked. Attempts to call unlisted agents raise an error.
 
+  An agent that lists this tool cannot be served over MCP; see `Legion.MCP.Server`.
+
   ## Usage example from agent code (executed in sandbox)
 
       AgentTool.call(WorkerAgent, "Summarize this data")

@@ -31,8 +31,7 @@ defmodule Legion.MCP.Server do
   `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
   session's agent, so a lookup is a step of the conversation, saved, rate
   limited and traced like a `repl` call. The agent makes no LLM request of
-  its own; what a call costs is one evaluation, plus whatever its tools do
-  (`AgentTool`, for one).
+  its own; what a call costs is one evaluation, plus whatever its tools do.
 
   Built on `:anubis_mcp`, which speaks the protocol,
   runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -41,11 +40,14 @@ defmodule Legion.MCP.Server do
   Only agents on `Legion.Sandbox.Lua` can be served. Over MCP the code comes
   from whoever reaches the endpoint, not from a model the application
   prompts, and the Lua VM has nothing of the host's but the agent's tools.
-  A server whose agent's config names another sandbox fails to start, with
-  the reason in the supervisor's report; a call whose `session/1` names one,
-  or that reaches a named agent started elsewhere on another, is answered
-  with a tool error. So is every call to an agent whose `action_types/0`
-  allow no evaluation.
+  For the same reason no agent that lists `Legion.Tools.AgentTool` can be
+  served: its sub-agents would run tasks the caller writes, on the
+  application's model and in whatever sandbox they use. A server whose
+  agent's config names another sandbox, or whose agent lists `AgentTool`,
+  fails to start, with the reason in the supervisor's report; a call whose
+  `session/1` names another sandbox, or that reaches a named agent started
+  elsewhere on another or with `AgentTool`, is answered with a tool error.
+  So is every call to an agent whose `action_types/0` allow no evaluation.
 
   ## Options
 
@@ -168,7 +170,8 @@ defmodule Legion.MCP.Server do
   until it stops. An agent already running under that id, started by
   `Legion.start_link/2` before the MCP call arrived, keeps its own
   `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. Its
-  sandbox must still be Lua, or every call to it is refused.
+  sandbox must still be Lua and its tools must not include `AgentTool`, or
+  every call to it is refused.
 
   `:idle_timeout` stops the agent once nobody calls, after thirty minutes
   by default. The store then holds the conversation and the next call
@@ -249,6 +252,10 @@ defmodule Legion.MCP.Server do
   # guard, store save.
   @request_slack :timer.seconds(30)
 
+  # Sub-agents would run tasks the caller writes, on the application's model
+  # and in whatever sandbox they use.
+  @refused_tools [Legion.Tools.AgentTool]
+
   defmacro __using__(opts) do
     {agent, anubis_opts} = Keyword.pop!(opts, :agent)
     {budget, anubis_opts} = Keyword.pop(anubis_opts, :instructions_budget, @default_budget)
@@ -277,10 +284,7 @@ defmodule Legion.MCP.Server do
       def request_timeout, do: Legion.MCP.Server.request_timeout(unquote(agent))
 
       def child_spec(opts) do
-        case Legion.MCP.Server.check_sandbox(
-               unquote(agent),
-               Legion.Agent.resolve_config(unquote(agent))
-             ) do
+        case Legion.MCP.Server.check_agent(unquote(agent)) do
           :ok ->
             Legion.MCP.Server.check_instructions(__MODULE__, unquote(budget))
             super(Keyword.put_new(opts, :request_timeout, request_timeout()))
@@ -391,7 +395,11 @@ defmodule Legion.MCP.Server do
     }
 
     Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-      case Legion.eval(agent, code, vault: vault, require_sandbox: Legion.Sandbox.Lua) do
+      case Legion.eval(agent, code,
+             vault: vault,
+             require_sandbox: Legion.Sandbox.Lua,
+             refuse_tools: @refused_tools
+           ) do
         {:ok, text} ->
           {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 
@@ -425,6 +433,23 @@ defmodule Legion.MCP.Server do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
       {:error, reason} -> raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  # What a server will not start for: an agent off Lua, or one that lists a
+  # refused tool. See the moduledoc.
+  def check_agent(agent_module) do
+    with :ok <- check_sandbox(agent_module, Agent.resolve_config(agent_module)) do
+      case Enum.filter(agent_module.tools(), &(&1 in @refused_tools)) do
+        [] ->
+          :ok
+
+        refused ->
+          {:error,
+           "Legion.MCP.Server does not serve agents with " <>
+             "#{Enum.map_join(refused, ", ", &inspect/1)}, which #{inspect(agent_module)} lists"}
+      end
     end
   end
 
