@@ -4,7 +4,7 @@ defmodule Legion.Tools.Help do
 
   In every agent's sandbox, added by Legion itself. Under
   `tool_docs: :discovery` the system prompt names each tool with a one-line
-  summary and the model calls `Help.help("Name")` to read a tool's
+  summary and the model calls `Help.help(Name)` to read a tool's
   functions, arguments and return shapes before using it; under `:full` the
   prompt embeds the tools and does not mention it. Over MCP the server's
   `help` tool is this module run for the host. Not a tool to list in
@@ -16,15 +16,16 @@ defmodule Legion.Tools.Help do
 
   @doc """
   With no argument, one line per tool: its name and what it does. With a
-  `name` from that list, the tool's full reference: functions, arguments and
-  return shapes. An unknown name returns the list instead.
+  tool from that list, as in `Help.help(WeatherTool)`, the tool's full
+  reference: functions, arguments and return shapes. An unknown tool returns
+  the list instead.
   """
-  def help(name \\ nil)
+  def help(tool \\ nil)
 
   def help(nil), do: index(Vault.fetch!(:agent_module))
 
-  def help(name) when is_binary(name) do
-    case reference(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), name) do
+  def help(tool) do
+    case reference(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), short_name(tool)) do
       {:ok, text} -> text
       {:error, text} -> text
     end
@@ -61,5 +62,7 @@ defmodule Legion.Tools.Help do
       else: Legion.Tool.default_summary(module)
   end
 
+  # A string is the name itself; kept for code that types it, not documented.
+  defp short_name(name) when is_binary(name), do: name
   defp short_name(module), do: module |> Module.split() |> List.last()
 end

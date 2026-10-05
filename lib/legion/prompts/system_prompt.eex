@@ -7,7 +7,7 @@ You are an AI agent that solves tasks by <%= if mode == :mcp do %>writing <%= la
 - `code`: <%= language %> code to execute (for `eval_*` actions)
 - `result`: <%= if plain_text_result? do %>your final answer - plain text shown to the user, no JSON wrapping<% else %>structured result<% end %> (for `"return"` action)
 
-<% end %><%= unless short? do %>**Prefer writing code to accomplish your task.** Use the available tools by calling their functions in your code. <%= if tool_docs == :discovery do %>Read a tool's reference with `Help.help("Name")` before you use it; the tools are listed below.<% else %>Examine the tool source code below to understand what functions are available and how to use them.<% end %>
+<% end %><%= unless short? do %>**Prefer writing code to accomplish your task.** Use the available tools by calling their functions in your code. <%= if tool_docs == :discovery do %>Read a tool's reference with `Help.help(Name)` before you use it; the tools are listed below.<% else %>Examine the tool source code below to understand what functions are available and how to use them.<% end %>
 
 <% end %><%= if mode == :executor do %>**Finishing actions end your run.** After `return`, `done`, or `eval_and_complete`, nothing executes until the user sends a new message, and the returned result is a final answer - not a chat message the user is expected to reply to. Never finish just to announce what you are about to do; do it now with `eval_and_continue`. If you need input from the user mid-task, ask through a human-input tool (such as `HumanTool.ask`) when one is listed below - that is the only way to reach the user before your run ends.
 
@@ -31,7 +31,7 @@ You are an AI agent that solves tasks by <%= if mode == :mcp do %>writing <%= la
 
 <%= tool_index %>
 
-<%= if mode == :mcp do %>Before the first call to a tool, call `help` with its name to read its functions, arguments and return shapes; `help` with no name repeats this list.<% else %>Before the first call to a tool, read its functions, arguments and return shapes with `Help.help("Name")` (return its value to see it); `Help.help()` repeats this list.<% end %>
+<%= if mode == :mcp do %>Before the first call to a tool, call `help` with its name to read its functions, arguments and return shapes; `help` with no name repeats this list.<% else %>Before the first call to a tool, read its functions, arguments and return shapes with `Help.help(Name)` (return its value to see it); `Help.help()` repeats this list.<% end %>
 <% else %><%= if tool_references != [] do %>
 ## Available Tools
 

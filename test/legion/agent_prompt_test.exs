@@ -95,7 +95,7 @@ defmodule Legion.AgentPromptTest do
     test "steers the model to Help before the first use of a tool" do
       prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
 
-      assert prompt =~ ~s|Help.help("Name")|
+      assert prompt =~ "Help.help(Name)"
       assert prompt =~ "Help.help()"
       refute prompt =~ "Examine the tool source code below"
     end

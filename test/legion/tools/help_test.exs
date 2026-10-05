@@ -49,7 +49,7 @@ defmodule Legion.Tools.HelpTest do
     test "describes Help itself" do
       assert {:ok, text} = Help.reference(MathAgent, Legion.Sandbox.Lua, "Help")
       assert text =~ "### Help"
-      assert text =~ "def help(name)"
+      assert text =~ "def help(tool)"
     end
 
     test "an unknown name is an error carrying the index" do
@@ -63,7 +63,7 @@ defmodule Legion.Tools.HelpTest do
     test "help/1 returns a tool's reference under tool_docs: :discovery" do
       {:ok, pid} = Legion.start_link(MathAgent, tool_docs: :discovery)
 
-      assert {:ok, text} = AgentServer.eval(pid, ~s|return Help.help("MathTool")|)
+      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(MathTool)")
       assert text =~ "### MathTool"
       assert text =~ "performs math operations"
     end
@@ -76,18 +76,38 @@ defmodule Legion.Tools.HelpTest do
       assert text =~ "- `Help` -"
     end
 
-    test "help/1 of an unknown name returns the index as text, not an error" do
+    test "help/1 of an unknown tool returns the index as text, not an error" do
       {:ok, pid} = Legion.start_link(MathAgent, tool_docs: :discovery)
+
+      # An unknown name is `nil` in Lua, so the index comes back without a complaint.
+      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(Nope)")
+      refute text =~ "No tool named"
+      assert text =~ "- `MathTool` -"
+    end
+
+    test "help/1 of an unknown tool names it in the Elixir sandbox" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent, tool_docs: :discovery, sandbox: Legion.Sandbox.Elixir)
+
+      assert {:ok, text} = AgentServer.eval(pid, "Help.help(Nope)")
+      assert text =~ "No tool named"
+      assert text =~ "- `MathTool` -"
+    end
+
+    test "help/1 also takes the name as a string" do
+      {:ok, pid} = Legion.start_link(MathAgent, tool_docs: :discovery)
+
+      assert {:ok, text} = AgentServer.eval(pid, ~s|return Help.help("MathTool")|)
+      assert text =~ "### MathTool"
 
       assert {:ok, text} = AgentServer.eval(pid, ~s|return Help.help("Nope")|)
       assert text =~ "No tool named"
-      assert text =~ "- `MathTool` -"
     end
 
     test "Help is in the sandbox under the default :full too" do
       {:ok, pid} = Legion.start_link(MathAgent)
 
-      assert {:ok, text} = AgentServer.eval(pid, ~s|return Help.help("MathTool")|)
+      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(MathTool)")
       assert text =~ "### MathTool"
     end
 
@@ -95,7 +115,7 @@ defmodule Legion.Tools.HelpTest do
       {:ok, pid} =
         Legion.start_link(MathAgent, tool_docs: :discovery, sandbox: Legion.Sandbox.Elixir)
 
-      assert {:ok, text} = AgentServer.eval(pid, ~s|Help.help("MathTool")|)
+      assert {:ok, text} = AgentServer.eval(pid, "Help.help(MathTool)")
       assert text =~ "### MathTool"
       assert text =~ "performs math operations"
     end
@@ -104,7 +124,7 @@ defmodule Legion.Tools.HelpTest do
       {:ok, pid} =
         Legion.start_link(AgentToolAgent, tool_docs: :discovery, sandbox: Legion.Sandbox.Elixir)
 
-      assert {:ok, text} = AgentServer.eval(pid, ~s|Help.help("AgentTool")|)
+      assert {:ok, text} = AgentServer.eval(pid, "Help.help(AgentTool)")
       assert text =~ "{:ok, result} ="
       refute text =~ "result = response[2]"
     end
@@ -112,7 +132,7 @@ defmodule Legion.Tools.HelpTest do
     test "Help is in the Elixir sandbox under :full too" do
       {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
 
-      assert {:ok, text} = AgentServer.eval(pid, ~s|Help.help("MathTool")|)
+      assert {:ok, text} = AgentServer.eval(pid, "Help.help(MathTool)")
       assert text =~ "### MathTool"
     end
   end

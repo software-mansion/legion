@@ -3,7 +3,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @moduledoc """
     Full reference for one of this server's tools: its functions, arguments and return \
     shapes. Call it with `tool` set to a name from the server instructions; with no `tool` \
-    it lists every tool with a one-line summary. Inside `repl`, `Help.help("Name")` and \
+    it lists every tool with a one-line summary. Inside `repl`, `Help.help(Name)` and \
     `Help.help()` return the same text as a string you can search or slice in code; prefer \
     that when you are already writing code.
     """
