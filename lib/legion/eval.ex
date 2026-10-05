@@ -19,6 +19,7 @@ defmodule Legion.Eval do
   """
 
   alias Legion.{EvalGuard, Executor, Telemetry}
+  alias Legion.Sandbox.Runner
 
   @doc """
   Evaluates `code` for `agent_module` using `config` and the current
@@ -61,10 +62,10 @@ defmodule Legion.Eval do
       else
         {:deny, reason} ->
           error = "refused by #{inspect(config.eval_guard)}: #{reason}"
-          {{:error, error}, %{success: false, error: error}}
+          {{:error, error}, %{success: false, error: error, error_kind: :guard_denied}}
 
         {:error, error} ->
-          {{:error, error}, %{success: false, error: error}}
+          {{:error, error}, %{success: false, error: error, error_kind: Runner.error_kind(error)}}
       end
     end)
   end

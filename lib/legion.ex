@@ -7,7 +7,7 @@ defmodule Legion do
 
   use Supervisor
 
-  alias Legion.{AgentIndex, AgentServer}
+  alias Legion.{AgentIndex, AgentServer, Telemetry}
   alias Legion.Store.Payload
 
   @doc """
@@ -442,8 +442,10 @@ defmodule Legion do
         )
   """
   def parallel(tasks, timeout \\ :infinity) when is_list(tasks) do
+    otel_ctx = Telemetry.capture_context()
+
     tasks
-    |> Enum.map(fn {agent, task} -> Task.async(fn -> execute(agent, task) end) end)
+    |> Enum.map(fn {agent, task} -> Task.async(fn -> execute_in(otel_ctx, agent, task) end) end)
     |> Task.await_many(timeout)
     |> collect_results()
   end
@@ -512,6 +514,10 @@ defmodule Legion do
   end
 
   def then({:cancel, _} = cancelled, _agent, _fun), do: cancelled
+
+  # Task processes start without the caller's OpenTelemetry context.
+  defp execute_in(otel_ctx, agent, task),
+    do: Telemetry.with_context(otel_ctx, fn -> execute(agent, task) end)
 
   defp continue_or_halt({:ok, _} = ok), do: {:cont, ok}
   defp continue_or_halt({:cancel, _} = cancel), do: {:halt, cancel}

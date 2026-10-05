@@ -35,6 +35,7 @@ defmodule Legion.MixProject do
           "guides/ash.md": [title: "Using Legion with Ash"],
           "guides/local_llms.md": [title: "Local LLMs"],
           "guides/mcp.md": [title: "Serving an agent over MCP"],
+          "guides/observability.md": [title: "Observability"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()
@@ -72,6 +73,7 @@ defmodule Legion.MixProject do
         Legion.Telemetry
       ],
       MCP: [~r/^Legion\.MCP/],
+      Observability: [~r/^Legion\.OpenTelemetry/],
       Tools: [~r/^Legion\.Tools\./]
     ]
   end
@@ -83,9 +85,11 @@ defmodule Legion.MixProject do
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      {:nimble_options, "~> 1.0"},
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
       {:anubis_mcp, "~> 2.0", optional: true},
+      {:opentelemetry_api, "~> 1.4", optional: true},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
@@ -93,7 +97,9 @@ defmodule Legion.MixProject do
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:mimic, "~> 1.7", only: :test},
-      {:bandit, "~> 1.0", only: :test}
+      {:bandit, "~> 1.0", only: :test},
+      {:opentelemetry, "~> 1.5", only: :test},
+      {:opentelemetry_exporter, "~> 1.8", only: :test}
     ]
   end
 

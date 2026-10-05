@@ -57,7 +57,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @doc false
     # The host's code, run as one step of the session's agent.
     def execute(%{code: code}, %Frame{assigns: %{legion_mcp_server: _}} = frame),
-      do: Server.run(frame, code)
+      do: Server.run(frame, "repl", code)
 
     def execute(_params, %Frame{} = frame) do
       message = "Session is not initialized: send notifications/initialized before calling tools."
