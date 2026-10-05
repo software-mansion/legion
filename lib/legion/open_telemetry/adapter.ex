@@ -11,9 +11,7 @@ defmodule Legion.OpenTelemetry.Adapter do
   current. Every tracer callback gets the attach options plus `:span_kind`
   (`:internal`, `:client` for `chat`, `:server` for MCP calls). Only
   OpenTelemetry span contexts become current, so nothing nests under a span
-  handle of another shape. The optional `record_counter/2` takes a histogram
-  record with `kind: :counter` and no `:boundaries`; a tracer without it gets
-  histograms only.
+  handle of another shape.
 
   ## Example - tag every span with the deployment environment
 
@@ -50,9 +48,6 @@ defmodule Legion.OpenTelemetry.Adapter do
             ) :: :ok
   @callback end_span(span :: term(), config :: keyword()) :: :ok
 
-  @callback metrics_available?() :: boolean()
-  @callback record_histogram(record :: map(), config :: keyword()) :: :ok
-  @callback record_counter(record :: map(), config :: keyword()) :: :ok
   @callback start_child_span(
               parent :: term(),
               name :: String.t(),
@@ -76,9 +71,6 @@ defmodule Legion.OpenTelemetry.Adapter do
                       add_event: 4,
                       set_status: 4,
                       end_span: 2,
-                      metrics_available?: 0,
-                      record_histogram: 2,
-                      record_counter: 2,
                       start_child_span: 5,
                       end_span_at: 3,
                       exporter_config: 1

@@ -20,14 +20,6 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   end
 
   @impl true
-  def metrics_available? do
-    case Legion.OpenTelemetry.config() do
-      nil -> false
-      config -> config[:metrics?] == true
-    end
-  end
-
-  @impl true
   def start_span(name, attributes, config) do
     attributes = Handler.chat_attributes() |> Map.merge(attributes) |> join_content()
     adapter(config).start_span(name, attributes, legion_config(config))
@@ -55,15 +47,6 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   @impl true
   def end_span(span, config) do
     adapter(config).end_span(span, legion_config(config))
-  end
-
-  @impl true
-  def record_histogram(record, config) do
-    legion_config = legion_config(config)
-
-    if legion_config[:metrics?],
-      do: adapter(config).record_histogram(record, legion_config),
-      else: :ok
   end
 
   @impl true

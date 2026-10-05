@@ -26,8 +26,6 @@ defmodule Legion.OpenTelemetry do
       `error.type`.
     * `:max_attribute_bytes` - longest content attribute on Legion's own spans,
       cut on a UTF-8 boundary. Defaults to `20_000`.
-    * `:metrics` - `false` turns off Legion's and ReqLLM's metrics. Defaults to
-      `true`; see `Legion.OpenTelemetry.Adapter.OTel` for what they need.
     * `:iteration_spans` - `true` adds an `iteration N` span per executor
       iteration. Defaults to `false`.
     * `:conversation_traces` - `true` puts an agent's turns in one trace under
@@ -43,7 +41,7 @@ defmodule Legion.OpenTelemetry do
 
   require Logger
 
-  alias Legion.OpenTelemetry.{Handler, Metrics}
+  alias Legion.OpenTelemetry.Handler
 
   @req_llm_handler_id "legion-req-llm-otel"
   @config_key {__MODULE__, :config}
@@ -63,11 +61,6 @@ defmodule Legion.OpenTelemetry do
               type: :pos_integer,
               default: 20_000,
               doc: "Longest content attribute, in bytes."
-            ],
-            metrics: [
-              type: :boolean,
-              default: true,
-              doc: "Record metrics."
             ],
             iteration_spans: [
               type: :boolean,
@@ -221,11 +214,7 @@ defmodule Legion.OpenTelemetry do
   end
 
   defp do_attach(config) do
-    config =
-      Keyword.merge(config,
-        metrics?: config[:metrics] and Metrics.available?(config[:tracer]),
-        req_llm_content?: req_llm_content?(config)
-      )
+    config = Keyword.put(config, :req_llm_content?, req_llm_content?(config))
 
     :persistent_term.put(@config_key, config)
 

@@ -1,8 +1,8 @@
 defmodule Legion.OpenTelemetry.Handler do
   @moduledoc false
 
-  # Turns Legion's `:telemetry` events into OpenTelemetry spans, span events
-  # and metrics:
+  # Turns Legion's `:telemetry` events into OpenTelemetry spans and span
+  # events:
   #
   #   * `[:legion, :agent, :message]` -> `invoke_agent <agent>`
   #   * `[:legion, :sandbox, :eval]`  -> `execute_tool sandbox`
@@ -20,7 +20,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
   require Logger
 
-  alias Legion.OpenTelemetry.{Attributes, Metrics}
+  alias Legion.OpenTelemetry.Attributes
 
   @handler_id "legion-otel"
   @stack_key {__MODULE__, :stack}
@@ -40,7 +40,6 @@ defmodule Legion.OpenTelemetry.Handler do
     [:legion, :sandbox, :eval, :stop],
     [:legion, :sandbox, :eval, :exception],
     [:legion, :eval_guard, :denied],
-    [:legion, :rate_limit, :exceeded],
     [:legion, :mcp, :call, :start],
     [:legion, :mcp, :call, :stop],
     [:legion, :mcp, :call, :exception]
@@ -112,44 +111,19 @@ defmodule Legion.OpenTelemetry.Handler do
       agent: meta.agent,
       agent_id: meta[:agent_id],
       session: session,
-      model: nil,
-      inference_calls: 0,
-      tool_calls: 0
+      model: nil
     })
   end
 
-  defp handle([:legion, :agent, :message, :stop], measurements, meta, config) do
+  defp handle([:legion, :agent, :message, :stop], _measurements, meta, config) do
     with %{} = frame <- pop(:agent, config) do
-      error_type = closing(frame, config, fn -> end_agent(frame, meta, config) end)
-
-      agent = %{"gen_ai.agent.name": Attributes.agent_name(frame.agent)}
-
-      cancellations =
-        if error_type,
-          do: [
-            Metrics.build("legion.turn.cancellations", 1, cancel_attributes(agent, error_type))
-          ],
-          else: []
-
-      [
-        agent_duration(frame, measurements, error_type),
-        Metrics.build("gen_ai.invoke_agent.inference_calls", frame.inference_calls, agent),
-        Metrics.build("gen_ai.invoke_agent.tool_calls", frame.tool_calls, agent),
-        meta[:iterations] && Metrics.build("legion.turn.iterations", meta[:iterations], agent)
-      ]
-      |> Kernel.++(cancellations)
-      |> Enum.reject(&is_nil/1)
-      |> Metrics.record(config)
+      closing(frame, config, fn -> end_agent(frame, meta, config) end)
     end
   end
 
-  defp handle([:legion, :agent, :message, :exception], measurements, meta, config) do
+  defp handle([:legion, :agent, :message, :exception], _measurements, meta, config) do
     with %{} = frame <- pop(:agent, config) do
-      error_type = closing(frame, config, fn -> fail(frame, meta, config) end)
-
-      [agent_duration(frame, measurements, error_type)]
-      |> Enum.reject(&is_nil/1)
-      |> Metrics.record(config)
+      closing(frame, config, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -179,7 +153,7 @@ defmodule Legion.OpenTelemetry.Handler do
   # -- LLM requests --
 
   defp handle([:legion, :llm, :request, :start], _measurements, meta, _config) do
-    update(:agent, &%{&1 | model: meta[:model], inference_calls: &1.inference_calls + 1})
+    update(:agent, &%{&1 | model: meta[:model]})
     update(:iteration, &%{&1 | llm: :pending})
   end
 
@@ -208,7 +182,6 @@ defmodule Legion.OpenTelemetry.Handler do
         nil -> nil
       end
 
-    update(:agent, &%{&1 | tool_calls: &1.tool_calls + 1})
     update(:iteration, &%{&1 | eval: :pending})
 
     attributes =
@@ -224,7 +197,7 @@ defmodule Legion.OpenTelemetry.Handler do
     })
   end
 
-  defp handle([:legion, :sandbox, :eval, :stop], measurements, meta, config) do
+  defp handle([:legion, :sandbox, :eval, :stop], _measurements, meta, config) do
     with %{} = frame <- pop(:eval, config) do
       error_kind =
         if meta[:success],
@@ -234,15 +207,13 @@ defmodule Legion.OpenTelemetry.Handler do
       closing(frame, config, fn -> end_eval(frame, meta, error_kind, config) end)
 
       update(:iteration, &%{&1 | eval: if(error_kind, do: :error, else: :ok)})
-      record_eval(frame, measurements, error_kind, error_kind, config)
     end
   end
 
-  defp handle([:legion, :sandbox, :eval, :exception], measurements, meta, config) do
+  defp handle([:legion, :sandbox, :eval, :exception], _measurements, meta, config) do
     with %{} = frame <- pop(:eval, config) do
-      error_type = closing(frame, config, fn -> fail(frame, meta, config) end)
+      closing(frame, config, fn -> fail(frame, meta, config) end)
       update(:iteration, &%{&1 | eval: :error})
-      record_eval(frame, measurements, error_type, "crash", config)
     end
   end
 
@@ -283,17 +254,6 @@ defmodule Legion.OpenTelemetry.Handler do
       _ ->
         :ok
     end
-  end
-
-  # The limit is checked before the turn starts, so there is no span to put an
-  # event on; the denial is only counted.
-  defp handle([:legion, :rate_limit, :exceeded], _measurements, meta, config) do
-    attributes = %{
-      "gen_ai.agent.name": Attributes.agent_name(meta.agent),
-      "legion.rate_limit.identity": identity_keys(meta[:identity])
-    }
-
-    Metrics.record([Metrics.build("legion.rate_limit.exceeded", 1, attributes)], config)
   end
 
   # -- helpers --
@@ -363,55 +323,6 @@ defmodule Legion.OpenTelemetry.Handler do
         %{"legion.retry.reason": reason, "legion.iteration": number},
         config
       )
-
-      attributes = %{
-        "gen_ai.agent.name": Attributes.agent_name(agent.agent),
-        "legion.retry.reason": reason
-      }
-
-      Metrics.record([Metrics.build("legion.llm.retries", 1, attributes)], config)
-    end
-  end
-
-  defp record_eval(frame, measurements, error_type, error_kind, config) do
-    agent_name = Attributes.agent_name(frame.agent)
-
-    duration =
-      case Metrics.seconds(measurements[:duration]) do
-        nil ->
-          nil
-
-        seconds ->
-          attributes =
-            drop_nils(%{
-              "gen_ai.tool.name": "sandbox",
-              "gen_ai.tool.type": "extension",
-              "gen_ai.agent.name": agent_name,
-              "error.type": error_type
-            })
-
-          Metrics.build("gen_ai.execute_tool.duration", seconds, attributes)
-      end
-
-    errors =
-      if error_kind do
-        attributes = %{"gen_ai.agent.name": agent_name, "legion.error.kind": error_kind}
-        Metrics.build("legion.eval.errors", 1, attributes)
-      end
-
-    [duration, errors] |> Enum.reject(&is_nil/1) |> Metrics.record(config)
-  end
-
-  defp agent_duration(frame, measurements, error_type) do
-    with seconds when is_number(seconds) <- Metrics.seconds(measurements[:duration]) do
-      attributes =
-        drop_nils(%{
-          "gen_ai.agent.name": Attributes.agent_name(frame.agent),
-          "gen_ai.request.model": Attributes.model_name(frame.model),
-          "error.type": error_type
-        })
-
-      Metrics.build("gen_ai.invoke_agent.duration", seconds, attributes)
     end
   end
 
@@ -462,7 +373,7 @@ defmodule Legion.OpenTelemetry.Handler do
     })
   end
 
-  # Records a finished turn on its span, returning `error.type`.
+  # Records a finished turn on its span.
   defp end_agent(frame, meta, config) do
     adapter = config[:tracer]
     attributes = Attributes.invoke_agent_stop(meta, frame.model, config)
@@ -470,7 +381,6 @@ defmodule Legion.OpenTelemetry.Handler do
 
     adapter.set_attributes(frame.span, attributes, config)
     if error_type, do: adapter.set_status(frame.span, :error, error_type, config)
-    error_type
   end
 
   defp end_eval(frame, meta, error_kind, config) do
@@ -507,9 +417,7 @@ defmodule Legion.OpenTelemetry.Handler do
   defp put_action(span, action, config),
     do: config[:tracer].set_attributes(span, %{"legion.action": action}, config)
 
-  defp cancel_attributes(agent, reason), do: Map.put(agent, :"legion.cancel.reason", reason)
-
-  # Marks `frame`'s span failed from an `:exception` event, returning `error.type`.
+  # Marks `frame`'s span failed from an `:exception` event.
   defp fail(frame, meta, config) do
     adapter = config[:tracer]
     error_type = Attributes.exception_type(meta[:kind], meta[:reason])
@@ -517,7 +425,6 @@ defmodule Legion.OpenTelemetry.Handler do
 
     adapter.set_attributes(frame.span, %{"error.type": error_type}, config)
     adapter.set_status(frame.span, :error, message, config)
-    error_type
   end
 
   # Runs `fun`, which records `frame`'s outcome, then ends the span and
@@ -534,13 +441,6 @@ defmodule Legion.OpenTelemetry.Handler do
   after
     detach_span(frame.token)
   end
-
-  defp identity_keys(identity) when is_map(identity),
-    do: identity |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort() |> Enum.join(",")
-
-  defp identity_keys(_identity), do: nil
-
-  defp drop_nils(map), do: map |> Enum.reject(fn {_k, v} -> is_nil(v) end) |> Map.new()
 
   # -- span stack --
 

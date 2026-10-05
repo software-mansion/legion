@@ -95,25 +95,6 @@ another span still nests there.
 Each `repl` or `help` call to a `Legion.MCP.Server` is a `tools/call <tool>`
 server span keyed by the MCP session id, with the agent's eval under it.
 
-## Metrics
-
-With `metrics: true` (the default) and `opentelemetry_api_experimental` plus
-`opentelemetry_experimental` in the host, Legion records:
-
-| Metric | Type | Attributes |
-|---|---|---|
-| `gen_ai.invoke_agent.duration` | histogram, s | agent, model, `error.type` |
-| `gen_ai.invoke_agent.inference_calls` | histogram | agent |
-| `gen_ai.invoke_agent.tool_calls` | histogram | agent |
-| `gen_ai.execute_tool.duration` | histogram, s | tool, agent, `error.type` |
-| `legion.turn.iterations` | histogram | agent |
-| `legion.eval.errors` | counter | agent, `legion.error.kind` |
-| `legion.llm.retries` | counter | agent, `legion.retry.reason` |
-| `legion.turn.cancellations` | counter | agent, `legion.cancel.reason` |
-| `legion.rate_limit.exceeded` | counter | agent, the identity's field names |
-
-ReqLLM's client metrics go through the same adapter.
-
 ## Vendors
 
 For Braintrust and Datadog, name the vendor's adapter in config and export

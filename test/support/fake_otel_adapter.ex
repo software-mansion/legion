@@ -2,7 +2,7 @@ defmodule Legion.Test.Support.FakeOTelAdapter do
   @moduledoc """
   `Legion.OpenTelemetry.Adapter` that reports every callback to the process
   registered with `register/1`. Spans are plain references, so nothing nests
-  under them; metrics are reported like spans.
+  under them.
 
   Adapter callbacks run in whichever process emits the telemetry event (the
   agent process for LLM requests), so the test process registers itself under
@@ -45,19 +45,6 @@ defmodule Legion.Test.Support.FakeOTelAdapter do
   @impl true
   def end_span(span, config) do
     report({:otel, :end_span, span, config})
-  end
-
-  @impl true
-  def metrics_available?, do: true
-
-  @impl true
-  def record_histogram(record, config) do
-    report({:otel, :record_histogram, record, config})
-  end
-
-  @impl true
-  def record_counter(record, config) do
-    report({:otel, :record_counter, record, config})
   end
 
   defp report(message) do

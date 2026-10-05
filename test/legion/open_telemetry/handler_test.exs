@@ -1,6 +1,6 @@
 defmodule Legion.OpenTelemetry.HandlerTest do
   @moduledoc """
-  Legion's own spans, span events and metrics, observed through a fake adapter.
+  Legion's own spans and span events, observed through a fake adapter.
   """
 
   use ExUnit.Case, async: false
@@ -94,12 +94,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
   defp started_span_names(messages) do
     for {:otel, :start_span, _, name, _, _} <- messages, do: name
-  end
-
-  defp metric_records(messages) do
-    for {:otel, kind, record, _} <- messages, kind in [:record_histogram, :record_counter] do
-      record
-    end
   end
 
   describe "invoke_agent" do
@@ -437,68 +431,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
       assert_receive {:tool_process_attributes, attributes}
       assert attributes == %{"session.id": agent_id}
-    end
-  end
-
-  describe "metrics" do
-    test "records agent, tool and LLM metrics" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      reply_with([eval("error('boom')"), return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      all_records = metric_records(flush())
-      records = Map.new(all_records, &{&1.name, &1})
-      agent = %{"gen_ai.agent.name": "Legion.Test.Support.MathAgent"}
-
-      assert records["gen_ai.invoke_agent.duration"].unit == "s"
-
-      assert %{value: 2, unit: "{inference_call}"} =
-               records["gen_ai.invoke_agent.inference_calls"]
-
-      assert %{value: 1, unit: "{tool_call}"} = records["gen_ai.invoke_agent.tool_calls"]
-      assert records["gen_ai.execute_tool.duration"].attributes[:"error.type"] == "runtime"
-      assert records["legion.turn.iterations"].attributes == agent
-
-      assert %{kind: :counter, value: 1, attributes: %{"legion.error.kind": "runtime"}} =
-               records["legion.eval.errors"]
-
-      assert Map.has_key?(records, "gen_ai.client.operation.duration")
-    end
-
-    test "counts rate-limit denials by identity fields, not values" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-
-      :telemetry.execute([:legion, :rate_limit, :exceeded], %{}, %{
-        agent: MathAgent,
-        identity: %{"ip" => "203.0.113.42", "tenant" => "acme"},
-        violations: [:max_agents]
-      })
-
-      assert_receive {:otel, :record_counter,
-                      %{
-                        name: "legion.rate_limit.exceeded",
-                        value: 1,
-                        attributes: %{"legion.rate_limit.identity": "ip,tenant"}
-                      }, _}
-    end
-
-    test "metrics: false records none" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, metrics: false)
-      reply_with([eval("return 1"), return("done")])
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
-
-      assert metric_records(flush()) == []
-    end
-
-    test "starting and stopping an agent records no metrics" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      :ok = GenServer.stop(pid)
-
-      assert metric_records(flush()) == []
     end
   end
 
