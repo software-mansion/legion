@@ -196,7 +196,7 @@ defmodule Legion.Sandbox.Lua do
         short_name = tool |> Module.split() |> List.last()
 
         # The marker lets sandboxed code pass the table itself where an Elixir
-        # module is expected (`AgentTool.call(PlannerAgent, task)`) - the
+        # module is expected (`AgentTool.execute(PlannerAgent, task)`) - the
         # bridge resolves marked tables back to their module atom.
         lua = Lua.set!(lua, [short_name, @module_key], Atom.to_string(tool))
 

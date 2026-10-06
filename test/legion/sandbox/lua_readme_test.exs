@@ -21,14 +21,14 @@ defmodule Legion.Sandbox.LuaReadmeTest.DatabaseTool do
   end
 end
 
-# Stands in for Legion.Tools.AgentTool - same short name and call contract,
+# Stands in for Legion.Tools.AgentTool - same short name and execute contract,
 # without spinning up sub-agent LLM runs.
 defmodule Legion.Sandbox.LuaReadmeTest.AgentTool do
   use Legion.Tool
 
   def description, do: "Delegates a task to a sub-agent."
 
-  def call(agent_module, task) when is_atom(agent_module), do: {:ok, "done: " <> task}
+  def execute(agent_module, task) when is_atom(agent_module), do: {:ok, "done: " <> task}
 end
 
 defmodule Legion.Sandbox.LuaReadmeTest.ResearchAgent do
@@ -91,8 +91,8 @@ defmodule Legion.Sandbox.LuaReadmeTest do
 
   test "orchestrator: delegate to sub-agents and chain their results" do
     orchestrator_snippet = """
-    local _, research = table.unpack(AgentTool.call(ResearchAgent, "Find info about Elixir 1.18"))
-    local _, draft = table.unpack(AgentTool.call(WriterAgent, "Write a blog post using: " .. research))
+    local _, research = table.unpack(AgentTool.execute(ResearchAgent, "Find info about Elixir 1.18"))
+    local _, draft = table.unpack(AgentTool.execute(WriterAgent, "Write a blog post using: " .. research))
     return draft
     """
 

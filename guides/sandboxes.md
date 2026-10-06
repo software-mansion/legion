@@ -75,7 +75,7 @@ directions:
   tell "empty list" from "empty map".
 - **Module references** work only for bridged tools: passing a tool's global
   table where an Elixir module is expected
-  (`AgentTool.call(PlannerAgent, task)`) resolves to the module atom. There
+  (`AgentTool.execute(PlannerAgent, task)`) resolves to the module atom. There
   is no general way to name an arbitrary Elixir module - which is a feature.
 - **Only `use Legion.Tool` modules expose functions.** Anything else in the
   list (sub-agent modules, extra allowed modules) is bridged reference-only:

@@ -1476,7 +1476,7 @@ defmodule Legion.AgentServerTest do
         if Enum.any?(messages, &(&1[:content] == "child task")) do
           llm_response("child done")
         else
-          llm_eval_response(~s|AgentTool.call(ChildAgent, "child task")|)
+          llm_eval_response(~s|AgentTool.execute(ChildAgent, "child task")|)
         end
       end)
 
@@ -1778,6 +1778,63 @@ defmodule Legion.AgentServerTest do
     end
   end
 
+  describe "long-lived sub-agents" do
+    test "Lua holds one sub-agent conversation across executions" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent)
+
+      assert {:ok, first} =
+               AgentServer.eval(pid, """
+               writer = AgentTool.start_link(ChildAgent)[2]
+               return AgentTool.call(writer, "draft")[2]
+               """)
+
+      assert {:ok, second} =
+               AgentServer.eval(pid, ~s|return AgentTool.call(writer, "tighten")[2]|)
+
+      assert first =~ "turn 1"
+      assert second =~ "turn 2"
+    end
+
+    test "calling a module instead of a sub-agent id points to execute" do
+      {:ok, pid} = Legion.start_link(DelegatingAgent)
+
+      assert {:error, text} = AgentServer.eval(pid, ~s|return AgentTool.call(ChildAgent, "x")|)
+      assert text =~ "is not a running sub-agent of this agent"
+      assert text =~ "execute/2"
+    end
+
+    test "only the owner reaches a sub-agent, which stops with it even mid-turn" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, {:sub_agent_turn, Vault.get(:agent_id)})
+        Process.sleep(:infinity)
+      end)
+
+      {:ok, owner} = Legion.start_link(DelegatingAgent)
+      {:ok, other} = Legion.start_link(DelegatingAgent)
+
+      {:ok, _text} =
+        AgentServer.eval(owner, ~s|AgentTool.cast(AgentTool.start_link(ChildAgent)[2], "draft")|)
+
+      assert_receive {:sub_agent_turn, agent_id}
+      {:ok, sub_agent} = Legion.lookup(agent_id)
+
+      assert {:error, text} =
+               AgentServer.eval(other, ~s|return AgentTool.call("#{agent_id}", "hi")|)
+
+      assert text =~ "is not a running sub-agent of this agent"
+
+      ref = Process.monitor(sub_agent)
+      GenServer.stop(owner)
+      assert_receive {:DOWN, ^ref, :process, ^sub_agent, :shutdown}
+    end
+  end
+
   describe "idle_timeout" do
     test "stops the agent once nobody has called for that long" do
       reject(&ReqLLM.generate_object/3)
@@ -1914,7 +1971,7 @@ defmodule Legion.AgentServerTest do
           llm_response("child done")
         else
           llm_eval_response("""
-          response = AgentTool.call(ChildAgent, "do work")
+          response = AgentTool.execute(ChildAgent, "do work")
           return response[2]
           """)
         end
@@ -1951,7 +2008,7 @@ defmodule Legion.AgentServerTest do
           llm_response("child done")
         else
           llm_eval_response("""
-          response = AgentTool.call(ChildAgent, "do work")
+          response = AgentTool.execute(ChildAgent, "do work")
           return response[2]
           """)
         end

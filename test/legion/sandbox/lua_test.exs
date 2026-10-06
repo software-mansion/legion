@@ -32,7 +32,7 @@ end
 
 # NOT a Legion.Tool - stands in for a sub-agent module that only reaches the
 # sandbox via AgentTool.extra_allowed_modules/0, where it is meant to be a bare
-# module *reference* for `AgentTool.call(FakeSubAgent, task)`, never a callable.
+# module *reference* for `AgentTool.execute(FakeSubAgent, task)`, never a callable.
 defmodule Legion.Sandbox.LuaTest.FakeSubAgent do
   def internal_capability(marker), do: {:reached_host, marker}
 end
@@ -259,7 +259,7 @@ defmodule Legion.Sandbox.LuaTest do
   test "non-tool modules are reference-only: no functions bridged into Lua" do
     # The executor passes `tools ++ extra_allowed_modules` as one list; a
     # sub-agent module in that list is meant as a bare module reference for
-    # `AgentTool.call(FakeSubAgent, task)`, never a callable. Only modules
+    # `AgentTool.execute(FakeSubAgent, task)`, never a callable. Only modules
     # built with `use Legion.Tool` get their functions bridged.
     assert {:error, message} =
              Lua.execute(
