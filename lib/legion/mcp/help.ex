@@ -12,7 +12,6 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     alias Anubis.Server.Frame
     alias Anubis.Server.Response
-    alias Legion.AgentPrompt
     alias Legion.MCP.Server
 
     schema do
@@ -29,7 +28,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         :error ->
           message =
             "Tool names are single words, as listed. Tools:\n" <>
-              AgentPrompt.tool_index(server.__legion_agent__())
+              Server.tool_index(server.__legion_agent__())
 
           {:reply, Response.error(Response.tool(), message), frame}
       end

@@ -414,14 +414,6 @@ defmodule Legion.MCP.ServerTest do
                help(UserMCP, frame, %{})
     end
 
-    test "renders the Lua reference of a tool with a per-sandbox description" do
-      frame = initialized(AgentToolMCP, frame())
-
-      assert {false, text, _frame} = help(AgentToolMCP, frame, %{"tool" => "AgentTool"})
-      assert text =~ "result = response[2]"
-      refute text =~ "{:ok, result} ="
-    end
-
     test "refuses before the session is initialized" do
       assert {true, text, _frame} = help(MathMCP, frame(), %{})
       assert text =~ "not initialized"
@@ -453,6 +445,41 @@ defmodule Legion.MCP.ServerTest do
       assert {:error, message} = apply(module, function, arguments)
       assert message =~ "Legion.Sandbox.Lua agents only"
       assert message =~ "ElixirAgent runs Legion.Sandbox.Elixir"
+    end
+  end
+
+  describe "AgentTool" do
+    test "is left out of the instructions, help and repl" do
+      refute match?(
+               %{start: {Server, :refuse_start, _arguments}},
+               AgentToolMCP.child_spec(transport: :stdio)
+             )
+
+      refute AgentToolMCP.server_instructions() =~ "AgentTool"
+
+      frame = initialized(AgentToolMCP, frame())
+
+      assert {false, text, frame} = repl(AgentToolMCP, frame, "return AgentTool == nil")
+      assert text =~ "true"
+
+      assert {false, text, frame} = help(AgentToolMCP, frame, %{})
+      refute text =~ "AgentTool"
+
+      assert {false, text, _frame} = help(AgentToolMCP, frame, %{"tool" => "AgentTool"})
+      assert text =~ "No tool named"
+    end
+
+    test "a named agent started elsewhere with it serves calls without it, and keeps it" do
+      {:ok, pid} =
+        Legion.start_link(AgentToolAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {false, text, _frame} = repl(PresetMCP, frame, "return AgentTool == nil")
+      assert text =~ "true"
+
+      assert {:ok, text} = Legion.eval(pid, "return AgentTool == nil")
+      assert text =~ "false"
     end
   end
 

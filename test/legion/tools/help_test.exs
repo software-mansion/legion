@@ -19,41 +19,41 @@ defmodule Legion.Tools.HelpTest do
     def tools, do: [Legion.Tools.AgentTool]
   end
 
-  describe "AgentPrompt.tool_index/1" do
+  describe "AgentPrompt.tool_index/2" do
     test "one line per tool, name and summary" do
-      index = AgentPrompt.tool_index(ToolsAgent)
+      index = AgentPrompt.tool_index(ToolsAgent, [])
 
       assert index =~ "- `MathTool` - This is math tool moduledoc."
       assert index =~ "- `SummaryTool` - Custom summary."
     end
 
     test "lists Help itself" do
-      assert AgentPrompt.tool_index(ToolsAgent) =~ "- `Help` - Lists the tools available"
+      assert AgentPrompt.tool_index(ToolsAgent, []) =~ "- `Help` - Lists the tools available"
     end
 
     test "carries no signatures or source" do
-      index = AgentPrompt.tool_index(ToolsAgent)
+      index = AgentPrompt.tool_index(ToolsAgent, [])
 
       refute index =~ "random_add"
       refute index =~ "defmodule"
     end
   end
 
-  describe "AgentPrompt.tool_help/3" do
+  describe "AgentPrompt.tool_help/4" do
     test "returns the block the :inline executor prompt renders for that tool" do
-      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "MathTool")
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "MathTool", [])
       assert text == AgentPrompt.tool_reference(MathTool, Legion.Sandbox.Lua)
       assert AgentPrompt.system_prompt(MathAgent) =~ text
     end
 
     test "describes Help itself" do
-      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, Help)
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, Help, [])
       assert text =~ "### Help"
       assert text =~ "def help(tool)"
     end
 
     test "an unknown name returns the index" do
-      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "Nope")
+      text = AgentPrompt.tool_help(MathAgent, Legion.Sandbox.Lua, "Nope", [])
       assert text =~ ~s|No tool named "Nope". Tools:|
       assert text =~ "- `MathTool` -"
     end
@@ -66,7 +66,7 @@ defmodule Legion.Tools.HelpTest do
       for code <- [
             "Help.index(#{inspect(ToolsAgent)})",
             ~s|Help.reference(#{inspect(ToolsAgent)}, Legion.Sandbox.Elixir, "SummaryTool")|,
-            "Legion.AgentPrompt.tool_index(#{inspect(ToolsAgent)})"
+            "Legion.AgentPrompt.tool_index(#{inspect(ToolsAgent)}, [])"
           ] do
         assert {:error, text} = AgentServer.eval(pid, code), code
         refute text =~ "SummaryTool"
@@ -140,6 +140,14 @@ defmodule Legion.Tools.HelpTest do
       assert {:ok, text} = AgentServer.eval(pid, "Help.help(AgentTool)")
       assert text =~ "{:ok, result} ="
       refute text =~ "result = response[2]"
+    end
+
+    test "help/1 renders the Lua reference on the Lua sandbox" do
+      {:ok, pid} = Legion.start_link(AgentToolAgent, tool_docs: :on_demand)
+
+      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(AgentTool)")
+      assert text =~ "return response[2]"
+      refute text =~ "{:ok, result} ="
     end
 
     test "Help is in the Elixir sandbox under :inline too" do

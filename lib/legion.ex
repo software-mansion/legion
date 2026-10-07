@@ -185,6 +185,8 @@ defmodule Legion do
     - `:require_sandbox` - a sandbox module; the call is refused like the
       above unless the agent runs it. For a caller that reaches an agent by
       id and cannot know how it was started
+    - `:exclude_tools` - tool modules left out for this call only: the code
+      cannot call them and `Help` does not list them
     - `:timeout` - how long to wait for the call (default: `:infinity`)
 
   ## Examples

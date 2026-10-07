@@ -1762,6 +1762,88 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
     end
+
+    test ":exclude_tools leaves tools out of that call only" do
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return {MathTool == nil, Help.help()}",
+                 exclude_tools: [Legion.Test.Support.MathTool]
+               )
+
+      assert text =~ "true"
+      refute text =~ "MathTool"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return {MathTool == nil, Help.help()}")
+      assert text =~ "false"
+      assert text =~ "MathTool"
+    end
+  end
+
+  describe "long-lived sub-agents" do
+    test "Lua holds one sub-agent conversation across executions" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent)
+
+      assert {:ok, first} =
+               AgentServer.eval(pid, """
+               writer = AgentTool.start_link(ChildAgent)[2]
+               return AgentTool.call(writer, "draft")[2]
+               """)
+
+      assert {:ok, second} =
+               AgentServer.eval(pid, ~s|return AgentTool.call(writer, "tighten")[2]|)
+
+      assert first =~ "turn 1"
+      assert second =~ "turn 2"
+    end
+
+    test "start_link/2 casts the task, and its id stands in for the pid it used to return" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent, sandbox: Legion.Sandbox.Elixir)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, """
+               {:ok, pid} = AgentTool.start_link(ChildAgent, "draft")
+               {:ok, reply} = AgentTool.call(pid, "tighten")
+               reply
+               """)
+
+      assert text =~ "turn 2"
+    end
+
+    test "only the owner reaches a sub-agent, which stops with it even mid-turn" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, {:sub_agent_turn, Vault.get(:agent_id)})
+        Process.sleep(:infinity)
+      end)
+
+      {:ok, owner} = Legion.start_link(DelegatingAgent)
+      {:ok, other} = Legion.start_link(DelegatingAgent)
+
+      {:ok, _text} =
+        AgentServer.eval(owner, ~s|AgentTool.cast(AgentTool.start_link(ChildAgent)[2], "draft")|)
+
+      assert_receive {:sub_agent_turn, agent_id}
+      {:ok, sub_agent} = Legion.lookup(agent_id)
+
+      assert {:error, text} =
+               AgentServer.eval(other, ~s|return AgentTool.call("#{agent_id}", "hi")|)
+
+      assert text =~ "is not a running sub-agent of this agent"
+
+      ref = Process.monitor(sub_agent)
+      GenServer.stop(owner)
+      assert_receive {:DOWN, ^ref, :process, ^sub_agent, :shutdown}
+    end
   end
 
   describe "idle_timeout" do

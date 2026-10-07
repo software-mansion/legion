@@ -22,8 +22,15 @@ defmodule Legion.Tools.Help do
   """
   def help(tool \\ nil)
 
-  def help(nil), do: AgentPrompt.tool_index(Vault.fetch!(:agent_module))
+  def help(nil),
+    do: AgentPrompt.tool_index(Vault.fetch!(:agent_module), Vault.get(:excluded_tools, []))
 
-  def help(tool),
-    do: AgentPrompt.tool_help(Vault.fetch!(:agent_module), Vault.fetch!(:sandbox), tool)
+  def help(tool) do
+    AgentPrompt.tool_help(
+      Vault.fetch!(:agent_module),
+      Vault.fetch!(:sandbox),
+      tool,
+      Vault.get(:excluded_tools, [])
+    )
+  end
 end

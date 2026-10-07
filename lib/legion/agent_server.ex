@@ -323,7 +323,7 @@ defmodule Legion.AgentServer do
         action_message = Executor.message(:assistant, Jason.encode!(action))
 
         {reply, result_message, bindings} =
-          with_call_vault(Keyword.get(opts, :vault, []), fn -> run_eval(code, state) end)
+          with_call_vault(opts, fn -> run_eval(code, state) end)
 
         entry = %{
           "at" => System.system_time(:millisecond),
@@ -380,12 +380,18 @@ defmodule Legion.AgentServer do
   end
 
   # The per-call vault holds for that call only: merged over the agent's
-  # vault, minus the keys `init/1` sets for Legion, and the vault as it was
-  # put back after. A key one caller passed never reaches the next call or a
-  # later turn, and no caller replaces the agent's store or identity.
-  defp with_call_vault(call_vault, fun) do
+  # vault, minus the keys `init/1` sets for Legion, plus the tools the call
+  # leaves out (`Legion.Eval` and `Help` read them there), and the vault as
+  # it was put back after. A key one caller passed never reaches the next
+  # call or a later turn, and no caller replaces the agent's store or identity.
+  defp with_call_vault(opts, fun) do
     saved = Vault.vault(propagate_vault: :none)
-    Vault.unsafe_merge(Keyword.drop(call_vault, @legion_vault_keys))
+
+    opts
+    |> Keyword.get(:vault, [])
+    |> Keyword.drop(@legion_vault_keys)
+    |> Keyword.put(:excluded_tools, Keyword.get(opts, :exclude_tools, []))
+    |> Vault.unsafe_merge()
 
     try do
       fun.()
