@@ -146,7 +146,7 @@ defmodule Legion.Tools.HelpTest do
       {:ok, pid} = Legion.start_link(AgentToolAgent, tool_docs: :on_demand)
 
       assert {:ok, text} = AgentServer.eval(pid, "return Help.help(AgentTool)")
-      assert text =~ "result = response[2]"
+      assert text =~ "return response[2]"
       refute text =~ "{:ok, result} ="
     end
 

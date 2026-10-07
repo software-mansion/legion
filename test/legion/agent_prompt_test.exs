@@ -65,10 +65,9 @@ defmodule Legion.AgentPromptTest do
     test "uses Lua-safe AgentTool documentation in the Lua sandbox" do
       prompt = AgentPrompt.system_prompt(AgentToolAgent)
 
-      assert prompt =~ "response = AgentTool.call(SomeAgent, {"
-      assert prompt =~ "result = response[2]"
-      assert prompt =~ "Lua cannot pass a function through the tool bridge"
+      assert prompt =~ ~s|response = AgentTool.call(SomeAgent, "Summarize|
       assert prompt =~ "writer = AgentTool.start_link(WriterAgent)[2]"
+      refute prompt =~ "AgentTool.pipeline"
       refute prompt =~ "{:ok, result}"
     end
 
@@ -77,8 +76,8 @@ defmodule Legion.AgentPromptTest do
 
       assert prompt =~ "{:ok, result} ="
       assert prompt =~ "{:ok, writer} = AgentTool.start_link(WriterAgent)"
-      assert prompt =~ "WriterAgent,"
-      refute prompt =~ "result = response[2]"
+      assert prompt =~ "AgentTool.pipeline"
+      refute prompt =~ "response[2]"
     end
   end
 

@@ -42,12 +42,15 @@ defmodule Legion.MCP.Server do
   prompts, and the Lua VM has nothing of the host's but the agent's tools.
   For the same reason no agent that lists `Legion.Tools.AgentTool` can be
   served: its sub-agents would run tasks the caller writes, on the
-  application's model and in whatever sandbox they use. A server whose
-  agent's config names another sandbox, or whose agent lists `AgentTool`,
-  fails to start, with the reason in the supervisor's report; a call whose
-  `session/1` names another sandbox, or that reaches a named agent started
-  elsewhere on another or with `AgentTool`, is answered with a tool error.
-  So is every call to an agent whose `action_types/0` allow no evaluation.
+  application's model and in whatever sandbox they use. To expose an
+  orchestrator's sub-agents, serve each on its own server and path instead;
+  the host's model then does the orchestrating, through their tools. A
+  server whose agent's config names another sandbox, or whose agent lists
+  `AgentTool`, fails to start, with the reason in the supervisor's report;
+  a call whose `session/1` names another sandbox, or that reaches a named
+  agent started elsewhere on another or with `AgentTool`, is answered with
+  a tool error. So is every call to an agent whose `action_types/0` allow
+  no evaluation.
 
   ## Options
 

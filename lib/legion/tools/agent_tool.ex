@@ -5,7 +5,6 @@ defmodule Legion.Tools.AgentTool do
   The calling agent must explicitly list allowed sub-agents via `tool_config/1`:
 
       def tool_config(Legion.Tools.AgentTool), do: [agents: [MyApp.WorkerAgent, MyApp.ResearchAgent]]
-      def tool_config(_), do: []
 
   Only listed agents can be invoked. Attempts to call unlisted agents raise an error.
 
@@ -48,43 +47,25 @@ defmodule Legion.Tools.AgentTool do
     docs = description_docs(sandbox)
 
     """
-    Delegate work to a specialized sub-agent. `call` with an agent runs one
-    task, `start_link` returns a sub-agent id that `call` and `cast` take to
-    hold a conversation, and `parallel` and `pipeline` compose tasks. Each
-    task runs a full sub-agent turn, so start independent subtasks in
-    parallel instead of in sequence.
+    Delegate work to sub-agents. A sub-agent sees only the task you pass it,
+    so make the task self-contained.
 
     ## Your sub-agents
 
     #{summaries}
 
-    #{docs.sub_agent_reference}
-
-    ## One-shot call
+    ## One-shot
 
     #{docs.one_shot}
+    ## Parallel
 
-    ## Parallel fan-out
+    Each task is a full sub-agent run: N calls in sequence take N runs,
+    `parallel` takes about one. Save the results in one execution and shape
+    them in the next - an error discards the whole execution, sub-agent work
+    included.
 
-    Use `AgentTool.parallel/1` for independent subtasks - each `call` blocks on
-    a full sub-agent run, so serial calls cost N turns; parallel costs about one.
-
-    #{docs.parallel}
-
-    ## Split spawning from post-processing across turns
-
-    Prefer one turn to start sub-agents and save results. Use a separate turn
-    to shape the results. A long script is brittle: one sandbox error discards
-    the script and the sub-agent work must run again. Bindings persist across
-    turns, so this does not add work.
-
-    #{docs.split_turns}
-
-    ## Sequential pipeline
-
-    #{docs.pipeline}
-
-    ## Long-lived sub-agent (multi-turn conversation)
+    #{docs.parallel}#{docs.pipeline}
+    ## Long-lived sub-agent
 
     #{docs.long_lived}
     """
@@ -194,165 +175,98 @@ defmodule Legion.Tools.AgentTool do
 
   defp description_docs(Legion.Sandbox.Lua) do
     %{
-      sub_agent_reference: """
-      Call them by their short name (last module segment). Each listed
-      sub-agent is a global Lua table. Pass that table directly where a call
-      needs an agent.
-      """,
       one_shot: """
-      `task` can be a string, table, or list. Lua tables become Elixir maps
-      or lists:
+      `task` is a string or a table:
 
-          response = AgentTool.call(SomeAgent, {
-            key = value,
-            other_key = other_value
-          })
-          result = response[2]
-          return result
+          response = AgentTool.call(SomeAgent, "Summarize the Elixir 1.18 changelog")
+          return response[2]
 
-      Returns:
-        - `{"ok", result}` - `result` matches the sub-agent's `output_schema`
-        - `{"cancel", reason}` - the sub-agent hit its iteration or retry cap
+      Returns `{"ok", result}`, or `{"cancel", reason}` when the sub-agent
+      could not finish.
       """,
       parallel: """
-          tasks = {}
-
-          for index, input in ipairs(inputs) do
-            tasks[index] = {SomeAgent, input}
-          end
-
-          response = AgentTool.parallel(tasks)
-          picks = response[2]
-          return picks
-
-      Returns `{"ok", {result1, result2, ...}}` or `{"cancel", reason}`.
-      """,
-      split_turns: """
-      Turn 1 - start and save:
-
-          response = AgentTool.parallel({
+          results = AgentTool.parallel({
             {SomeAgent, first_input},
             {SomeAgent, second_input}
-          })
-          results = response[2]
+          })[2]
           return results
 
-      Turn 2 - shape the saved `results`:
+      Returns `{"ok", {result1, result2, ...}}` in task order, or the first
+      `{"cancel", reason}`. Next execution:
 
           titles = {}
-
           for index, result in ipairs(results) do
             titles[index] = result.title
           end
-
           return titles
       """,
-      pipeline: """
-      `AgentTool.pipeline/1` runs fixed tasks in order:
-
-          response = AgentTool.pipeline({
-            {ResearchAgent, "find X"},
-            {WriterAgent, "write a summary"}
-          })
-          final = response[2]
-          return final
-
-      Lua cannot pass a function through the tool bridge. If a later task
-      needs an earlier result, run agents in separate executions and build
-      the next task from the saved result.
-      """,
+      pipeline: "",
       long_lived: """
-      `call` with an agent and `parallel` run a sub-agent to completion and
-      discard it. `start_link` keeps one running, so later messages continue
-      its conversation - use it only when they depend on earlier ones. It
-      returns the sub-agent's id: keep it in a global and pass it to `call`,
-      which waits for the reply, or `cast`, which does not. Only you can reach your
-      sub-agents, and they stop when you do.
+      `call` with an agent and `parallel` discard the sub-agent when it
+      finishes. `start_link` keeps it running, so later messages continue its
+      conversation - use it only when they depend on earlier ones. It returns
+      `{"ok", id}`: keep the id in a global and pass it to `call(id, message)`,
+      which waits for the reply, or `cast(id, message)`, which discards the
+      reply.
 
           writer = AgentTool.start_link(WriterAgent)[2]
-          draft = AgentTool.call(writer, "Draft a release note for v2.")[2]
-          return draft
+          return AgentTool.call(writer, "Draft a release note for v2.")[2]
 
-      In a later execution, `writer` still remembers the draft:
+      A later execution continues the same conversation:
 
           AgentTool.cast(writer, "Also drop the marketing line.")
           return AgentTool.call(writer, "Tighten the second paragraph.")[2]
-
-      `call` returns `{"ok", reply}` or `{"cancel", reason}`.
       """
     }
   end
 
   defp description_docs(_sandbox) do
     %{
-      sub_agent_reference: """
-      Call them by their short name (last module segment). Listed sub-agents
-      are auto-aliased in the sandbox.
-      """,
       one_shot: """
-      `task` can be any Elixir term: string, map, keyword list, or struct:
+      `task` is any term, such as a string or a map:
 
-          {:ok, result} =
-            AgentTool.call(SomeAgent, %{
-              key: value,
-              other_key: other_value
-            })
+          {:ok, result} = AgentTool.call(SomeAgent, "Summarize the Elixir 1.18 changelog")
 
-      Returns:
-        - `{:ok, result}` - `result` matches the sub-agent's `output_schema`
-        - `{:cancel, reason}` - the sub-agent hit its iteration or retry cap
+      Returns `{:ok, result}`, or `{:cancel, reason}` when the sub-agent could
+      not finish.
       """,
       parallel: """
-          {:ok, picks} =
-            AgentTool.parallel(
-              for input <- inputs do
-                {SomeAgent, input}
-              end
-            )
+          {:ok, results} = AgentTool.parallel(for input <- inputs, do: {SomeAgent, input})
 
-      Returns `{:ok, [result1, result2, ...]}` or the first
-      `{:cancel, reason}`.
-      """,
-      split_turns: """
-      Turn 1 - start and save:
+      Returns `{:ok, [result1, result2, ...]}` in task order, or the first
+      `{:cancel, reason}`. Next execution:
 
-          {:ok, results} =
-            AgentTool.parallel(
-              for input <- inputs do
-                {SomeAgent, input}
-              end
-            )
-
-      Turn 2 - shape the saved `results`:
-
-          Enum.map(results, fn result -> Map.fetch!(result, :title) end)
+          Enum.map(results, fn result -> result["title"] end)
       """,
       pipeline: """
-      `AgentTool.pipeline/1` threads each step result into the next step:
+
+      ## Pipeline
+
+      `pipeline` runs steps in order and returns the last result, or the first
+      cancel. A step's task is a string, or a function that builds it from the
+      previous result:
 
           {:ok, final} =
             AgentTool.pipeline([
               {ResearchAgent, "find X"},
-              {WriterAgent, fn research -> "summarize: \#{research}" end}
+              {WriterAgent, fn research -> "summarize: \#{inspect(research)}" end}
             ])
       """,
       long_lived: """
-      `call/2` with an agent and `parallel/1` run a sub-agent to completion
-      and discard it. `start_link/1` keeps one running, so later messages
-      continue its conversation - use it only when they depend on earlier
-      ones. It returns the sub-agent's id: keep it in a variable and pass it
-      to `call/2`, which waits for the reply, or `cast/2`, which does not. Only you can reach
-      your sub-agents, and they stop when you do.
+      `call` with an agent and `parallel` discard the sub-agent when it
+      finishes. `start_link` keeps it running, so later messages continue its
+      conversation - use it only when they depend on earlier ones. It returns
+      `{:ok, id}`: keep the id in a variable and pass it to `call(id, message)`,
+      which waits for the reply, or `cast(id, message)`, which discards the
+      reply.
 
           {:ok, writer} = AgentTool.start_link(WriterAgent)
           {:ok, draft} = AgentTool.call(writer, "Draft a release note for v2.")
 
-      In a later execution, `writer` still remembers the draft:
+      A later execution continues the same conversation:
 
           AgentTool.cast(writer, "Also drop the marketing line.")
           {:ok, revised} = AgentTool.call(writer, "Tighten the second paragraph.")
-
-      `call/2` returns `{:ok, reply}` or `{:cancel, reason}`.
       """
     }
   end
@@ -388,10 +302,8 @@ defmodule Legion.Tools.AgentTool do
     end
   end
 
-  # Not a link: links ignore :normal exits, and that is how GenServer.stop and
-  # :idle_timeout stop the owner. Not a monitor inside the sub-agent: it would
-  # see the owner go only after its own turn, spending tokens meanwhile.
-  # Returns the watcher.
+  # A separate watcher: a link ignores the owner's :normal stop, and a
+  # monitor in the sub-agent would only fire after its current turn.
   defp stop_with_owner(pid, owner) do
     spawn(fn ->
       owner_ref = Process.monitor(owner)
