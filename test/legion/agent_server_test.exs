@@ -1799,6 +1799,23 @@ defmodule Legion.AgentServerTest do
       assert second =~ "turn 2"
     end
 
+    test "start_link/2 casts the task, and its id stands in for the pid it used to return" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent, sandbox: Legion.Sandbox.Elixir)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, """
+               {:ok, pid} = AgentTool.start_link(ChildAgent, "draft")
+               {:ok, reply} = AgentTool.call(pid, "tighten")
+               reply
+               """)
+
+      assert text =~ "turn 2"
+    end
+
     test "only the owner reaches a sub-agent, which stops with it even mid-turn" do
       test_pid = self()
 

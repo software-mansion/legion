@@ -120,6 +120,15 @@ defmodule Legion.Tools.AgentTool do
   end
 
   @doc """
+  Starts a sub-agent like `start_link/1` and casts `task` to it.
+  """
+  def start_link(agent_module, task) do
+    {:ok, agent_id} = start_link(agent_module)
+    cast(agent_id, task)
+    {:ok, agent_id}
+  end
+
+  @doc """
   Runs a task on an agent module, or sends a message to a sub-agent id from
   `start_link/1`, and waits for the reply. Returns `{:ok, result}` or
   `{:cancel, reason}`.
