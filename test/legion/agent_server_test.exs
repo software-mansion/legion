@@ -1476,7 +1476,7 @@ defmodule Legion.AgentServerTest do
         if Enum.any?(messages, &(&1[:content] == "child task")) do
           llm_response("child done")
         else
-          llm_eval_response(~s|AgentTool.execute(ChildAgent, "child task")|)
+          llm_eval_response(~s|AgentTool.call(ChildAgent, "child task")|)
         end
       end)
 
@@ -1799,14 +1799,6 @@ defmodule Legion.AgentServerTest do
       assert second =~ "turn 2"
     end
 
-    test "calling a module instead of a sub-agent id points to execute" do
-      {:ok, pid} = Legion.start_link(DelegatingAgent)
-
-      assert {:error, text} = AgentServer.eval(pid, ~s|return AgentTool.call(ChildAgent, "x")|)
-      assert text =~ "is not a running sub-agent of this agent"
-      assert text =~ "execute/2"
-    end
-
     test "only the owner reaches a sub-agent, which stops with it even mid-turn" do
       test_pid = self()
 
@@ -1971,7 +1963,7 @@ defmodule Legion.AgentServerTest do
           llm_response("child done")
         else
           llm_eval_response("""
-          response = AgentTool.execute(ChildAgent, "do work")
+          response = AgentTool.call(ChildAgent, "do work")
           return response[2]
           """)
         end
@@ -2008,7 +2000,7 @@ defmodule Legion.AgentServerTest do
           llm_response("child done")
         else
           llm_eval_response("""
-          response = AgentTool.execute(ChildAgent, "do work")
+          response = AgentTool.call(ChildAgent, "do work")
           return response[2]
           """)
         end

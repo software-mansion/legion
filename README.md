@@ -162,8 +162,8 @@ end
 The orchestrator writes code like:
 
 ```lua
-local _, research = table.unpack(AgentTool.execute(ResearchAgent, "Find info about Elixir 1.18"))
-local _, draft = table.unpack(AgentTool.execute(WriterAgent, "Write a blog post using: " .. research))
+local _, research = table.unpack(AgentTool.call(ResearchAgent, "Find info about Elixir 1.18"))
+local _, draft = table.unpack(AgentTool.call(WriterAgent, "Write a blog post using: " .. research))
 ```
 
 Listed sub-agents are auto-aliased to their short names, and the `{:ok, result}` tuples tools return arrive in Lua as arrays.

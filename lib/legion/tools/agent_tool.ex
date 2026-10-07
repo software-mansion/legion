@@ -11,13 +11,13 @@ defmodule Legion.Tools.AgentTool do
 
   An agent that lists this tool cannot be served over MCP; see `Legion.MCP.Server`.
 
-  Its functions mirror `Legion`'s, limited to the listed agents: `execute/2`
-  runs one task, `start_link/1` with `call/2` and `cast/2` holds a
-  conversation, and `parallel/2`, `pipeline/1` and `then/3` compose tasks.
+  `call/2` with an agent module runs one task, `start_link/1` returns a
+  sub-agent id that `call/2` and `cast/2` take to hold a conversation, and
+  `parallel/2`, `pipeline/1` and `then/3` compose tasks.
 
   ## Usage example from agent code (executed in sandbox)
 
-      AgentTool.execute(WorkerAgent, "Summarize this data")
+      AgentTool.call(WorkerAgent, "Summarize this data")
 
   Listed sub-agents are aliased into the sandbox automatically, so their short names
   (the last segment of the module) resolve to the full module atom - no need to spell
@@ -48,10 +48,11 @@ defmodule Legion.Tools.AgentTool do
     docs = description_docs(sandbox)
 
     """
-    Delegate work to a specialized sub-agent. `execute` runs one task,
-    `start_link` with `call` and `cast` holds a conversation, and `parallel`
-    and `pipeline` compose tasks. Each task runs a full sub-agent turn, so
-    start independent subtasks in parallel instead of in sequence.
+    Delegate work to a specialized sub-agent. `call` with an agent runs one
+    task, `start_link` returns a sub-agent id that `call` and `cast` take to
+    hold a conversation, and `parallel` and `pipeline` compose tasks. Each
+    task runs a full sub-agent turn, so start independent subtasks in
+    parallel instead of in sequence.
 
     ## Your sub-agents
 
@@ -59,14 +60,14 @@ defmodule Legion.Tools.AgentTool do
 
     #{docs.sub_agent_reference}
 
-    ## One-shot task
+    ## One-shot call
 
     #{docs.one_shot}
 
     ## Parallel fan-out
 
-    Use `AgentTool.parallel/1` for independent subtasks - each `execute` blocks
-    on a full sub-agent run, so serial runs cost N turns; parallel costs about one.
+    Use `AgentTool.parallel/1` for independent subtasks - each `call` blocks on
+    a full sub-agent run, so serial calls cost N turns; parallel costs about one.
 
     #{docs.parallel}
 
@@ -98,21 +99,10 @@ defmodule Legion.Tools.AgentTool do
   end
 
   @doc """
-  Runs `task` on a fresh sub-agent to completion and discards it, like
-  `Legion.execute/2`. Returns `{:ok, result}` or `{:cancel, reason}`.
-
-  Raises if the agent is not in the allowed list.
-  """
-  def execute(agent_module, task) do
-    check_allowed!(agent_module)
-    Legion.execute(agent_module, task)
-  end
-
-  @doc """
   Starts a sub-agent that keeps its conversation across messages, like
   `Legion.start_link/2`. Returns `{:ok, agent_id}`: pass the id to `call/2`
-  and `cast/2` the way host code passes a pid. Unlike a pid, it crosses the
-  Lua bridge and persists in bindings.
+  and `cast/2`. Unlike a pid, it crosses the Lua bridge and persists in
+  bindings.
 
   Only the agent that started the sub-agent reaches it by its id, and the
   sub-agent stops when that agent stops. Raises if the agent is not in the
@@ -130,11 +120,20 @@ defmodule Legion.Tools.AgentTool do
   end
 
   @doc """
-  Sends `message` to a sub-agent from `start_link/1` and waits for its reply,
-  like `Legion.call/3`. Returns `{:ok, reply}` or `{:cancel, reason}`.
+  Runs a task on an agent module, or sends a message to a sub-agent id from
+  `start_link/1`, and waits for the reply. Returns `{:ok, result}` or
+  `{:cancel, reason}`.
 
-  Raises if this agent has no running sub-agent with that id.
+  With a module, the sub-agent runs to completion and is discarded, like
+  `Legion.execute/2`; raises if the agent is not in the allowed list. With an
+  id, the sub-agent continues its conversation, like `Legion.call/3`; raises
+  if this agent has no running sub-agent with that id.
   """
+  def call(agent_module, task) when is_atom(agent_module) do
+    check_allowed!(agent_module)
+    Legion.execute(agent_module, task)
+  end
+
   def call(agent_id, message), do: agent_id |> owned!() |> AgentServer.call(message)
 
   @doc """
@@ -195,7 +194,7 @@ defmodule Legion.Tools.AgentTool do
       `task` can be a string, table, or list. Lua tables become Elixir maps
       or lists:
 
-          response = AgentTool.execute(SomeAgent, {
+          response = AgentTool.call(SomeAgent, {
             key = value,
             other_key = other_value
           })
@@ -254,11 +253,11 @@ defmodule Legion.Tools.AgentTool do
       the next task from the saved result.
       """,
       long_lived: """
-      `execute` and `parallel` run a sub-agent to completion and discard it.
-      `start_link` keeps one running, so later messages continue its
-      conversation - use it only when they depend on earlier ones. It returns
-      the sub-agent's id: keep it in a global and pass it to `call`, which
-      waits for the reply, or `cast`, which does not. Only you can reach your
+      `call` with an agent and `parallel` run a sub-agent to completion and
+      discard it. `start_link` keeps one running, so later messages continue
+      its conversation - use it only when they depend on earlier ones. It
+      returns the sub-agent's id: keep it in a global and pass it to `call`,
+      which waits for the reply, or `cast`, which does not. Only you can reach your
       sub-agents, and they stop when you do.
 
           writer = AgentTool.start_link(WriterAgent)[2]
@@ -285,7 +284,7 @@ defmodule Legion.Tools.AgentTool do
       `task` can be any Elixir term: string, map, keyword list, or struct:
 
           {:ok, result} =
-            AgentTool.execute(SomeAgent, %{
+            AgentTool.call(SomeAgent, %{
               key: value,
               other_key: other_value
             })
@@ -329,11 +328,11 @@ defmodule Legion.Tools.AgentTool do
             ])
       """,
       long_lived: """
-      `execute/2` and `parallel/1` run a sub-agent to completion and discard
-      it. `start_link/1` keeps one running, so later messages continue its
-      conversation - use it only when they depend on earlier ones. It returns
-      the sub-agent's id: keep it in a variable and pass it to `call/2`, which
-      waits for the reply, or `cast/2`, which does not. Only you can reach
+      `call/2` with an agent and `parallel/1` run a sub-agent to completion
+      and discard it. `start_link/1` keeps one running, so later messages
+      continue its conversation - use it only when they depend on earlier
+      ones. It returns the sub-agent's id: keep it in a variable and pass it
+      to `call/2`, which waits for the reply, or `cast/2`, which does not. Only you can reach
       your sub-agents, and they stop when you do.
 
           {:ok, writer} = AgentTool.start_link(WriterAgent)
@@ -365,7 +364,7 @@ defmodule Legion.Tools.AgentTool do
   defp owned_name(owner_id, agent_id), do: {:legion_sub_agent, owner_id, agent_id}
 
   # Anything that is not one of this agent's running sub-agents lands here:
-  # a stale id, a forged one, or a module meant for `execute/2`.
+  # a stale id or a forged one.
   defp owned!(agent_id) do
     with watcher when is_pid(watcher) <-
            :global.whereis_name(owned_name(Vault.fetch!(:agent_id), agent_id)),
@@ -376,7 +375,7 @@ defmodule Legion.Tools.AgentTool do
         raise ArgumentError,
               "#{inspect(agent_id)} is not a running sub-agent of this agent - it stopped, " <>
                 "or another agent started it. Start one with start_link/1, " <>
-                "or run a one-off task with execute/2"
+                "or run a one-off task by calling an agent module"
     end
   end
 

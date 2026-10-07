@@ -2,5 +2,5 @@
 - Assign to global variables (no `local`) for values you need in later executions - only global data (strings, numbers, booleans, tables) persists between runs. Functions do not, so define any helper in every execution that uses it.
 - `print`, `io`, `os.getenv`, `require`, and `load` are not available - return values from your code instead of printing them.
 - Tools are Elixir functions bridged into Lua. Arguments you pass are converted: Lua tables become maps (or lists when array-shaped). Results are converted back: maps and structs become tables, Elixir tuples and lists become arrays (1-indexed), atoms become strings (`:ok` arrives as `"ok"`).
-- Where a tool expects an Elixir module reference (for example `AgentTool.execute(PlannerAgent, task)`), pass the tool's global table directly by its short name - it is converted to the module automatically.
+- Where a tool expects an Elixir module reference (for example `AgentTool.call(PlannerAgent, task)`), pass the tool's global table directly by its short name - it is converted to the module automatically.
 - The standard `string`, `table`, and `math` libraries are available - standard Lua 5.3 only. `table.create` and `table.count` do not exist here (they are Luau extensions); use `#t` for length and `table.insert(t, value)` to build lists.

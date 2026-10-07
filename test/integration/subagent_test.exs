@@ -26,7 +26,7 @@ defmodule Legion.Integration.SubagentTest do
 
     task = """
     Research what people are saying about Elixir programming language.
-    Use AgentTool.execute/2 to delegate:
+    Use AgentTool.call/2 to delegate:
     - Call Legion.Test.Support.HackerNewsAgent with "Fetch up to 3 posts about Elixir and summarize the key topics"
     - Call Legion.Test.Support.RedditAgent with "Fetch up to 3 posts about Elixir from r/elixir and summarize the key topics"
     Then combine both summaries into a brief overall summary.
