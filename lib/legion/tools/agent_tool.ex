@@ -14,6 +14,11 @@ defmodule Legion.Tools.AgentTool do
   sub-agent id that `call/2` and `cast/2` take to hold a conversation, and
   `parallel/2`, `pipeline/1` and `then/3` compose tasks.
 
+  Blocking calls (`call/2`, `parallel/2`, `pipeline/1`, `then/3`) run inside
+  the parent's evaluation, so the whole sub-agent run counts against the
+  parent's `sandbox_timeout` (60 seconds by default) and is killed with it.
+  Raise it for agents that delegate.
+
   ## Usage example from agent code (executed in sandbox)
 
       AgentTool.call(WorkerAgent, "Summarize this data")

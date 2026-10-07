@@ -13,7 +13,7 @@ defmodule Legion.Executor do
   alias Legion.Sandbox.Runner
 
   @default_config %{
-    model: "openai:gpt-5.4",
+    model: "openai:gpt-5.6-luna",
     max_iterations: 10,
     max_retries: 3,
     sandbox: Legion.Sandbox.Lua,

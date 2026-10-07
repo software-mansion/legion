@@ -42,7 +42,7 @@ defmodule Legion.Agent do
 
     - `config/0` — agent-level configuration merged with application config and
       call-time opts. Defaults to `%{}`. Available keys:
-      - `model` — LLM model identifier (default: `"openai:gpt-5.4"`)
+      - `model` — LLM model identifier (default: `"openai:gpt-5.6-luna"`)
       - `sandbox` — a `Legion.Sandbox` module that validates and evaluates the
         code the agent writes. `Legion.Sandbox.Lua` (the default) evaluates Lua
         in a pure-Elixir VM where only bridged tool functions can reach the

@@ -90,6 +90,14 @@ defmodule Legion do
   @doc """
   Starts a long-lived agent process.
 
+  The agent is linked to the caller, so one started from a LiveView dies with
+  it. To keep one running, start it under a `DynamicSupervisor`:
+
+      DynamicSupervisor.start_child(MyApp.AgentSupervisor, {ChatAgent, vault: [current_user: user]})
+
+  A supervised agent doesn't share the caller's Vault, so pass what its tools
+  need with `:vault`.
+
   ## Options
     - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`.
       When supplied, `:agent_id` must be a valid UTF-8 string.
@@ -313,6 +321,7 @@ defmodule Legion do
   `opts` are passed through to `start_link/2`. Rate-limit rules are not
   persisted, so the resumed agent is checked on its later turns only when
   `:rate_limit` is passed here again; otherwise it runs without rate limiting.
+  The vault is not persisted either, so pass `:vault` again.
 
   Pass `:store` or configure one globally. Returns:
 
@@ -327,6 +336,7 @@ defmodule Legion do
 
       {:ok, pid} = Legion.resume("user_42:chat_7")
       {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+      {:ok, pid} = Legion.resume("user_42:chat_7", vault: [current_user: user])
 
       {:error, :not_resumable} =
         Legion.resume("missing_chat", store: MyApp.AgentStore)
