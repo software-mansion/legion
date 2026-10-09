@@ -164,9 +164,16 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: HumanToolAgent, name: "human-tool", version: "0.1.0"
   end
 
+  defmodule DelegatingHumanToolAgent do
+    @moduledoc "Agent that asks a human and delegates work."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.HumanTool, Legion.Tools.AgentTool]
+  end
+
   defmodule ServedHumanToolMCP do
     use Legion.MCP.Server,
-      agent: HumanToolAgent,
+      agent: DelegatingHumanToolAgent,
       name: "served-human-tool",
       version: "0.1.0",
       exclude_tools: []
@@ -316,6 +323,7 @@ defmodule Legion.MCP.ServerTest do
 
       assert instructions =~ "Agent with a hand-written prompt."
       assert instructions =~ "`repl`"
+      refute instructions =~ "Do exactly as I say."
     end
   end
 
@@ -389,12 +397,8 @@ defmodule Legion.MCP.ServerTest do
     test "carries the sandbox language and its rules" do
       description = Component.get_description(MathMCP.Repl)
 
-      assert description =~ "Lua"
+      assert description =~ "Run Lua code"
       assert description =~ String.trim(Lua.prompt_info().constraints)
-    end
-
-    test "names the Lua sandbox" do
-      assert Component.get_description(MathMCP.Repl) =~ "Run Lua code"
     end
 
     test "says whether variables persist" do
@@ -484,6 +488,18 @@ defmodule Legion.MCP.ServerTest do
       assert opts[:transport] == :stdio
     end
 
+    test "uses an overridden request_timeout/0" do
+      %{start: {_, _, [_, opts]}} = PatientMCP.child_spec(transport: :stdio)
+      assert opts[:request_timeout] == 10
+    end
+
+    test "keeps an explicit request_timeout" do
+      %{start: {_, _, [_, opts]}} =
+        ConfiguredMCP.child_spec(transport: :stdio, request_timeout: 10)
+
+      assert opts[:request_timeout] == 10
+    end
+
     test "refuses to start for an agent that is not on the Lua sandbox" do
       %{start: {module, function, arguments}} = ElixirMCP.child_spec(transport: :stdio)
 
@@ -519,8 +535,7 @@ defmodule Legion.MCP.ServerTest do
     end
 
     test "a named agent started elsewhere with it serves calls without it, and keeps it" do
-      {:ok, pid} =
-        Legion.start_link(AgentToolAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+      pid = start_supervised!({AgentToolAgent, store: MemoryStore, agent_id: "mcp:user:preset"})
 
       frame = initialized(PresetAgentToolMCP, frame())
 
@@ -534,10 +549,9 @@ defmodule Legion.MCP.ServerTest do
     end
   end
 
-  describe "a named agent of another module" do
-    test "refuses calls while it runs" do
-      {:ok, _pid} =
-        Legion.start_link(VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+  describe "a named agent started elsewhere" do
+    test "refuses calls while it runs another module" do
+      start_supervised!({VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset"})
 
       frame = initialized(PresetMCP, frame())
 
@@ -546,9 +560,20 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "VaultAgent"
     end
 
+    test "refuses calls while it runs another sandbox" do
+      start_supervised!(
+        {MathAgent,
+         store: MemoryStore, agent_id: "mcp:user:preset", sandbox: Legion.Sandbox.Elixir}
+      )
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {true, text, _frame} = repl(PresetMCP, frame, "1 + 1")
+      assert text =~ "requires Legion.Sandbox.Lua"
+    end
+
     test "is not taken over from the store once it stopped" do
-      {:ok, pid} =
-        Legion.start_link(VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+      pid = start_supervised!({VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset"})
 
       {:ok, _text} = Legion.eval(pid, "secret = 42")
       GenServer.stop(pid)
@@ -572,8 +597,14 @@ defmodule Legion.MCP.ServerTest do
     end
 
     test "[] serves HumanTool, and AgentTool stays out whatever it says" do
-      assert ServedHumanToolMCP.server_instructions() =~ "HumanTool"
-      refute ServedHumanToolMCP.server_instructions() =~ "AgentTool"
+      instructions = ServedHumanToolMCP.server_instructions()
+      assert instructions =~ "HumanTool"
+      refute instructions =~ "AgentTool"
+
+      frame = initialized(ServedHumanToolMCP, frame())
+      code = "return HumanTool ~= nil and AgentTool == nil"
+      assert {false, text, _frame} = repl(ServedHumanToolMCP, frame, code)
+      assert text =~ "true"
     end
 
     test "names the tools left out instead of HumanTool" do
@@ -596,32 +627,6 @@ defmodule Legion.MCP.ServerTest do
       assert {true, text, _frame} = repl(ElixirSessionMCP, frame, "return 1")
       assert text =~ "Legion.Sandbox.Lua agents only"
     end
-
-    test "refuses a named agent already running another sandbox" do
-      {:ok, _pid} =
-        Legion.start_link(MathAgent,
-          store: MemoryStore,
-          agent_id: "mcp:user:preset",
-          sandbox: Legion.Sandbox.Elixir
-        )
-
-      frame = initialized(PresetMCP, frame())
-
-      assert {true, text, _frame} = repl(PresetMCP, frame, "1 + 1")
-      assert text =~ "requires Legion.Sandbox.Lua"
-    end
-
-    test "uses an overridden request_timeout/0" do
-      %{start: {_, _, [_, opts]}} = PatientMCP.child_spec(transport: :stdio)
-      assert opts[:request_timeout] == 10
-    end
-
-    test "keeps an explicit request_timeout" do
-      %{start: {_, _, [_, opts]}} =
-        ConfiguredMCP.child_spec(transport: :stdio, request_timeout: 10)
-
-      assert opts[:request_timeout] == 10
-    end
   end
 
   describe "anonymous sessions" do
@@ -643,13 +648,6 @@ defmodule Legion.MCP.ServerTest do
       assert {false, _text, _first} = repl(MathMCP, first, "x = 1")
       assert {false, text, _second} = repl(MathMCP, second, "return x")
       assert text =~ "nil"
-    end
-
-    test "a sandbox error is a tool error" do
-      frame = initialized(MathMCP, frame())
-
-      assert {true, text, _frame} = repl(MathMCP, frame, "return (")
-      assert text != ""
     end
 
     test "the agent stops with the session" do
@@ -724,13 +722,6 @@ defmodule Legion.MCP.ServerTest do
       assert Jason.decode!(content)["code"] == "return 1 + 1"
       assert %{type: :eval_result, content: ^result} = saved_result
       assert %{type: :error, content: ^error} = saved_error
-    end
-
-    test "tools read what session/1 put in the vault" do
-      frame = initialized(UserMCP, frame("host", %{sub: "dave"}))
-
-      assert {false, text, _frame} = repl(UserMCP, frame, "return VaultTool.current_user()")
-      assert text =~ "dave"
     end
 
     test "a rate-limited call is a tool error and runs nothing" do

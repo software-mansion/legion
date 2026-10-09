@@ -1,8 +1,56 @@
+defmodule Legion.AgentServerTest.Fixtures do
+  @moduledoc "LLM responses and rate-limit rules shared by the AgentServer test modules."
+
+  alias Legion.AgentServerTest.TestRateLimiter
+  alias Legion.RateLimiter.Policy
+  alias Legion.RateLimiter.Rule
+
+  def llm_response(result, turn_usage \\ 0) do
+    llm_object(%{"action" => "return", "code" => "", "result" => result}, turn_usage)
+  end
+
+  def llm_eval_response(code, turn_usage \\ 0) do
+    llm_object(%{"action" => "eval_and_complete", "code" => code, "result" => ""}, turn_usage)
+  end
+
+  def llm_eval_continue_response(code, turn_usage \\ 0) do
+    llm_object(
+      %{"action" => "eval_and_continue", "code" => code, "result" => ""},
+      turn_usage
+    )
+  end
+
+  def llm_object(object, turn_usage) do
+    {:ok,
+     %ReqLLM.Response{
+       id: "test",
+       model: "test",
+       context: nil,
+       object: object,
+       usage: %{turn_usage: turn_usage}
+     }}
+  end
+
+  def allowing_identity(test_pid), do: %{"report_to" => test_pid}
+  def rejecting_identity(test_pid), do: %{"report_to" => test_pid, "verdict" => :reject}
+
+  def limit_policy, do: %Policy{window_ms: 60_000, max_agents: 2}
+
+  def rule(identity, policy \\ limit_policy()), do: %Rule{identity: identity, policy: policy}
+
+  def limited(opts) do
+    {rate_limit, opts} = Keyword.pop(opts, :rate_limit, [])
+
+    Keyword.put(opts, :rate_limit, Keyword.merge([limiter: TestRateLimiter], rate_limit))
+  end
+end
+
 defmodule Legion.AgentServerTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Mimic
 
   import ExUnit.CaptureLog
+  import Legion.AgentServerTest.Fixtures
 
   alias Legion.AgentServer
   alias Legion.RateLimiter.ExceededError
@@ -78,393 +126,15 @@ defmodule Legion.AgentServerTest do
     def tool_config(_tool), do: []
   end
 
-  setup :set_mimic_global
+  defmodule CustomPromptAgent do
+    @moduledoc "Agent with custom system prompt."
+    use Legion.Agent
 
-  @moduletag capture_log: true
-
-  defp llm_response(result, turn_usage \\ 0) do
-    llm_object(%{"action" => "return", "code" => "", "result" => result}, turn_usage)
+    def system_prompt, do: "completely custom prompt"
   end
 
-  defp llm_eval_response(code, turn_usage \\ 0) do
-    llm_object(%{"action" => "eval_and_complete", "code" => code, "result" => ""}, turn_usage)
-  end
-
-  defp llm_eval_continue_response(code, turn_usage \\ 0) do
-    llm_object(
-      %{"action" => "eval_and_continue", "code" => code, "result" => ""},
-      turn_usage
-    )
-  end
-
-  defp llm_object(object, turn_usage) do
-    {:ok,
-     %ReqLLM.Response{
-       id: "test",
-       model: "test",
-       context: nil,
-       object: object,
-       usage: %{turn_usage: turn_usage}
-     }}
-  end
-
-  describe "get_messages/1" do
-    test "returns conversation history from a running agent" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("Paris")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, _} = Legion.call(pid, "What is the capital of France?")
-
-      messages = Legion.get_messages(pid)
-
-      assert [
-               %{role: "system", type: :system, content: _system},
-               %{role: "user", type: :user, content: "What is the capital of France?", at: at},
-               %{role: "assistant", type: :assistant} | _
-             ] = messages
-
-      assert is_integer(at)
-    end
-  end
-
-  describe "start_monitor/2" do
-    test "starts an agent and returns a monitor reference" do
-      assert {:ok, {pid, monitor_ref}} = Legion.AgentServer.start_monitor(MathAgent)
-      assert Process.alive?(pid)
-
-      GenServer.stop(pid)
-
-      assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}
-    end
-  end
-
-  describe "config validation" do
-    test "warns about unknown config keys" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("ok")
-      end)
-
-      log =
-        capture_log(fn ->
-          {:ok, pid} = Legion.start_link(MathAgent, bogus_key: true)
-          {:ok, _} = Legion.call(pid, "hi")
-        end)
-
-      assert log =~ "Unknown Legion config keys: [:bogus_key]"
-    end
-  end
-
-  describe "config resolution" do
-    test "call-time opts override agent config" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn model, _messages, _schema ->
-        send(test_pid, {:model_used, model})
-        llm_response("ok")
-      end)
-
-      {:ok, pid} = Legion.start_link(ConfiguredAgent, model: "call-model")
-      {:ok, _} = Legion.call(pid, "hi")
-
-      assert_receive {:model_used, "call-model"}
-    end
-
-    test "agent config overrides application config" do
-      Application.put_env(:legion, :config, %{model: "app-model"})
-
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn model, _messages, _schema ->
-        send(test_pid, {:model_used, model})
-        llm_response("ok")
-      end)
-
-      {:ok, pid} = Legion.start_link(ConfiguredAgent)
-      {:ok, _} = Legion.call(pid, "hi")
-
-      assert_receive {:model_used, "agent-model"}
-    end
-  end
-
-  describe "terminate/2" do
-    test "emits stopped event when agent terminates" do
-      stub(ReqLLM, :generate_object, fn _, _, _ -> llm_response("ok") end)
-
-      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :agent, :stopped]])
-      on_exit(fn -> :telemetry.detach(ref) end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      GenServer.stop(pid)
-
-      assert_receive {[:legion, :agent, :stopped], ^ref, _measurements,
-                      %{agent: Legion.Test.Support.MathAgent}}
-    end
-  end
-
-  defp capture_user_content(test_pid) do
-    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-      user_msg = Enum.find(messages, &(&1[:role] == "user"))
-      send(test_pid, {:user_content, user_msg[:content]})
-      llm_response("ok")
-    end)
-  end
-
-  defp wait_until(condition) do
-    if condition.() do
-      :ok
-    else
-      Process.sleep(1)
-      wait_until(condition)
-    end
-  end
-
-  describe "multipart messages" do
-    test "passes a text + image part list through to the LLM unchanged" do
-      capture_user_content(self())
-
-      parts = [
-        ContentPart.text("Describe this image."),
-        ContentPart.image(<<1, 2, 3>>, "image/png")
-      ]
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:multipart, parts})
-      assert_received {:user_content, ^parts}
-    end
-
-    test "supports text + image_url parts" do
-      capture_user_content(self())
-
-      parts = [
-        ContentPart.text("What is in this picture?"),
-        ContentPart.image_url("https://example.com/photo.png")
-      ]
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:multipart, parts})
-      assert_received {:user_content, ^parts}
-    end
-
-    test "supports a text-only part list" do
-      capture_user_content(self())
-
-      parts = [ContentPart.text("hello")]
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:multipart, parts})
-      assert_received {:user_content, ^parts}
-    end
-
-    test "supports an empty parts list" do
-      capture_user_content(self())
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:multipart, []})
-      assert_received {:user_content, []}
-    end
-  end
-
-  describe "image shorthand messages" do
-    test "wraps {:image, data, media_type} into a single image ContentPart" do
-      capture_user_content(self())
-
-      data = <<1, 2, 3>>
-      expected = [ContentPart.image(data, "image/png")]
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:image, data, "image/png"})
-      assert_received {:user_content, ^expected}
-    end
-
-    test "wraps {:image_url, url} into a single image_url ContentPart" do
-      capture_user_content(self())
-
-      url = "https://example.com/photo.png"
-      expected = [ContentPart.image_url(url)]
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, {:image_url, url})
-      assert_received {:user_content, ^expected}
-    end
-  end
-
-  describe "non-binary messages" do
-    defmodule SampleStruct do
-      defstruct [:id, :name]
-    end
-
-    test "structs are rendered via inspect" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        user_msg = Enum.find(messages, &(&1[:role] == "user"))
-        send(test_pid, {:user_content, user_msg[:content]})
-        llm_response("ok")
-      end)
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, %SampleStruct{id: 7, name: "ada"})
-
-      assert_received {:user_content, content}
-      assert content == inspect(%SampleStruct{id: 7, name: "ada"}, limit: :infinity)
-    end
-
-    test "maps are rendered via inspect" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        user_msg = Enum.find(messages, &(&1[:role] == "user"))
-        send(test_pid, {:user_content, user_msg[:content]})
-        llm_response("ok")
-      end)
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, %{id: 1, name: "x"})
-
-      assert_received {:user_content, content}
-      assert content == inspect(%{id: 1, name: "x"}, limit: :infinity)
-    end
-
-    test "terms containing PIDs do not crash the GenServer" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        user_msg = Enum.find(messages, &(&1[:role] == "user"))
-        send(test_pid, {:user_content, user_msg[:content]})
-        llm_response("ok")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      assert {:ok, "ok"} = Legion.call(pid, %{pid: self()})
-      assert Process.alive?(pid)
-
-      assert_received {:user_content, content}
-      assert content =~ inspect(self())
-    end
-  end
-
-  describe "max_message_length" do
-    test "truncates binary user input longer than the limit" do
-      capture_user_content(self())
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 100)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 5_000))
-
-      assert_received {:user_content, content}
-      assert String.starts_with?(content, String.duplicate("a", 100))
-      assert content =~ "[... truncated 4900 bytes ...]"
-    end
-
-    test "passes binary user input shorter than the limit through unchanged" do
-      capture_user_content(self())
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 100)
-      {:ok, _} = Legion.call(pid, "hello")
-
-      assert_received {:user_content, "hello"}
-    end
-
-    test "truncates text parts of multipart content individually" do
-      capture_user_content(self())
-
-      parts = [
-        ContentPart.text(String.duplicate("a", 5_000)),
-        ContentPart.image_url("https://example.com/image.png")
-      ]
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 100)
-      {:ok, _} = Legion.call(pid, {:multipart, parts})
-
-      assert_received {:user_content, [text_part, image_part]}
-      assert String.starts_with?(text_part.text, String.duplicate("a", 100))
-      assert text_part.text =~ "[... truncated 4900 bytes ...]"
-      assert image_part == ContentPart.image_url("https://example.com/image.png")
-    end
-
-    test ":infinity disables truncation" do
-      capture_user_content(self())
-
-      big = String.duplicate("a", 5_000)
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: :infinity)
-      {:ok, _} = Legion.call(pid, big)
-
-      assert_received {:user_content, ^big}
-    end
-
-    test "nil raises ArgumentError" do
-      assert_raise ArgumentError,
-                   ~r/expected :max_message_length to be a positive integer or :infinity/,
-                   fn ->
-                     Legion.start_link(MathAgent, max_message_length: nil)
-                   end
-    end
-
-    test "zero raises ArgumentError" do
-      assert_raise ArgumentError,
-                   ~r/expected :max_message_length to be a positive integer or :infinity/,
-                   fn ->
-                     Legion.start_link(MathAgent, max_message_length: 0)
-                   end
-    end
-
-    test "per-agent config overrides application config" do
-      Application.put_env(:legion, :config, %{max_message_length: 10})
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-
-      capture_user_content(self())
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 1_000)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 50))
-
-      assert_received {:user_content, content}
-      assert byte_size(content) == 50
-    end
-
-    test "application config applies when no per-agent override is given" do
-      Application.put_env(:legion, :config, %{max_message_length: 10})
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-
-      capture_user_content(self())
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 50))
-
-      assert_received {:user_content, content}
-      assert String.starts_with?(content, String.duplicate("a", 10))
-      assert content =~ "[... truncated 40 bytes ...]"
-    end
-
-    test "default of 40_000 applies when no override is given anywhere" do
-      Application.delete_env(:legion, :config)
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-
-      capture_user_content(self())
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 45_000))
-
-      assert_received {:user_content, content}
-      assert String.starts_with?(content, String.duplicate("a", 40_000))
-      assert content =~ "[... truncated 5000 bytes ...]"
-    end
-  end
-
-  describe "cast/2" do
-    test "processes message and updates state without blocking" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("Paris")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      assert :ok = Legion.cast(pid, "What is the capital of France?")
-
-      Process.sleep(100)
-
-      messages = Legion.get_messages(pid)
-
-      assert [
-               %{role: "system"},
-               %{role: "user", content: "What is the capital of France?"},
-               %{role: "assistant"} | _
-             ] = messages
-    end
+  defmodule SampleStruct do
+    defstruct [:id, :name]
   end
 
   defmodule MemoryStore do
@@ -537,14 +207,6 @@ defmodule Legion.AgentServerTest do
       |> Enum.reject(&is_nil/1)
     end
 
-    def get_run(agent_id) do
-      case get(agent_id) do
-        {:ok, %Payload{agent_module: nil}} -> nil
-        {:ok, %Payload{} = payload} -> payload
-        :error -> nil
-      end
-    end
-
     def runs do
       Agent.get(__MODULE__, fn state ->
         for {_agent_id, {:ok, %Payload{agent_module: agent_module} = payload}} <- state,
@@ -593,45 +255,247 @@ defmodule Legion.AgentServerTest do
     def save(payload), do: MemoryStore.save(payload)
   end
 
+  setup :set_mimic_private
+
+  # Agent IDs are registered cluster-wide, so each test claims its own.
+  setup do
+    {:ok, agent_id: "agent-#{System.unique_integer([:positive])}"}
+  end
+
+  @moduletag capture_log: true
+
+  # Agent processes have no `$callers`, so the test's ReqLLM stubs reach them
+  # only through an allowance.
+  defp start_agent(agent_module, opts \\ []) do
+    {:ok, pid} = Legion.start_link(agent_module, opts)
+    Mimic.allow(ReqLLM, self(), pid)
+    pid
+  end
+
+  # The content of the user message the LLM receives for `message`.
+  defp sent_user_content(message, opts \\ []) do
+    test_pid = self()
+
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      user_message = Enum.find(messages, &(&1[:role] == "user"))
+      send(test_pid, {:user_content, user_message[:content]})
+      llm_response("ok")
+    end)
+
+    pid = start_agent(MathAgent, opts)
+    assert {:ok, "ok"} = Legion.call(pid, message)
+    assert_received {:user_content, content}
+    content
+  end
+
+  defp wait_until(condition) do
+    if condition.() do
+      :ok
+    else
+      Process.sleep(1)
+      wait_until(condition)
+    end
+  end
+
+  describe "get_messages/1" do
+    test "returns conversation history from a running agent" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      pid = start_agent(MathAgent)
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      messages = Legion.get_messages(pid)
+
+      assert [
+               %{role: "system", type: :system, content: _system},
+               %{role: "user", type: :user, content: "What is the capital of France?", at: at},
+               %{role: "assistant", type: :assistant} | _
+             ] = messages
+
+      assert is_integer(at)
+    end
+  end
+
+  describe "start_monitor/2" do
+    test "starts an agent and returns a monitor reference" do
+      assert {:ok, {pid, monitor_ref}} = AgentServer.start_monitor(MathAgent)
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+
+      assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}
+    end
+  end
+
+  describe "config resolution" do
+    test "call-time opts override agent config" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn model, _messages, _schema ->
+        send(test_pid, {:model_used, model})
+        llm_response("ok")
+      end)
+
+      pid = start_agent(ConfiguredAgent, model: "call-model")
+      {:ok, _} = Legion.call(pid, "hi")
+
+      assert_received {:model_used, "call-model"}
+    end
+  end
+
+  describe "terminate/2" do
+    test "emits stopped event when agent terminates" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :agent, :stopped]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      {:ok, pid} = Legion.start_link(ConfiguredAgent)
+      GenServer.stop(pid)
+
+      assert_received {[:legion, :agent, :stopped], ^ref, _measurements,
+                       %{agent: ConfiguredAgent}}
+    end
+  end
+
+  describe "message shapes" do
+    test "passes a multipart part list through to the LLM unchanged" do
+      for parts <- [
+            [
+              ContentPart.text("Describe this image."),
+              ContentPart.image(<<1, 2, 3>>, "image/png")
+            ],
+            [
+              ContentPart.text("What is in this picture?"),
+              ContentPart.image_url("https://example.com/photo.png")
+            ],
+            [ContentPart.text("hello")],
+            []
+          ] do
+        assert sent_user_content({:multipart, parts}) == parts
+      end
+    end
+
+    test "wraps image shorthands into a single image ContentPart" do
+      assert sent_user_content({:image, <<1, 2, 3>>, "image/png"}) ==
+               [ContentPart.image(<<1, 2, 3>>, "image/png")]
+
+      assert sent_user_content({:image_url, "https://example.com/photo.png"}) ==
+               [ContentPart.image_url("https://example.com/photo.png")]
+    end
+
+    test "renders any other term, PIDs included, via inspect" do
+      for term <- [%SampleStruct{id: 7, name: "ada"}, %{id: 1, name: "x"}, %{pid: self()}] do
+        assert sent_user_content(term) == inspect(term, limit: :infinity)
+      end
+    end
+  end
+
+  describe "max_message_length" do
+    test "truncates binary user input longer than the limit" do
+      content = sent_user_content(String.duplicate("a", 5_000), max_message_length: 100)
+
+      assert String.starts_with?(content, String.duplicate("a", 100))
+      assert content =~ "[... truncated 4900 bytes ...]"
+    end
+
+    test "passes binary user input shorter than the limit through unchanged" do
+      assert sent_user_content("hello", max_message_length: 100) == "hello"
+    end
+
+    test "truncates text parts of multipart content individually" do
+      parts = [
+        ContentPart.text(String.duplicate("a", 5_000)),
+        ContentPart.image_url("https://example.com/image.png")
+      ]
+
+      assert [text_part, image_part] =
+               sent_user_content({:multipart, parts}, max_message_length: 100)
+
+      assert String.starts_with?(text_part.text, String.duplicate("a", 100))
+      assert text_part.text =~ "[... truncated 4900 bytes ...]"
+      assert image_part == ContentPart.image_url("https://example.com/image.png")
+    end
+
+    test ":infinity disables truncation" do
+      big = String.duplicate("a", 5_000)
+
+      assert sent_user_content(big, max_message_length: :infinity) == big
+    end
+
+    test "defaults to 40_000 bytes" do
+      content = sent_user_content(String.duplicate("a", 45_000))
+
+      assert String.starts_with?(content, String.duplicate("a", 40_000))
+      assert content =~ "[... truncated 5000 bytes ...]"
+    end
+
+    test "start_link refuses anything but a positive integer or :infinity" do
+      for value <- [nil, 0] do
+        assert_raise ArgumentError,
+                     ~r/expected :max_message_length to be a positive integer or :infinity/,
+                     fn -> Legion.start_link(MathAgent, max_message_length: value) end
+      end
+    end
+  end
+
+  describe "cast/2" do
+    test "returns at once and runs the message as a turn" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, {:turn_started, self()})
+
+        receive do
+          :finish -> llm_response("Paris")
+        end
+      end)
+
+      pid = start_agent(MathAgent)
+      assert :ok = Legion.cast(pid, "What is the capital of France?")
+      assert_receive {:turn_started, ^pid}
+      send(pid, :finish)
+
+      assert [
+               %{role: "system"},
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = Legion.get_messages(pid)
+    end
+  end
+
   describe "persistence" do
     setup do
       start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
       :ok
     end
 
-    test "passes the store persistence frequency into the agent server state" do
-      {:ok, pid} =
-        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-frequency")
-
-      assert %{persistence_frequency: :step} = :sys.get_state(pid)
-    end
-
-    test "brackets each turn with :running and :idle status writes" do
+    test "brackets each turn with :running and :idle status writes", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "statuses")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
 
-      assert MemoryStore.statuses("statuses") == [:running, :idle]
+      assert MemoryStore.statuses(agent_id) == [:running, :idle]
 
       {:ok, _} = Legion.call(pid, "And of Germany?")
-      assert MemoryStore.statuses("statuses") == [:running, :idle, :running, :idle]
+      assert MemoryStore.statuses(agent_id) == [:running, :idle, :running, :idle]
     end
 
-    test "writes the new Store payloads for a completed message" do
+    test "writes the new Store payloads for a completed message", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "payloads")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       {:ok, "Paris"} = Legion.call(pid, "What is the capital of France?")
 
-      [started, running, completed] = MemoryStore.writes("payloads")
+      [started, running, completed] = MemoryStore.writes(agent_id)
 
       assert %Payload{
-               agent_id: "payloads",
+               agent_id: ^agent_id,
                agent_module: MathAgent,
                parent_agent_id: nil,
                started_at: started_at,
@@ -643,7 +507,7 @@ defmodule Legion.AgentServerTest do
       assert is_struct(started_at, NaiveDateTime)
 
       assert %Payload{
-               agent_id: "payloads",
+               agent_id: ^agent_id,
                status: :running,
                conversation_state: %{
                  messages: [%{role: "user", content: "What is the capital of France?"}],
@@ -652,7 +516,7 @@ defmodule Legion.AgentServerTest do
              } = running
 
       assert %Payload{
-               agent_id: "payloads",
+               agent_id: ^agent_id,
                status: :idle,
                conversation_state: %{messages: messages, bindings: []}
              } = completed
@@ -665,7 +529,7 @@ defmodule Legion.AgentServerTest do
       refute Enum.any?(messages, &(&1.role == "system"))
     end
 
-    test "accumulates timestamped, string-keyed usage across turns" do
+    test "accumulates timestamped, string-keyed usage across turns", %{agent_id: agent_id} do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -677,11 +541,11 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-turns")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       assert {:ok, "first"} = Legion.call(pid, "first turn")
       assert {:ok, "second"} = Legion.call(pid, "second turn")
 
-      assert {:ok, payload} = MemoryStore.get("usage-turns")
+      assert {:ok, payload} = MemoryStore.get(agent_id)
 
       assert [
                %{"turn_usage" => 7, "at" => first_timestamp},
@@ -691,7 +555,8 @@ defmodule Legion.AgentServerTest do
       assert first_timestamp <= second_timestamp
     end
 
-    test "usage entries name the persisted assistant message their request produced" do
+    test "usage entries name the persisted assistant message their request produced",
+         %{agent_id: agent_id} do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -705,12 +570,12 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-index")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       assert {:ok, "first"} = Legion.call(pid, "first turn")
       assert {:ok, "second"} = Legion.call(pid, "second turn")
 
       assert {:ok, %Payload{usage: usage, conversation_state: %{messages: messages}}} =
-               MemoryStore.get("usage-index")
+               MemoryStore.get(agent_id)
 
       # [user, error, assistant, eval_result, assistant, user, assistant]
       assert [
@@ -725,7 +590,8 @@ defmodule Legion.AgentServerTest do
       end
     end
 
-    test "usage of a cancelled turn names no message, so the next turn's user message stays unnamed" do
+    test "usage of a cancelled turn names no message, so the next turn's user message stays unnamed",
+         %{agent_id: agent_id} do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -737,28 +603,23 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
-          store: MemoryStore,
-          agent_id: "usage-cancelled",
-          max_retries: 0
-        )
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id, max_retries: 0)
 
       assert {:cancel, :reached_max_retries} = Legion.call(pid, "first turn")
       assert {:ok, "second"} = Legion.call(pid, "second turn")
 
       assert {:ok, %Payload{usage: usage, conversation_state: %{messages: messages}}} =
-               MemoryStore.get("usage-cancelled")
+               MemoryStore.get(agent_id)
 
       # [user, user, assistant]
       assert [%{"message_index" => nil}, %{"message_index" => 2}] = usage
       assert %{type: :assistant} = Enum.at(messages, 2)
     end
 
-    test "restored conversations add only new invocation usage" do
+    test "restored conversations add only new invocation usage", %{agent_id: agent_id} do
       assert :ok =
                MemoryStore.save(%Payload{
-                 agent_id: "usage-restore",
+                 agent_id: agent_id,
                  usage: [%{turn_usage: 100}],
                  conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
@@ -767,7 +628,7 @@ defmodule Legion.AgentServerTest do
         llm_response("new work", 20)
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-restore")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       assert {:ok, "new work"} = Legion.call(pid, "continue")
 
       assert {:ok,
@@ -776,119 +637,38 @@ defmodule Legion.AgentServerTest do
                   %{turn_usage: 100},
                   %{"turn_usage" => 20, "at" => timestamp, "message_index" => 1}
                 ]
-              }} = MemoryStore.get("usage-restore")
+              }} = MemoryStore.get(agent_id)
 
       assert is_integer(timestamp)
     end
 
-    test "does not update usage when globally disabled" do
-      previous = Application.get_env(:legion, :track_usage, :unset)
-      Application.put_env(:legion, :track_usage, false)
-
-      on_exit(fn ->
-        if previous == :unset,
-          do: Application.delete_env(:legion, :track_usage),
-          else: Application.put_env(:legion, :track_usage, previous)
-      end)
-
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "usage-disabled",
-                 usage: [%{turn_usage: 100}],
-                 conversation_state: %{messages: [], bindings: [], executor_state: nil}
-               })
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("new work", 20)
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-disabled")
-      assert {:ok, "new work"} = Legion.call(pid, "continue")
-
-      assert {:ok, %Payload{usage: [%{turn_usage: 100}]}} =
-               MemoryStore.get("usage-disabled")
-    end
-
-    test "saves a snapshot before the caller receives its reply" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("Paris")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "receipt")
-      {:ok, _} = Legion.call(pid, "What is the capital of France?")
-
-      assert {:ok, %{messages: messages, bindings: []}} = MemoryStore.load("receipt")
-
-      assert [
-               %{role: "user", content: "What is the capital of France?"},
-               %{role: "assistant"} | _
-             ] = messages
-
-      refute Enum.any?(messages, &(&1.role == "system"))
-    end
-
-    test "persists the user message before the turn runs" do
+    test "persists the user message before the turn runs", %{agent_id: agent_id} do
       test_process = self()
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        send(test_process, {:snapshot_during_turn, MemoryStore.load("early-save")})
+        send(test_process, {:snapshot_during_turn, MemoryStore.load(agent_id)})
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "early-save")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
 
       assert_received {:snapshot_during_turn, {:ok, %{messages: messages}}}
       assert [%{role: "user", content: "What is the capital of France?"}] = messages
     end
 
-    test "a one-off execute/3 persists its snapshot before stopping" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("Paris")
-      end)
-
-      {:ok, _} =
-        Legion.execute(MathAgent, "What is the capital of France?",
-          store: MemoryStore,
-          agent_id: "one-off"
-        )
-
-      assert {:ok, %{messages: [%{role: "user"}, %{role: "assistant"} | _]}} =
-               MemoryStore.load("one-off")
-    end
-
-    test "does not persist bindings under the default :turn scope" do
+    test "does not persist bindings under the default :turn scope", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_eval_response("x = 42\nreturn x")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "turn-bindings")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       {:ok, 42} = Legion.call(pid, "set x")
 
-      assert {:ok, %{bindings: []}} = MemoryStore.load("turn-bindings")
+      assert {:ok, %{bindings: []}} = MemoryStore.load(agent_id)
     end
 
-    test "persists conversation-scoped bindings in the completed payload" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("x = 42")
-      end)
-
-      {:ok, pid} =
-        Legion.start_link(ConversationBindingsAgent,
-          store: MemoryStore,
-          agent_id: "conversation-bindings",
-          sandbox: Legion.Sandbox.Elixir
-        )
-
-      assert {:ok, 42} = Legion.call(pid, "set x")
-
-      assert {:ok,
-              %Payload{
-                conversation_state: %{bindings: [x: 42]}
-              }} = MemoryStore.get("conversation-bindings")
-    end
-
-    test "a :step store persists a complete eval_and_continue checkpoint" do
+    test "a :step store persists a complete eval_and_continue checkpoint", %{agent_id: agent_id} do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -900,16 +680,16 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
+      pid =
+        start_agent(MathAgent,
           store: StepMemoryStore,
-          agent_id: "step-continue",
+          agent_id: agent_id,
           sandbox: Legion.Sandbox.Elixir
         )
 
       assert {:ok, "done"} = Legion.call(pid, "compute")
 
-      [_started, running, checkpoint, completed] = MemoryStore.writes("step-continue")
+      [_started, running, checkpoint, completed] = MemoryStore.writes(agent_id)
 
       assert %Payload{
                status: :running,
@@ -940,17 +720,17 @@ defmodule Legion.AgentServerTest do
       assert final_state.executor_state == :nonexistent
     end
 
-    test "a :step store persists eval_and_complete before the final snapshot" do
+    test "a :step store persists eval_and_complete before the final snapshot",
+         %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_eval_response("return 1 + 1")
       end)
 
-      {:ok, pid} =
-        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-complete")
+      pid = start_agent(MathAgent, store: StepMemoryStore, agent_id: agent_id)
 
       assert {:ok, 2} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] = MemoryStore.writes("step-complete")
+      [_started, _running, checkpoint, completed] = MemoryStore.writes(agent_id)
 
       assert %Payload{
                status: nil,
@@ -963,7 +743,7 @@ defmodule Legion.AgentServerTest do
       assert final_state.executor_state == :nonexistent
     end
 
-    test "a :step store persists retry state after an error message" do
+    test "a :step store persists retry state after an error message", %{agent_id: agent_id} do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -975,10 +755,10 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-retry")
+      pid = start_agent(MathAgent, store: StepMemoryStore, agent_id: agent_id)
       assert {:ok, "recovered"} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, _completed] = MemoryStore.writes("step-retry")
+      [_started, _running, checkpoint, _completed] = MemoryStore.writes(agent_id)
 
       assert %Payload{
                status: nil,
@@ -992,69 +772,69 @@ defmodule Legion.AgentServerTest do
       assert List.last(messages).type == :error
     end
 
-    test "a :step store retains conversation bindings in the final snapshot" do
+    test "a :step store retains conversation bindings in the final snapshot",
+         %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_eval_response("x = 42")
       end)
 
-      {:ok, pid} =
-        Legion.start_link(ConversationBindingsAgent,
+      pid =
+        start_agent(ConversationBindingsAgent,
           store: StepMemoryStore,
-          agent_id: "step-conversation-bindings",
+          agent_id: agent_id,
           sandbox: Legion.Sandbox.Elixir
         )
 
       assert {:ok, 42} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] =
-        MemoryStore.writes("step-conversation-bindings")
+      [_started, _running, checkpoint, completed] = MemoryStore.writes(agent_id)
 
       assert checkpoint.conversation_state.bindings == [x: 42]
       assert completed.conversation_state.bindings == [x: 42]
     end
 
-    test "a :step store persists empty iteration-scoped bindings" do
+    test "a :step store persists empty iteration-scoped bindings", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_eval_response("x = 42\nreturn x")
       end)
 
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
+      pid =
+        start_agent(MathAgent,
           store: StepMemoryStore,
-          agent_id: "step-iteration-bindings",
+          agent_id: agent_id,
           binding_scope: :iteration
         )
 
       assert {:ok, 42} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] =
-        MemoryStore.writes("step-iteration-bindings")
+      [_started, _running, checkpoint, completed] = MemoryStore.writes(agent_id)
 
       assert checkpoint.conversation_state.bindings == []
       assert completed.conversation_state.bindings == []
     end
 
-    test "a :step store does not add a checkpoint for return" do
+    test "a :step store does not add a checkpoint for return", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("done")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-return")
+      pid = start_agent(MathAgent, store: StepMemoryStore, agent_id: agent_id)
       assert {:ok, "done"} = Legion.call(pid, "compute")
 
-      assert [_started, _running, _completed] = MemoryStore.writes("step-return")
+      assert [_started, _running, _completed] = MemoryStore.writes(agent_id)
     end
 
-    test "restores the conversation under a fresh system prompt after a restart" do
+    test "restores the conversation under a fresh system prompt after a restart",
+         %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
       GenServer.stop(pid)
 
-      {:ok, revived} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+      {:ok, revived} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
 
       assert [
                %{role: "system"},
@@ -1063,7 +843,7 @@ defmodule Legion.AgentServerTest do
              ] = Legion.get_messages(revived)
     end
 
-    test "restores conversation-scoped bindings after a restart" do
+    test "restores conversation-scoped bindings after a restart", %{agent_id: agent_id} do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
@@ -1074,14 +854,12 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} =
-        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+      pid = start_agent(ConversationBindingsAgent, store: MemoryStore, agent_id: agent_id)
 
       {:ok, 42} = Legion.call(pid, "set x")
       GenServer.stop(pid)
 
-      {:ok, revived} =
-        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+      revived = start_agent(ConversationBindingsAgent, store: MemoryStore, agent_id: agent_id)
 
       assert {:ok, 43} = Legion.call(revived, "use x")
     end
@@ -1091,13 +869,649 @@ defmodule Legion.AgentServerTest do
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore)
+      pid = start_agent(MathAgent, store: MemoryStore)
       agent_id = Legion.get_agent_id(pid)
 
       assert is_binary(agent_id)
       assert String.valid?(agent_id)
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
       assert {:ok, _snapshot} = MemoryStore.load(agent_id)
+    end
+
+    test "raises when :agent_id is given without a :store", %{agent_id: agent_id} do
+      assert_raise ArgumentError, ~r/:agent_id requires a :store/, fn ->
+        Legion.start_link(MathAgent, agent_id: agent_id)
+      end
+    end
+
+    test "every identity operation rejects an agent ID that is not a UTF-8 string" do
+      for agent_id <- [:agent, make_ref(), <<0xFF>>],
+          operation <- [
+            fn -> Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id) end,
+            fn -> Legion.lookup(agent_id) end,
+            fn -> Legion.resume(agent_id, store: MemoryStore) end,
+            fn -> Legion.recover(agent_id, store: MemoryStore) end
+          ] do
+        assert_raise ArgumentError, ~r/:agent_id must be a valid UTF-8 string/, operation
+      end
+    end
+
+    test "registers the agent pid by agent_id", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      assert {:ok, ^pid} = Legion.lookup(agent_id)
+    end
+
+    test "concurrent starts atomically choose one owner for an agent_id", %{agent_id: agent_id} do
+      caller = self()
+
+      contenders =
+        for _index <- 1..8 do
+          Task.async(fn ->
+            send(caller, {:ready, self()})
+
+            receive do
+              :start -> Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+            end
+          end)
+        end
+
+      contender_pids =
+        for _index <- 1..8 do
+          assert_receive {:ready, contender_pid}
+          contender_pid
+        end
+
+      for contender_pid <- contender_pids, do: send(contender_pid, :start)
+      results = Task.await_many(contenders)
+      started_pids = for {:ok, pid} <- results, do: pid
+
+      on_exit(fn ->
+        for pid <- started_pids, Process.alive?(pid), do: GenServer.stop(pid)
+      end)
+
+      assert [winner] = started_pids
+
+      assert Enum.count(results, &(&1 == {:error, {:already_started, winner}})) == 7
+      assert {:ok, ^winner} = Legion.lookup(agent_id)
+    end
+
+    test "resume/2 returns the recorded process while it is alive", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      assert {:ok, ^pid} = Legion.resume(agent_id, store: MemoryStore)
+    end
+
+    test "resume/2 validates the requested store before resolving a live process",
+         %{agent_id: agent_id} do
+      {:ok, _pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      assert {:error, :not_resumable} = Legion.resume(agent_id, store: EmptyStore)
+    end
+
+    test "resume/2 restarts a stopped conversation from its run metadata",
+         %{agent_id: agent_id} do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      pid = start_agent(MathAgent, store: MemoryStore, agent_id: agent_id)
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      GenServer.stop(pid)
+
+      {:ok, revived} = Legion.resume(agent_id, store: MemoryStore)
+
+      assert revived != pid
+
+      assert [
+               %{role: "system"},
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = Legion.get_messages(revived)
+    end
+
+    # A request would add messages before get_messages/1 could answer.
+    test "a conversation an outside model drove resumes and recovers without a request",
+         %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: agent_id, store: MemoryStore)
+      assert {:ok, _text} = Legion.eval(pid, "x = 1")
+      GenServer.stop(pid)
+
+      assert {:ok, resumed} = Legion.resume(agent_id, store: MemoryStore)
+
+      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
+               Legion.get_messages(resumed)
+
+      GenServer.stop(resumed)
+
+      # As the rate limiter leaves a row it marked running.
+      {:ok, payload} = MemoryStore.get(agent_id)
+      :ok = MemoryStore.save(%{payload | status: :running})
+
+      assert {:error, :not_recoverable} = Legion.recover(agent_id, store: MemoryStore)
+    end
+
+    test "another agent module cannot start under an id with a stored conversation",
+         %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: agent_id, store: MemoryStore)
+      GenServer.stop(pid)
+
+      assert {:error, {:agent_module_mismatch, MathAgent}} =
+               Legion.start_link(VaultAgent, agent_id: agent_id, store: MemoryStore)
+
+      assert {:ok, %Payload{agent_module: MathAgent}} = MemoryStore.get(agent_id)
+    end
+
+    test "resume/2 returns not_resumable without a stored agent module", %{agent_id: agent_id} do
+      assert :ok = MemoryStore.save(%Payload{agent_id: agent_id, agent_module: nil})
+
+      assert {:error, :not_resumable} = Legion.resume("#{agent_id}-ghost", store: MemoryStore)
+      assert {:error, :not_resumable} = Legion.resume(agent_id, store: MemoryStore)
+    end
+
+    test "resume/2 and recover/2 identify themselves when no store is configured" do
+      assert_raise ArgumentError, ~r/resume\/2 requires a :store/, fn ->
+        Legion.resume("missing-store")
+      end
+
+      assert_raise ArgumentError, ~r/recover\/2 requires a :store/, fn ->
+        Legion.recover("missing-store")
+      end
+    end
+
+    test "recover/2 returns error when agent is running", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: agent_id,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "recover me"}],
+                   bindings: [],
+                   executor_state: :nonexistent
+                 }
+               })
+
+      assert {:error, :already_running} = Legion.recover(agent_id, store: MemoryStore)
+
+      assert Process.alive?(pid)
+    end
+
+    test "recover/2 validates the requested store before resolving a live process",
+         %{agent_id: agent_id} do
+      {:ok, _pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      assert {:error, :not_recoverable} = Legion.recover(agent_id, store: EmptyStore)
+    end
+
+    test "recover/2 refuses anything but an interrupted run of a root agent",
+         %{agent_id: agent_id} do
+      interrupted = %Payload{
+        agent_id: agent_id,
+        parent_agent_id: nil,
+        agent_module: MathAgent,
+        status: :running,
+        usage: [],
+        conversation_state: %{
+          messages: [%{role: "user", type: :user, content: "compute"}],
+          bindings: [x: 42],
+          executor_state: %{phase: :completing, iteration: 1, retries: 0}
+        }
+      }
+
+      assert {:error, :not_recoverable} = Legion.recover(agent_id, store: MemoryStore)
+
+      for {suffix, payload} <- [
+            no_agent_module: %{interrupted | agent_module: nil},
+            idle: %{interrupted | status: :idle},
+            child: %{interrupted | parent_agent_id: "parent"}
+          ] do
+        unrecoverable_id = "#{agent_id}-#{suffix}"
+        assert :ok = MemoryStore.save(%{payload | agent_id: unrecoverable_id})
+
+        assert {:error, :not_recoverable} = Legion.recover(unrecoverable_id, store: MemoryStore)
+      end
+    end
+  end
+
+  describe "binding_scope" do
+    test "a turn under :turn drops its own bindings and keeps those eval/2 made" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("y = 7\nreturn y")
+      end)
+
+      pid = start_agent(MathAgent)
+
+      {:ok, _text} = AgentServer.eval(pid, "x = 1")
+      {:ok, 7} = Legion.call(pid, "set y")
+
+      assert {:ok, text} = AgentServer.eval(pid, "return {x, y == nil}")
+      assert text =~ "[1, true]"
+      assert text =~ "Available variables: `x`"
+    end
+
+    test "a turn under :turn reads the bindings eval/2 made and cannot change them" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = x + 1\nreturn x")
+      end)
+
+      pid = start_agent(MathAgent)
+
+      {:ok, _text} = AgentServer.eval(pid, "x = 1")
+      assert {:ok, 2} = Legion.call(pid, "bump x")
+
+      assert {:ok, text} = AgentServer.eval(pid, "return x")
+      assert text =~ "1"
+      assert text =~ "Available variables: `x`"
+    end
+
+    test "bindings persist across turns with :conversation, in either sandbox" do
+      for {sandbox, set_code, use_code} <- [
+            {Legion.Sandbox.Lua, "x = 42\nreturn x", "return x + 1"},
+            {Legion.Sandbox.Elixir, "x = 42", "x + 1"}
+          ] do
+        stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+          if Enum.any?(messages, &(&1[:role] == "assistant")),
+            do: llm_eval_response(use_code),
+            else: llm_eval_response(set_code)
+        end)
+
+        pid = start_agent(ConversationBindingsAgent, sandbox: sandbox)
+        assert {:ok, 42} = Legion.call(pid, "set x")
+        assert {:ok, 43} = Legion.call(pid, "use x")
+      end
+    end
+
+    test "system prompt reflects binding_scope resolved from start_link opts, not agent.config()" do
+      {:ok, pid} = Legion.start_link(MathAgent, binding_scope: :conversation)
+      [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
+
+      assert system_prompt =~ "Variables also persist across turns"
+    end
+
+    test "custom system_prompt/0 override wins over the default" do
+      {:ok, pid} = Legion.start_link(CustomPromptAgent, binding_scope: :conversation)
+      [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
+
+      assert system_prompt == "completely custom prompt"
+    end
+  end
+
+  describe "eval/2" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "runs code without an LLM and keeps variables between calls" do
+      reject(&ReqLLM.generate_object/3)
+      pid = start_agent(MathAgent)
+
+      assert {:ok, _text} = AgentServer.eval(pid, "x = MathTool.random_add(1, 0)")
+      assert {:ok, text} = AgentServer.eval(pid, "return x + 1")
+
+      assert text =~ "984"
+      assert text =~ "Available variables: `x`"
+    end
+
+    test "saves every step - the code, then its result or error - and never as running",
+         %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      {:ok, result} = AgentServer.eval(pid, "return 1 + 1")
+      {:error, error} = AgentServer.eval(pid, "return (")
+
+      {:ok, %{messages: messages}} = MemoryStore.load(agent_id)
+
+      assert [
+               %{type: :assistant, content: first_action},
+               %{type: :eval_result, content: ^result},
+               %{type: :assistant, content: second_action},
+               %{type: :error, content: ^error}
+             ] = messages
+
+      assert Jason.decode!(first_action) ==
+               %{"action" => "eval_and_continue", "code" => "return 1 + 1"}
+
+      assert Jason.decode!(second_action)["code"] == "return ("
+      assert MemoryStore.statuses(agent_id) == [:idle, :idle]
+    end
+
+    test "records one eval per call in usage, for :max_evals to count", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      {:ok, _result} = AgentServer.eval(pid, "return 1")
+      {:error, _error} = AgentServer.eval(pid, "return (")
+
+      assert {:ok, %Payload{usage: usage}} = MemoryStore.get(agent_id)
+
+      assert [
+               %{"evals" => 1, "message_index" => 0, "at" => _},
+               %{"evals" => 1, "message_index" => 2, "at" => _}
+             ] = usage
+    end
+
+    test "reads :vault from the agent process, where tools look it up" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
+      assert text =~ "alice"
+    end
+
+    test "a per-call :vault holds for that call only" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "owner"])
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()",
+                 vault: [current_user: "alice", token: "alice-secret"]
+               )
+
+      assert text =~ "alice-secret"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()", vault: [current_user: "bob"])
+
+      refute text =~ "alice-secret"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
+      assert text =~ "owner"
+    end
+
+    test "runs as eval_and_continue, whatever action the last turn left behind" do
+      # As the executor leaves it after a turn that ended in eval_and_complete.
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_action: "eval_and_complete"])
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_action()")
+      assert text =~ "eval_and_continue"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.current_action()",
+                 vault: [current_action: "eval_and_complete"]
+               )
+
+      assert text =~ "eval_and_continue"
+    end
+
+    test "a per-call :vault cannot replace the keys Legion sets", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(VaultAgent, agent_id: agent_id, store: MemoryStore)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_id()",
+                 vault: [agent_id: "forged", agent_module: MathAgent]
+               )
+
+      assert text =~ agent_id
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_module()",
+                 vault: [agent_module: MathAgent]
+               )
+
+      assert text =~ "VaultAgent"
+    end
+
+    test "a rejected call runs nothing and saves nothing", %{agent_id: agent_id} do
+      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, [store: MemoryStore, agent_id: agent_id] ++ opts)
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = AgentServer.eval(pid, "return 1")
+      assert_received {:enforced, ^agent_id, _identity, _policy}
+      assert MemoryStore.load(agent_id) == :error
+    end
+
+    test "an agent whose action_types allow no evaluation refuses, before the rate limit",
+         %{agent_id: agent_id} do
+      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      {:ok, pid} =
+        Legion.start_link(ReadOnlyAgent, [store: MemoryStore, agent_id: agent_id] ++ opts)
+
+      assert {:error, text} = AgentServer.eval(pid, "return 1")
+      assert text =~ "ReadOnlyAgent runs no code"
+      refute_received {:enforced, _agent_id, _identity, _policy}
+      assert MemoryStore.load(agent_id) == :error
+    end
+
+    test "a call whose caller died while it waited is skipped", %{agent_id: agent_id} do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+
+      # Busy, as with another call or a chat turn.
+      :ok = :sys.suspend(pid)
+      caller = spawn(fn -> AgentServer.eval(pid, "abandoned = 1") end)
+      wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
+      Process.exit(caller, :kill)
+      :ok = :sys.resume(pid)
+
+      assert {:ok, text} = AgentServer.eval(pid, "return abandoned")
+      assert text =~ "nil"
+
+      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
+               Legion.get_messages(pid)
+    end
+
+    test "code over max_message_length or not UTF-8 is refused and not kept",
+         %{agent_id: agent_id} do
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: agent_id,
+          max_message_length: 10
+        )
+
+      assert {:error, "The code is 11 bytes, over the 10 byte limit" <> _} =
+               AgentServer.eval(pid, "return 1+11")
+
+      assert {:error, "The code is not valid UTF-8"} = AgentServer.eval(pid, "return \"\xFF\"")
+      assert MemoryStore.load(agent_id) == :error
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+    end
+
+    test ":require_sandbox refuses an agent that runs another sandbox", %{agent_id: agent_id} do
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: agent_id,
+          sandbox: Legion.Sandbox.Elixir
+        )
+
+      assert {:error, text} =
+               AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Lua)
+
+      assert text =~ "requires Legion.Sandbox.Lua"
+      assert text =~ "runs Legion.Sandbox.Elixir"
+      assert MemoryStore.load(agent_id) == :error
+
+      assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
+    end
+
+    test ":exclude_tools leaves tools out of that call only" do
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return {MathTool == nil, Help.help()}",
+                 exclude_tools: [Legion.Test.Support.MathTool]
+               )
+
+      assert text =~ "true"
+      refute text =~ "MathTool"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return {MathTool == nil, Help.help()}")
+      assert text =~ "false"
+      assert text =~ "MathTool"
+    end
+  end
+
+  describe "idle_timeout" do
+    # A GenServer timeout never fires early, so stopping before 100ms passed
+    # since the call would mean the call did not start the wait over.
+    test "stops the agent once nobody has called for that long, counted from the last call" do
+      reject(&ReqLLM.generate_object/3)
+      pid = start_agent(MathAgent, idle_timeout: 100)
+      reference = Process.monitor(pid)
+
+      Process.sleep(50)
+      called_at = System.monotonic_time(:millisecond)
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+
+      assert_receive {:DOWN, ^reference, :process, ^pid, :normal}, 1_000
+      assert System.monotonic_time(:millisecond) - called_at >= 100
+    end
+  end
+
+  describe "rate limiting" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "cancels a rejected turn and leaves the conversation untouched",
+         %{agent_id: agent_id} do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_called)
+        llm_response("ok")
+      end)
+
+      pid =
+        start_agent(
+          MathAgent,
+          limited(
+            rate_limit: [rules: [rule(rejecting_identity(self()))]],
+            store: MemoryStore,
+            agent_id: agent_id
+          )
+        )
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
+
+      refute_received :llm_called
+      assert [%{role: "system"}] = Legion.get_messages(pid)
+      assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get(agent_id)
+    end
+
+    test "hands the limiter every rule in order and cancels when one rejects" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      allowing = allowing_identity(self())
+      rejecting = rejecting_identity(self())
+
+      pid =
+        start_agent(
+          MathAgent,
+          limited(rate_limit: [rules: [rule(allowing), rule(rejecting)]])
+        )
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
+
+      assert_received {:enforced, _, first, _}
+      assert_received {:enforced, _, second, _}
+      assert [first, second] == [allowing, rejecting]
+    end
+
+    test "start_link validates the rate-limit options" do
+      for {rate_limit, error} <- [
+            {[rules: [rule(rejecting_identity(self()))]], ~r/rules need a limiter/},
+            {[
+               limiter: TestRateLimiter,
+               rules: [rule(allowing_identity(self()), %Policy{window_ms: 0})]
+             ], ~r/:window_ms/},
+            {[limiter: TestRateLimiter, rules: [rule(%{report_to: self()})]], ~r/:identity keys/}
+          ] do
+        assert_raise ArgumentError, error, fn ->
+          Legion.start_link(MathAgent, rate_limit: rate_limit)
+        end
+      end
+    end
+
+    test "runs the turn unlimited, with a warning, when a limiter is configured without rules" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+
+      {pid, log} =
+        with_log(fn -> start_agent(MathAgent, rate_limit: [limiter: TestRateLimiter]) end)
+
+      assert log =~ "runs without rate limiting"
+      assert {:ok, "ok"} = Legion.call(pid, "hi")
+      refute_received {:enforced, _, _, _}
+    end
+
+    test "emits telemetry for the rule that rejected the turn" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :rate_limit, :exceeded]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+      rejecting = rejecting_identity(self())
+
+      pid =
+        start_agent(
+          MathAgent,
+          limited(rate_limit: [rules: [rule(allowing_identity(self())), rule(rejecting)]])
+        )
+
+      agent_id = Legion.get_agent_id(pid)
+
+      {:cancel, _} = Legion.call(pid, "hi")
+
+      assert_received {[:legion, :rate_limit, :exceeded], ^ref, _measurements,
+                       %{agent_id: ^agent_id} = metadata}
+
+      assert metadata.agent == MathAgent
+      assert metadata.identity == rejecting
+      assert metadata.policy == limit_policy()
+      assert metadata.violations == [:max_agents]
+    end
+  end
+end
+
+defmodule Legion.AgentServerGlobalTest do
+  # Sync: these set application env, or stub the LLM for agent processes the
+  # test never gets a pid for in time (one-off, resumed, recovered and
+  # sub-agents), which Mimic reaches only in global mode.
+  use ExUnit.Case, async: false
+  use Mimic
+
+  import Legion.AgentServerTest.Fixtures
+
+  alias Legion.AgentServer
+  alias Legion.AgentServerTest.ChildAgent
+  alias Legion.AgentServerTest.DelegatingAgent
+  alias Legion.AgentServerTest.MemoryStore
+  alias Legion.AgentServerTest.StepMemoryStore
+  alias Legion.RateLimiter.Policy
+  alias Legion.Store.Payload
+  alias Legion.Test.Support.MathAgent
+
+  setup :set_mimic_global
+
+  @moduletag capture_log: true
+
+  setup do
+    start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+    :ok
+  end
+
+  describe "application config" do
+    test "does not update usage when :track_usage is disabled" do
+      Application.put_env(:legion, :track_usage, false)
+      on_exit(fn -> Application.delete_env(:legion, :track_usage) end)
+
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "usage-disabled",
+                 usage: [%{turn_usage: 100}],
+                 conversation_state: %{messages: [], bindings: [], executor_state: nil}
+               })
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("new work", 20)
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-disabled")
+      assert {:ok, "new work"} = Legion.call(pid, "continue")
+
+      assert {:ok, %Payload{usage: [%{turn_usage: 100}]}} = MemoryStore.get("usage-disabled")
     end
 
     test "uses a store configured globally, needing only an agent_id" do
@@ -1113,135 +1527,22 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, _snapshot} = MemoryStore.load("global-store")
     end
+  end
 
-    test "get_agent_id/1 returns a generated id without a store" do
-      {:ok, pid} = Legion.start_link(MathAgent)
-      assert is_binary(Legion.get_agent_id(pid))
-    end
-
-    test "raises when :agent_id is given without a :store" do
-      assert_raise ArgumentError, ~r/:agent_id requires a :store/, fn ->
-        Legion.start_link(MathAgent, agent_id: "orphan")
-      end
-    end
-
-    test "rejects non-string explicit agent IDs" do
-      for agent_id <- [:agent, make_ref(), <<0xFF>>] do
-        assert_raise ArgumentError, ~r/:agent_id must be a valid UTF-8 string/, fn ->
-          Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
-        end
-      end
-    end
-
-    test "public identity operations reject invalid non-string agent IDs" do
-      non_binary_agent_id = :agent
-      non_utf8_agent_id = <<0xFF>>
-
-      for operation <- [
-            fn -> Legion.lookup(non_binary_agent_id) end,
-            fn -> Legion.resume(non_binary_agent_id, store: MemoryStore) end,
-            fn -> Legion.recover(non_binary_agent_id, store: MemoryStore) end,
-            fn -> Legion.lookup(non_utf8_agent_id) end,
-            fn -> Legion.resume(non_utf8_agent_id, store: MemoryStore) end,
-            fn -> Legion.recover(non_utf8_agent_id, store: MemoryStore) end
-          ] do
-        assert_raise ArgumentError, ~r/:agent_id must be a valid UTF-8 string/, operation
-      end
-    end
-
-    test "records run metadata on start" do
-      {:ok, _pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "meta")
-
-      assert [run] = MemoryStore.runs()
-      assert run.agent_id == "meta"
-      assert run.agent_module == MathAgent
-      assert run.parent_agent_id == nil
-      assert is_struct(run.started_at, NaiveDateTime)
-    end
-
-    test "registers the agent pid by agent_id" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "lookup")
-
-      assert {:ok, ^pid} = Legion.lookup("lookup")
-    end
-
-    test "allows only one live process to own an agent_id" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "unique")
-
-      assert {:error, {:already_started, ^pid}} =
-               Legion.start_link(MathAgent, store: MemoryStore, agent_id: "unique")
-    end
-
-    test "concurrent starts atomically choose one owner for an agent_id" do
-      caller = self()
-
-      contenders =
-        for _index <- 1..8 do
-          Task.async(fn ->
-            send(caller, {:ready, self()})
-
-            receive do
-              :start -> Legion.start_link(MathAgent, store: MemoryStore, agent_id: "race")
-            end
-          end)
-        end
-
-      contender_pids =
-        for _index <- 1..8 do
-          assert_receive {:ready, contender_pid}
-          contender_pid
-        end
-
-      Enum.each(contender_pids, &send(&1, :start))
-      results = Task.await_many(contenders)
-      started_pids = for {:ok, pid} <- results, do: pid
-
-      on_exit(fn ->
-        Enum.each(started_pids, fn pid ->
-          if Process.alive?(pid), do: GenServer.stop(pid)
-        end)
-      end)
-
-      assert [winner] = started_pids
-
-      assert Enum.count(results, &(&1 == {:error, {:already_started, winner}})) == 7
-      assert {:ok, ^winner} = Legion.lookup("race")
-    end
-
-    test "resume/2 returns the recorded process while it is alive" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-live")
-
-      assert Process.alive?(pid)
-      assert {:ok, ^pid} = Legion.resume("resume-live", store: MemoryStore)
-    end
-
-    test "resume/2 validates the requested store before resolving a live process" do
-      {:ok, _pid} =
-        Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-wrong-store")
-
-      assert {:error, :not_resumable} =
-               Legion.resume("resume-wrong-store", store: EmptyStore)
-    end
-
-    test "resume/2 restarts a stopped conversation from its run metadata" do
+  describe "one-off, resumed and recovered agents" do
+    test "a one-off execute/3 persists its snapshot before stopping" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("Paris")
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-dead")
-      {:ok, _} = Legion.call(pid, "What is the capital of France?")
-      GenServer.stop(pid)
-      refute Process.alive?(pid)
+      {:ok, _} =
+        Legion.execute(MathAgent, "What is the capital of France?",
+          store: MemoryStore,
+          agent_id: "one-off"
+        )
 
-      {:ok, revived} = Legion.resume("resume-dead", store: MemoryStore)
-
-      assert Process.alive?(revived)
-
-      assert [
-               %{role: "system"},
-               %{role: "user", content: "What is the capital of France?"},
-               %{role: "assistant"} | _
-             ] = Legion.get_messages(revived)
+      assert {:ok, %{messages: [%{role: "user"}, %{role: "assistant"} | _]}} =
+               MemoryStore.load("one-off")
     end
 
     test "an awaiting-LLM checkpoint resumes with one request and finishes idle" do
@@ -1305,70 +1606,6 @@ defmodule Legion.AgentServerTest do
       refute_receive :llm_requested, 100
     end
 
-    test "a conversation an outside model drove resumes and recovers without a request" do
-      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "resume-eval", store: MemoryStore)
-      assert {:ok, _text} = Legion.eval(pid, "x = 1")
-      GenServer.stop(pid)
-
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        send(test_pid, :llm_requested)
-        llm_response("unexpected")
-      end)
-
-      assert {:ok, resumed} = Legion.resume("resume-eval", store: MemoryStore)
-
-      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
-               Legion.get_messages(resumed)
-
-      GenServer.stop(resumed)
-
-      # As the rate limiter leaves a row it marked running.
-      {:ok, payload} = MemoryStore.get("resume-eval")
-      :ok = MemoryStore.save(%{payload | status: :running})
-
-      assert {:error, :not_recoverable} = Legion.recover("resume-eval", store: MemoryStore)
-      refute_received :llm_requested
-    end
-
-    test "another agent module cannot start under an id with a stored conversation" do
-      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "owned-by-math", store: MemoryStore)
-      GenServer.stop(pid)
-
-      assert {:error, {:agent_module_mismatch, MathAgent}} =
-               Legion.start_link(VaultAgent, agent_id: "owned-by-math", store: MemoryStore)
-
-      assert {:ok, %Payload{agent_module: MathAgent}} = MemoryStore.get("owned-by-math")
-    end
-
-    test "resume/2 returns not_resumable for an agent_id the store has no run for" do
-      assert {:error, :not_resumable} = Legion.resume("ghost", store: MemoryStore)
-    end
-
-    test "resume/2 returns not_resumable when the stored run has no agent module" do
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "resume-missing-agent-module",
-                 agent_module: nil
-               })
-
-      assert {:error, :not_resumable} =
-               Legion.resume("resume-missing-agent-module", store: MemoryStore)
-    end
-
-    test "resume/2 identifies itself when no store is configured" do
-      assert_raise ArgumentError, ~r/resume\/2 requires a :store/, fn ->
-        Legion.resume("missing-store")
-      end
-    end
-
-    test "recover/2 identifies itself when no store is configured" do
-      assert_raise ArgumentError, ~r/recover\/2 requires a :store/, fn ->
-        Legion.recover("missing-store")
-      end
-    end
-
     test "recover/2 completes an interrupted run and stops its process" do
       assert :ok =
                MemoryStore.save(%Payload{
@@ -1384,17 +1621,19 @@ defmodule Legion.AgentServerTest do
                  }
                })
 
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("done")
+      end)
+
       assert :ok = Legion.recover("recover-awaiting-llm", store: MemoryStore)
 
-      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}} =
-               MemoryStore.get("recover-awaiting-llm")
+      assert {:ok,
+              %Payload{
+                status: :idle,
+                conversation_state: %{executor_state: :nonexistent, messages: messages}
+              }} = MemoryStore.get("recover-awaiting-llm")
 
-      assert(
-        case Legion.lookup("recover-awaiting-llm") do
-          :error -> true
-          {:ok, pid} -> not Process.alive?(pid)
-        end
-      )
+      assert %{type: :assistant} = List.last(messages)
     end
 
     test "recover/2 finishes an interrupted turn with the bindings its checkpoint saved" do
@@ -1435,89 +1674,10 @@ defmodule Legion.AgentServerTest do
       results = Enum.map(final.messages, &inspect(&1.content))
       assert Enum.any?(results, &(&1 =~ "42")), "recovered eval lost x: #{inspect(results)}"
     end
+  end
 
-    test "recover/2 returns error when agent is running" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-running")
-
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "recover-running",
-                 status: :running,
-                 conversation_state: %{
-                   messages: [%{role: "user", type: :user, content: "recover me"}],
-                   bindings: [],
-                   executor_state: :nonexistent
-                 }
-               })
-
-      assert {:error, :already_running} = Legion.recover("recover-running", store: MemoryStore)
-
-      assert Process.alive?(pid)
-    end
-
-    test "recover/2 validates the requested store before resolving a live process" do
-      {:ok, _pid} =
-        Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-wrong-store")
-
-      assert {:error, :not_recoverable} =
-               Legion.recover("recover-wrong-store", store: EmptyStore)
-    end
-
-    test "recover/2 returns not_recoverable for an agent_id the store has no run for" do
-      assert {:error, :not_recoverable} =
-               Legion.recover("recover-missing", store: MemoryStore)
-    end
-
-    test "recover/2 returns not_recoverable when the stored run has no agent module" do
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "recover-missing-agent-module",
-                 agent_module: nil,
-                 status: :running
-               })
-
-      assert {:error, :not_recoverable} =
-               Legion.recover("recover-missing-agent-module", store: MemoryStore)
-    end
-
-    test "recover/2 refuses an idle run" do
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "recover-idle-root",
-                 parent_agent_id: nil,
-                 agent_module: MathAgent,
-                 status: :idle,
-                 usage: [],
-                 conversation_state: %{
-                   messages: [%{role: "user", type: :user, content: "compute"}],
-                   bindings: [x: 42],
-                   executor_state: %{phase: :completing, iteration: 1, retries: 0}
-                 }
-               })
-
-      assert {:error, :not_recoverable} = Legion.recover("recover-idle-root", store: MemoryStore)
-    end
-
-    test "recover/2 refuses a running child run" do
-      assert :ok =
-               MemoryStore.save(%Payload{
-                 agent_id: "recover-running-child",
-                 parent_agent_id: "recover-parent",
-                 agent_module: MathAgent,
-                 status: :running,
-                 usage: [],
-                 conversation_state: %{
-                   messages: [%{role: "user", type: :user, content: "compute"}],
-                   bindings: [x: 42],
-                   executor_state: %{phase: :completing, iteration: 1, retries: 0}
-                 }
-               })
-
-      assert {:error, :not_recoverable} =
-               Legion.recover("recover-running-child", store: MemoryStore)
-    end
-
-    test "sub-agents inherit the parent store and link to the parent conversation" do
+  describe "sub-agents" do
+    test "inherit the parent store and link to the parent conversation" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         if Enum.any?(messages, &(&1[:content] == "child task")) do
           llm_response("child done")
@@ -1535,346 +1695,41 @@ defmodule Legion.AgentServerTest do
       assert child.parent_agent_id == parent.agent_id
       assert {:ok, %{messages: [%{content: "child task"} | _]}} = MemoryStore.load(child.agent_id)
     end
-  end
 
-  describe "binding_scope" do
-    test "bindings do not persist across turns by default (:turn)" do
+    test "inherit the limiter and every rule" do
+      ip_identity = allowing_identity(self())
+      tenant_identity = Map.put(allowing_identity(self()), "tenant", "acme")
+      tenant_policy = %Policy{window_ms: 1_000, max_agents: 1}
+
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
-
-        if assistant_count == 0 do
-          llm_eval_response("x = 42\nreturn x")
+        if Enum.any?(messages, &(&1[:role] == "assistant")) do
+          llm_response("child done")
         else
-          llm_eval_response("return x + 1")
+          llm_eval_response("""
+          response = AgentTool.call(ChildAgent, "do work")
+          return response[2]
+          """)
         end
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, 42} = Legion.call(pid, "set x")
-
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert {:cancel, :reached_max_retries} = Legion.call(pid, "use x")
-      end)
-    end
-
-    test "a turn under :turn drops its own bindings and keeps those eval/2 made" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("y = 7\nreturn y")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-
-      {:ok, _text} = AgentServer.eval(pid, "x = 1")
-      {:ok, 7} = Legion.call(pid, "set y")
-
-      assert {:ok, text} = AgentServer.eval(pid, "return {x, y == nil}")
-      assert text =~ "[1, true]"
-      assert text =~ "Available variables: `x`"
-    end
-
-    test "a turn under :turn reads the bindings eval/2 made and cannot change them" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("x = x + 1\nreturn x")
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-
-      {:ok, _text} = AgentServer.eval(pid, "x = 1")
-      assert {:ok, 2} = Legion.call(pid, "bump x")
-
-      assert {:ok, text} = AgentServer.eval(pid, "return x")
-      assert text =~ "1"
-      assert text =~ "Available variables: `x`"
-    end
-
-    test "bindings persist across turns with :conversation" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
-
-        if assistant_count == 0 do
-          llm_eval_response("x = 42\nreturn x")
-        else
-          llm_eval_response("return x + 1")
-        end
-      end)
-
-      {:ok, pid} = Legion.start_link(ConversationBindingsAgent)
-      {:ok, 42} = Legion.call(pid, "set x")
-      assert {:ok, 43} = Legion.call(pid, "use x")
-    end
-
-    test "Elixir bindings persist across turns with :conversation" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
-
-        if assistant_count == 0 do
-          llm_eval_response("x = 42")
-        else
-          llm_eval_response("x + 1")
-        end
-      end)
-
-      {:ok, pid} = Legion.start_link(ConversationBindingsAgent, sandbox: Legion.Sandbox.Elixir)
-      {:ok, 42} = Legion.call(pid, "set x")
-      assert {:ok, 43} = Legion.call(pid, "use x")
-    end
-
-    test "system prompt reflects binding_scope resolved from start_link opts, not agent.config()" do
-      {:ok, pid} = Legion.start_link(MathAgent, binding_scope: :conversation)
-      [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
-
-      assert system_prompt =~ "Variables also persist across turns"
-    end
-
-    test "system prompt reflects binding_scope resolved from Application config" do
-      Application.put_env(:legion, :config, %{binding_scope: :iteration})
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-
-      {:ok, pid} = Legion.start_link(MathAgent)
-      [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
-
-      assert system_prompt =~ "Variables do not persist."
-    end
-
-    test "custom system_prompt/0 override wins over the default" do
-      defmodule CustomPromptAgent do
-        @moduledoc "Agent with custom system prompt."
-        use Legion.Agent
-
-        def system_prompt, do: "completely custom prompt"
-      end
-
-      {:ok, pid} = Legion.start_link(CustomPromptAgent, binding_scope: :conversation)
-      [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
-
-      assert system_prompt == "completely custom prompt"
-    end
-  end
-
-  defp allowing_identity(test_pid), do: %{"report_to" => test_pid}
-  defp rejecting_identity(test_pid), do: %{"report_to" => test_pid, "verdict" => :reject}
-
-  defp limit_policy, do: %Policy{window_ms: 60_000, max_agents: 2}
-
-  defp rule(identity, policy \\ limit_policy()), do: %Rule{identity: identity, policy: policy}
-
-  defp limited(opts) do
-    {rate_limit, opts} = Keyword.pop(opts, :rate_limit, [])
-
-    Keyword.put(opts, :rate_limit, Keyword.merge([limiter: TestRateLimiter], rate_limit))
-  end
-
-  describe "eval/2" do
-    setup do
-      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
-      :ok
-    end
-
-    test "runs code without an LLM and keeps variables between calls" do
-      reject(&ReqLLM.generate_object/3)
-      {:ok, pid} = Legion.start_link(MathAgent)
-
-      assert {:ok, _text} = AgentServer.eval(pid, "x = MathTool.random_add(1, 0)")
-      assert {:ok, text} = AgentServer.eval(pid, "return x + 1")
-
-      assert text =~ "984"
-      assert text =~ "Available variables: `x`"
-    end
-
-    test "saves every step - the code, then its result or error - and never as running" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-steps")
-
-      {:ok, result} = AgentServer.eval(pid, "return 1 + 1")
-      {:error, error} = AgentServer.eval(pid, "return (")
-
-      {:ok, %{messages: messages}} = MemoryStore.load("eval-steps")
-
-      assert [
-               %{type: :assistant, content: first_action},
-               %{type: :eval_result, content: ^result},
-               %{type: :assistant, content: second_action},
-               %{type: :error, content: ^error}
-             ] = messages
-
-      assert Jason.decode!(first_action) ==
-               %{"action" => "eval_and_continue", "code" => "return 1 + 1"}
-
-      assert Jason.decode!(second_action)["code"] == "return ("
-      assert MemoryStore.statuses("eval-steps") == [:idle, :idle]
-    end
-
-    test "records one eval per call in usage, for :max_evals to count" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-usage")
-
-      {:ok, _result} = AgentServer.eval(pid, "return 1")
-      {:error, _error} = AgentServer.eval(pid, "return (")
-
-      assert {:ok, %Payload{usage: usage}} = MemoryStore.get("eval-usage")
-
-      assert [
-               %{"evals" => 1, "message_index" => 0, "at" => _},
-               %{"evals" => 1, "message_index" => 2, "at" => _}
-             ] = usage
-    end
-
-    test "reads :vault from the agent process, where tools look it up" do
-      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
-
-      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
-      assert text =~ "alice"
-    end
-
-    test "a per-call :vault holds for that call only" do
-      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "owner"])
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return VaultTool.token()",
-                 vault: [current_user: "alice", token: "alice-secret"]
-               )
-
-      assert text =~ "alice-secret"
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return VaultTool.token()", vault: [current_user: "bob"])
-
-      refute text =~ "alice-secret"
-
-      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
-      assert text =~ "owner"
-    end
-
-    test "runs as eval_and_continue, whatever action the last turn left behind" do
-      # As the executor leaves it after a turn that ended in eval_and_complete.
-      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_action: "eval_and_complete"])
-
-      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_action()")
-      assert text =~ "eval_and_continue"
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return VaultTool.current_action()",
-                 vault: [current_action: "eval_and_complete"]
-               )
-
-      assert text =~ "eval_and_continue"
-    end
-
-    test "a per-call :vault cannot replace the keys Legion sets" do
-      {:ok, pid} = Legion.start_link(VaultAgent, agent_id: "eval-own-keys", store: MemoryStore)
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return VaultTool.agent_id()",
-                 vault: [agent_id: "forged", agent_module: MathAgent]
-               )
-
-      assert text =~ "eval-own-keys"
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return VaultTool.agent_module()",
-                 vault: [agent_module: MathAgent]
-               )
-
-      assert text =~ "VaultAgent"
-    end
-
-    test "seeds :agent_module so tools can find the agent they run under" do
-      {:ok, pid} = Legion.start_link(VaultAgent)
-
-      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.agent_module()")
-      assert text =~ "VaultAgent"
-    end
-
-    test "a rejected call runs nothing and saves nothing" do
-      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
-
       {:ok, pid} =
-        Legion.start_link(MathAgent, [store: MemoryStore, agent_id: "eval-denied"] ++ opts)
-
-      assert {:cancel, {:rate_limited, [:max_agents]}} = AgentServer.eval(pid, "return 1")
-      assert_received {:enforced, "eval-denied", _identity, _policy}
-      assert MemoryStore.load("eval-denied") == :error
-    end
-
-    test "an agent whose action_types allow no evaluation refuses, before the rate limit" do
-      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
-
-      {:ok, pid} =
-        Legion.start_link(ReadOnlyAgent, [store: MemoryStore, agent_id: "eval-read-only"] ++ opts)
-
-      assert {:error, text} = AgentServer.eval(pid, "return 1")
-      assert text =~ "ReadOnlyAgent runs no code"
-      refute_received {:enforced, _agent_id, _identity, _policy}
-      assert MemoryStore.load("eval-read-only") == :error
-    end
-
-    test "a call whose caller died while it waited is skipped" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-abandoned")
-
-      # Busy, as with another call or a chat turn.
-      :ok = :sys.suspend(pid)
-      caller = spawn(fn -> AgentServer.eval(pid, "abandoned = 1") end)
-      wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
-      Process.exit(caller, :kill)
-      :ok = :sys.resume(pid)
-
-      assert {:ok, text} = AgentServer.eval(pid, "return abandoned")
-      assert text =~ "nil"
-
-      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
-               Legion.get_messages(pid)
-    end
-
-    test "code over max_message_length or not UTF-8 is refused and not kept" do
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
-          store: MemoryStore,
-          agent_id: "eval-oversize",
-          max_message_length: 10
+        Legion.start_link(
+          DelegatingAgent,
+          limited(rate_limit: [rules: [rule(ip_identity), rule(tenant_identity, tenant_policy)]])
         )
 
-      assert {:error, "The code is 11 bytes, over the 10 byte limit" <> _} =
-               AgentServer.eval(pid, "return 1+11")
+      parent_id = Legion.get_agent_id(pid)
+      policy = limit_policy()
 
-      assert {:error, "The code is not valid UTF-8"} = AgentServer.eval(pid, "return \"\xFF\"")
-      assert MemoryStore.load("eval-oversize") == :error
-      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+      {:ok, _} = Legion.call(pid, "delegate")
+
+      assert_received {:enforced, ^parent_id, ^ip_identity, ^policy}
+      assert_received {:enforced, ^parent_id, ^tenant_identity, ^tenant_policy}
+      assert_received {:enforced, child_id, ^ip_identity, ^policy}
+      assert_received {:enforced, ^child_id, ^tenant_identity, ^tenant_policy}
+      assert child_id != parent_id
     end
 
-    test ":require_sandbox refuses an agent that runs another sandbox" do
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
-          store: MemoryStore,
-          agent_id: "eval-elixir",
-          sandbox: Legion.Sandbox.Elixir
-        )
-
-      assert {:error, text} =
-               AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Lua)
-
-      assert text =~ "requires Legion.Sandbox.Lua"
-      assert text =~ "runs Legion.Sandbox.Elixir"
-      assert MemoryStore.load("eval-elixir") == :error
-
-      assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
-    end
-
-    test ":exclude_tools leaves tools out of that call only" do
-      {:ok, pid} = Legion.start_link(MathAgent)
-
-      assert {:ok, text} =
-               AgentServer.eval(pid, "return {MathTool == nil, Help.help()}",
-                 exclude_tools: [Legion.Test.Support.MathTool]
-               )
-
-      assert text =~ "true"
-      refute text =~ "MathTool"
-
-      assert {:ok, text} = AgentServer.eval(pid, "return {MathTool == nil, Help.help()}")
-      assert text =~ "false"
-      assert text =~ "MathTool"
-    end
-  end
-
-  describe "long-lived sub-agents" do
     test "Lua holds one sub-agent conversation across executions" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
@@ -1937,234 +1792,6 @@ defmodule Legion.AgentServerTest do
       ref = Process.monitor(sub_agent)
       GenServer.stop(owner)
       assert_receive {:DOWN, ^ref, :process, ^sub_agent, :shutdown}
-    end
-  end
-
-  describe "idle_timeout" do
-    test "stops the agent once nobody has called for that long" do
-      reject(&ReqLLM.generate_object/3)
-      {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 50)
-      ref = Process.monitor(pid)
-
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
-    end
-
-    test "every call starts the wait over" do
-      reject(&ReqLLM.generate_object/3)
-      {:ok, pid} = Legion.start_link(MathAgent, idle_timeout: 100)
-
-      Process.sleep(60)
-      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
-      Process.sleep(60)
-
-      assert Process.alive?(pid)
-    end
-  end
-
-  describe "rate limiting" do
-    setup do
-      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
-      :ok
-    end
-
-    test "cancels the turn when the limiter rejects it" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-
-      {:ok, pid} =
-        Legion.start_link(
-          MathAgent,
-          limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
-        )
-
-      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
-    end
-
-    test "leaves the conversation untouched when the limiter rejects the turn" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        send(test_pid, :llm_called)
-        llm_response("ok")
-      end)
-
-      {:ok, pid} =
-        Legion.start_link(
-          MathAgent,
-          limited(
-            rate_limit: [rules: [rule(rejecting_identity(self()))]],
-            store: MemoryStore,
-            agent_id: "rejected"
-          )
-        )
-
-      assert {:cancel, {:rate_limited, _}} = Legion.call(pid, "hi")
-
-      refute_receive :llm_called
-      assert [%{role: "system"}] = Legion.get_messages(pid)
-      assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get("rejected")
-    end
-
-    test "enforces rules in order and cancels at the first rejection" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-      allowing = allowing_identity(self())
-      rejecting = rejecting_identity(self())
-
-      {:ok, pid} =
-        Legion.start_link(
-          MathAgent,
-          limited(rate_limit: [rules: [rule(allowing), rule(rejecting)]])
-        )
-
-      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
-
-      assert_receive {:enforced, _, ^allowing, _}
-      assert_receive {:enforced, _, ^rejecting, _}
-    end
-
-    test "refuses to start with rules but no limiter" do
-      assert_raise ArgumentError, ~r/rules need a limiter/, fn ->
-        Legion.start_link(MathAgent, rate_limit: [rules: [rule(rejecting_identity(self()))]])
-      end
-    end
-
-    test "runs the turn unlimited, with a warning, when a limiter is configured without rules" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-
-      {pid, log} =
-        with_log(fn ->
-          {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [limiter: TestRateLimiter])
-          pid
-        end)
-
-      assert log =~ "runs without rate limiting"
-      assert {:ok, "ok"} = Legion.call(pid, "hi")
-      refute_receive {:enforced, _, _, _}
-    end
-
-    test "emits telemetry for the rule that rejected the turn" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :rate_limit, :exceeded]])
-      on_exit(fn -> :telemetry.detach(ref) end)
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-      rejecting = rejecting_identity(self())
-
-      {:ok, pid} =
-        Legion.start_link(
-          MathAgent,
-          limited(rate_limit: [rules: [rule(allowing_identity(self())), rule(rejecting)]])
-        )
-
-      agent_id = Legion.get_agent_id(pid)
-
-      {:cancel, _} = Legion.call(pid, "hi")
-
-      assert_receive {[:legion, :rate_limit, :exceeded], ^ref, _measurements, metadata}
-      assert metadata.agent == MathAgent
-      assert metadata.agent_id == agent_id
-      assert metadata.identity == rejecting
-      assert metadata.policy == limit_policy()
-      assert metadata.violations == [:max_agents]
-    end
-
-    test "sub-agents inherit the limiter and every rule" do
-      ip_identity = allowing_identity(self())
-      tenant_identity = Map.put(allowing_identity(self()), "tenant", "acme")
-      tenant_policy = %Policy{window_ms: 1_000, max_agents: 1}
-
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        if Enum.any?(messages, &(&1[:role] == "assistant")) do
-          llm_response("child done")
-        else
-          llm_eval_response("""
-          response = AgentTool.call(ChildAgent, "do work")
-          return response[2]
-          """)
-        end
-      end)
-
-      {:ok, pid} =
-        Legion.start_link(
-          DelegatingAgent,
-          limited(rate_limit: [rules: [rule(ip_identity), rule(tenant_identity, tenant_policy)]])
-        )
-
-      parent_id = Legion.get_agent_id(pid)
-      policy = limit_policy()
-
-      {:ok, _} = Legion.call(pid, "delegate")
-
-      assert_receive {:enforced, ^parent_id, ^ip_identity, ^policy}
-      assert_receive {:enforced, ^parent_id, ^tenant_identity, ^tenant_policy}
-      assert_receive {:enforced, child_id, ^ip_identity, ^policy}
-      assert_receive {:enforced, ^child_id, ^tenant_identity, ^tenant_policy}
-      assert child_id != parent_id
-    end
-
-    test "sub-agents of a parent that opted out are not rate limited" do
-      Application.put_env(:legion, :rate_limit,
-        limiter: TestRateLimiter,
-        default_policy: limit_policy()
-      )
-
-      on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
-
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        if Enum.any?(messages, &(&1[:role] == "assistant")) do
-          llm_response("child done")
-        else
-          llm_eval_response("""
-          response = AgentTool.call(ChildAgent, "do work")
-          return response[2]
-          """)
-        end
-      end)
-
-      {:ok, pid} = Legion.start_link(DelegatingAgent, rate_limit: [rules: []])
-
-      assert {:ok, _} = Legion.call(pid, "delegate")
-
-      refute_receive {:enforced, _, _, _}
-    end
-
-    test "rejects an invalid policy when the agent starts" do
-      assert_raise ArgumentError, ~r/:window_ms/, fn ->
-        Legion.start_link(
-          MathAgent,
-          rate_limit: [
-            limiter: TestRateLimiter,
-            rules: [rule(allowing_identity(self()), %Policy{window_ms: 0})]
-          ]
-        )
-      end
-    end
-
-    test "rejects an identity with non-string keys when the agent starts" do
-      assert_raise ArgumentError, ~r/:identity keys/, fn ->
-        Legion.start_link(
-          MathAgent,
-          limited(rate_limit: [rules: [rule(%{report_to: self()})]])
-        )
-      end
-    end
-
-    test "fills rules from the application limiter and policy" do
-      Application.put_env(:legion, :rate_limit,
-        limiter: TestRateLimiter,
-        default_policy: limit_policy()
-      )
-
-      on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-      rejecting = rejecting_identity(self())
-
-      {:ok, pid} =
-        Legion.start_link(MathAgent, rate_limit: [rules: [%Rule{identity: rejecting}]])
-
-      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
-
-      policy = limit_policy()
-      assert_receive {:enforced, _, ^rejecting, ^policy}
     end
   end
 end

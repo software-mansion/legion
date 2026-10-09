@@ -47,9 +47,9 @@ defmodule Legion.Integration.EvalGuardTest do
     Legion.execute(GuardedMathAgent, "Call MathTool.random_add(2, 3) and return it.")
 
     assert_received {[:legion, :eval_guard, :denied], ^ref, _measurements,
-                     %{guard: GuardedMathAgent.NoRandomAdd, reason: reason}}
+                     %{guard: GuardedMathAgent.NoRandomAdd, code: code}}
 
-    assert reason =~ "random_add"
+    assert code =~ "random_add"
   end
 
   test "code the policy allows runs", %{ref: ref} do

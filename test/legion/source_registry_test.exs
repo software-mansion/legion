@@ -1,31 +1,19 @@
 defmodule Legion.SourceRegistryTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Legion.SourceRegistry
 
-  describe "source/1 for external modules" do
-    test "returns source for a configured external module" do
-      assert {:ok, source} = SourceRegistry.source(Jason)
-      assert source =~ "defmodule Jason"
-    end
+  test "returns the source of a module configured in extra_source_modules" do
+    assert {:ok, source} = SourceRegistry.source(Jason)
+    assert source =~ "defmodule Jason"
+    assert SourceRegistry.source!(Jason) == source
   end
 
-  describe "source/1 for unknown modules" do
-    test "returns error for unregistered module" do
-      assert {:error, :not_registered} = SourceRegistry.source(Enum)
-    end
-  end
+  test "rejects a module that is not registered" do
+    assert {:error, :not_registered} = SourceRegistry.source(Enum)
 
-  describe "source!/1" do
-    test "returns source for a configured module" do
-      source = SourceRegistry.source!(Jason)
-      assert source =~ "defmodule Jason"
-    end
-
-    test "raises for unregistered module" do
-      assert_raise RuntimeError, ~r/not registered/, fn ->
-        SourceRegistry.source!(Enum)
-      end
+    assert_raise RuntimeError, ~r/not registered/, fn ->
+      SourceRegistry.source!(Enum)
     end
   end
 end

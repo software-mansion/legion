@@ -1,4 +1,5 @@
 defmodule Legion.RecoveryTest do
+  # Legion.recover/2 starts each agent itself, out of reach of a private-mode stub.
   use ExUnit.Case, async: false
   use Mimic
 
@@ -119,12 +120,12 @@ defmodule Legion.RecoveryTest do
   test "uses separate store scan and concurrent request limits" do
     stores = [RecoveryStoreOne, RecoveryStoreTwo]
 
-    Enum.each(stores, fn store ->
+    for store <- stores do
       StoreState.put(store, [
         interrupted_payload("#{store}-one"),
         interrupted_payload("#{store}-two")
       ])
-    end)
+    end
 
     test_pid = self()
 
@@ -269,16 +270,17 @@ defmodule Legion.RecoveryTest do
     assert_receive {:listed, RecoveryStoreOne, 5}
     assert_receive {:recovering, first_pid}
     assert_receive {:recovering, second_pid}
-    assert_received {:looked_up, RecoveryStoreOne, "eligible"}
-    assert_received {:looked_up, RecoveryStoreOne, "unstarted-turn"}
-    refute_receive {:looked_up, RecoveryStoreOne, "idle-root"}, 50
-    refute_receive {:looked_up, RecoveryStoreOne, "running-child"}, 50
-    refute_receive {:looked_up, RecoveryStoreOne, "interrupted-eval"}, 50
 
     send(first_pid, :complete_recovery)
     send(second_pid, :complete_recovery)
 
     assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
+
+    assert_received {:looked_up, RecoveryStoreOne, "eligible"}
+    assert_received {:looked_up, RecoveryStoreOne, "unstarted-turn"}
+    refute_received {:looked_up, RecoveryStoreOne, "idle-root"}
+    refute_received {:looked_up, RecoveryStoreOne, "running-child"}
+    refute_received {:looked_up, RecoveryStoreOne, "interrupted-eval"}
   end
 
   test "recovers without warning about a configured limiter and no rules" do

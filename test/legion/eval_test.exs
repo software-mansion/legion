@@ -67,7 +67,7 @@ defmodule Legion.EvalTest do
   end
 
   describe "run/4" do
-    test "fails an execution whose variables would exceed max_bindings_bytes, keeping the old ones" do
+    test "fails an execution whose variables would exceed max_bindings_bytes" do
       config = config(%{max_bindings_bytes: 30})
 
       assert {:ok, {_value, bindings}} = Eval.run(ExtraAgent, "x", config, [])
@@ -132,7 +132,9 @@ defmodule Legion.EvalTest do
       :telemetry.attach_many(
         "eval-test-#{inspect(ref)}",
         [[:legion, :sandbox, :eval, :start], [:legion, :sandbox, :eval, :stop]],
-        fn event, _measurements, metadata, _ -> send(test_pid, {ref, event, metadata}) end,
+        fn event, _measurements, metadata, _config ->
+          if self() == test_pid, do: send(test_pid, {ref, event, metadata})
+        end,
         nil
       )
 

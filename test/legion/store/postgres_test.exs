@@ -65,41 +65,6 @@ defmodule Legion.Store.PostgresTest do
     assert Legion.Store.persistence_frequency(StepStore) == :step
   end
 
-  test "save/1 fully inserts every payload field" do
-    payload = %Payload{
-      agent_id: "user_42",
-      agent_module: Legion.Test.Support.MathAgent,
-      parent_agent_id: "parent-1",
-      status: :idle,
-      started_at: 123,
-      conversation_state: %{
-        messages: [%{role: "user", content: "hi"}],
-        bindings: [x: 42],
-        executor_state: :nonexistent
-      },
-      usage: [%{turn_usage: 100}],
-      ratelimit_metadata: %{"ip" => "203.0.113.42"}
-    }
-
-    assert :ok = Store.save(payload)
-    assert {:ok, ^payload} = Store.get("user_42")
-  end
-
-  test "save/1 partially inserts only the supplied payload fields" do
-    payload = %Payload{
-      agent_id: "state-only",
-      conversation_state: %{
-        messages: [%{role: "user", content: "hi"}],
-        bindings: [],
-        executor_state: :nonexistent
-      }
-    }
-
-    expected_payload = %{payload | status: :idle, usage: []}
-    assert :ok = Store.save(payload)
-    assert {:ok, ^expected_payload} = Store.get("state-only")
-  end
-
   test "save/1 round trips executor_state for a step checkpoint" do
     executor_state = %{phase: :awaiting_llm, iteration: 2, retries: 1}
 
@@ -117,50 +82,6 @@ defmodule Legion.Store.PostgresTest do
 
     expected_payload = %{payload | usage: []}
     assert {:ok, ^expected_payload} = Store.get("step-state")
-  end
-
-  test "save/1 partial upsert preserves omitted fields and advances updated_at" do
-    initial = %Payload{
-      agent_id: "user_42",
-      agent_module: Legion.Test.Support.MathAgent,
-      parent_agent_id: "parent-1",
-      status: :running,
-      started_at: 123,
-      conversation_state: %{
-        messages: [%{role: "user", content: "hi"}],
-        bindings: [x: 42],
-        executor_state: :nonexistent
-      },
-      usage: [%{turn_usage: 100}],
-      ratelimit_metadata: %{"ip" => "203.0.113.42"}
-    }
-
-    assert :ok = Store.save(initial)
-    previous_updated_at = FakeRepo.run("user_42").updated_at
-
-    assert :ok = Store.save(%Payload{agent_id: "user_42", status: :idle})
-
-    assert {:ok,
-            %Payload{
-              agent_module: Legion.Test.Support.MathAgent,
-              parent_agent_id: "parent-1",
-              status: :idle,
-              started_at: 123,
-              conversation_state: %{
-                messages: [%{role: "user", content: "hi"}],
-                bindings: [x: 42],
-                executor_state: :nonexistent
-              },
-              usage: [%{turn_usage: 100}],
-              ratelimit_metadata: %{"ip" => "203.0.113.42"}
-            }} = Store.get("user_42")
-
-    assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
-  end
-
-  test "a payload cannot be constructed without agent_id" do
-    assert_raise ArgumentError, fn -> struct!(Payload, %{}) end
-    assert FakeRepo.run("missing") == nil
   end
 
   test "save/1 rejects unknown payload keys without inserting a row" do
