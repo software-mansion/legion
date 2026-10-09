@@ -90,6 +90,56 @@ defmodule Legion.MCP.HTTPTest do
     assert result["instructions"] =~ "`repl`"
   end
 
+  describe "Origin" do
+    defp initialize(url, headers) do
+      body = %{
+        "jsonrpc" => "2.0",
+        "id" => 1,
+        "method" => "initialize",
+        "params" => %{
+          "protocolVersion" => "2025-06-18",
+          "capabilities" => %{},
+          "clientInfo" => %{"name" => "raw", "version" => "1"}
+        }
+      }
+
+      Req.post!(url, json: body, headers: [accept: "application/json"] ++ headers, retry: false)
+    end
+
+    defp start_plug(id, opts) do
+      bandit =
+        start_supervised!(
+          {Bandit, plug: {Legion.MCP.Plug, [server: HTTPMCP] ++ opts}, ip: :loopback, port: 0},
+          id: id
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+      "http://127.0.0.1:#{port}"
+    end
+
+    test "a page on another site is refused, as under DNS rebinding", %{url: url} do
+      response = initialize(url, origin: "http://evil.example:4000")
+
+      assert response.status == 403
+      assert response.body =~ "http://evil.example:4000 is not allowed"
+    end
+
+    test "localhost on any port is served, as the MCP Inspector is", %{url: url} do
+      for origin <- ["http://localhost:6274", "http://127.0.0.1:3000", "http://[::1]:8080"] do
+        assert %{status: 200} = initialize(url, origin: origin)
+      end
+    end
+
+    test "a listed origin is served, and :any serves every one" do
+      listed = start_plug(:listed_bandit, allowed_origins: ["https://app.example.com"])
+      assert %{status: 200} = initialize(listed, origin: "https://app.example.com")
+      assert %{status: 403} = initialize(listed, origin: "https://app.example.com:8443")
+
+      open = start_plug(:open_bandit, allowed_origins: :any)
+      assert %{status: 200} = initialize(open, origin: "http://evil.example")
+    end
+  end
+
   test "lists the repl and help tools", %{url: url} do
     client = connect(url, :list_client)
 

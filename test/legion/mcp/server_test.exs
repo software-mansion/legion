@@ -94,6 +94,19 @@ defmodule Legion.MCP.ServerTest do
     end
   end
 
+  defmodule DeniedAnonymousMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "denied-anonymous", version: "0.1.0"
+
+    def session(_frame) do
+      rule = %Rule{
+        identity: %{"user" => "denied"},
+        policy: %Policy{window_ms: 1_000, max_agents: 1}
+      }
+
+      [rate_limit: [limiter: DenyingLimiter, rules: [rule]]]
+    end
+  end
+
   defmodule TeamMCP do
     use Legion.MCP.Server, agent: VaultAgent, name: "team", version: "0.1.0"
 
@@ -724,13 +737,24 @@ defmodule Legion.MCP.ServerTest do
       assert %{type: :error, content: ^error} = saved_error
     end
 
-    test "a rate-limited call is a tool error and runs nothing" do
+    test "a rate-limited call is a tool error and leaves no step behind" do
       frame = initialized(UserMCP, frame("host", %{sub: "denied"}))
 
       assert {true, "Rate limit exceeded (max_evals)." <> _, _frame} =
                repl(UserMCP, frame, "x = 1")
 
-      assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get("mcp:user:denied")
+      assert {:ok, %Payload{conversation_state: nil, usage: []}} =
+               MemoryStore.get("mcp:user:denied")
+    end
+
+    test "a session whose anonymous agent may not start gets a tool error and no agent" do
+      frame = initialized(DeniedAnonymousMCP, frame())
+
+      assert {true, "Rate limit exceeded (max_evals)." <> _, frame} =
+               repl(DeniedAnonymousMCP, frame, "return 1")
+
+      refute Map.has_key?(frame.assigns, :legion_mcp_agent)
+      assert %{active: 0} = DynamicSupervisor.count_children(Legion.AgentSupervisor)
     end
 
     test "the vault follows every call" do

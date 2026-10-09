@@ -15,6 +15,7 @@ defmodule Legion.AgentServer do
   alias Legion.{Eval, Executor, Store, Telemetry}
   alias Legion.RateLimiter
   alias Legion.RateLimiter.ExceededError
+  alias Legion.RateLimiter.Policy
   alias Legion.Store.Payload
   alias ReqLLM.Message.ContentPart
 
@@ -113,12 +114,6 @@ defmodule Legion.AgentServer do
     GenServer.call(agent, {:eval, code, opts}, timeout)
   end
 
-  @doc false
-  # Checks the agent's rate limit for its start, before any turn, the way a
-  # turn would; `Legion.Tools.AgentTool` starts sub-agents with it, so a
-  # denied one never runs. Returns `:ok` or `{:rate_limited, violations}`.
-  def enforce_start(agent), do: GenServer.call(agent, :enforce_start)
-
   def get_messages(agent) do
     GenServer.call(agent, :get_messages)
   end
@@ -130,9 +125,10 @@ defmodule Legion.AgentServer do
   # Server callbacks
 
   # A conversation saved by another agent module is not this one's: its
-  # history, variables and usage were made with other tools and prompt.
+  # history, variables and usage were made with other tools and prompt. A
+  # start the rate limit denies leaves nothing behind, no process and no row.
   @impl true
-  def init({agent_module, _config, store, agent_id, _frequency, _track_usage, _vault} = init_arg) do
+  def init({agent_module, config, store, agent_id, _frequency, _track_usage, _vault} = init_arg) do
     stored = store && store.get(agent_id)
 
     case stored do
@@ -141,8 +137,37 @@ defmodule Legion.AgentServer do
         {:error, {:agent_module_mismatch, stored_module}}
 
       _stored ->
-        start(init_arg, stored)
+        case enforce_start(%{agent_module: agent_module, agent_id: agent_id, config: config}) do
+          :ok -> start(init_arg, stored)
+          {:rate_limited, violations} -> {:error, {:rate_limited, violations}}
+        end
     end
+  end
+
+  # A start is checked against `:max_agents` only, so it counts the agent from
+  # its start. Every turn checks the other limits anyway, and a supervisor
+  # restarts a crashed agent through this same start: denying it on spent
+  # tokens would fail every restart until the supervisor gives up and takes
+  # its other agents down. The restarted agent's id is already counted, so
+  # `:max_agents` lets it through. Resumed and recovered runs finish work that
+  # was already allowed, so they are not checked again.
+  defp enforce_start(%{config: config} = state) do
+    case Map.get(config, :start_mode, :normal) do
+      :normal ->
+        case agent_limit_only(config.rate_limit.rules) do
+          [] -> :ok
+          rules -> enforce_rate_limit(put_in(state.config.rate_limit.rules, rules))
+        end
+
+      _resume_or_recover ->
+        :ok
+    end
+  end
+
+  defp agent_limit_only(rules) do
+    for %{policy: %Policy{max_agents: max_agents} = policy} = rule <- List.wrap(rules),
+        not is_nil(max_agents),
+        do: %{rule | policy: %Policy{window_ms: policy.window_ms, max_agents: max_agents}}
   end
 
   defp start(
@@ -269,19 +294,6 @@ defmodule Legion.AgentServer do
     {:reply, state.messages, state, idle_timeout(state)}
   end
 
-  # `:max_running_agents` counts agents mid-turn, and a start is not one:
-  # checked here, it would mark the idle agent running.
-  @impl true
-  def handle_call(:enforce_start, _from, state) do
-    rate_limit =
-      Map.update!(state.config.rate_limit, :rules, fn rules ->
-        for rule <- rules, do: put_in(rule.policy.max_running_agents, nil)
-      end)
-
-    reply = enforce_rate_limit(put_in(state.config.rate_limit, rate_limit))
-    {:reply, reply, state, idle_timeout(state)}
-  end
-
   @impl true
   def handle_call(:get_agent_id, _from, state) do
     {:reply, state.agent_id, state, idle_timeout(state)}
@@ -314,7 +326,9 @@ defmodule Legion.AgentServer do
 
   # Nobody has called for `:idle_timeout` milliseconds.
   @impl true
-  def handle_info(:timeout, state), do: {:stop, :normal, state}
+  def handle_info(:timeout, %{config: %{idle_timeout: timeout}} = state)
+      when timeout != :infinity,
+      do: {:stop, :normal, state}
 
   def handle_info(_message, state), do: {:noreply, state, idle_timeout(state)}
 

@@ -138,6 +138,8 @@ defmodule Legion.Tools.AgentToolTest do
       assert {:ok, text} = Legion.eval(owner, "return AgentTool.start_link(ChildAgent)")
       assert text =~ ~s(["cancel", ["rate_limited", ["max_agents"]]])
 
+      # The owner's start, then its eval.
+      assert_received {:enforced, "owner-limited", _rules}
       assert_received {:enforced, "owner-limited", _rules}
       assert_received {:enforced, child_id, [%Rule{policy: policy}]}
       assert child_id != "owner-limited"

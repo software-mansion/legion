@@ -177,6 +177,7 @@ defmodule Legion.Agent do
     end
 
     validate_max_message_length(merged)
+    validate_tool_docs(merged)
 
     merged
   end
@@ -203,6 +204,13 @@ defmodule Legion.Agent do
   end
 
   defp validate_max_message_length(_config), do: :ok
+
+  defp validate_tool_docs(%{tool_docs: tool_docs}) when tool_docs not in [:inline, :on_demand] do
+    raise ArgumentError,
+          "expected :tool_docs to be :inline or :on_demand, got: #{inspect(tool_docs)}"
+  end
+
+  defp validate_tool_docs(_config), do: :ok
 
   defmacro __before_compile__(env) do
     moduledoc = Module.get_attribute(env.module, :moduledoc)
@@ -246,6 +254,8 @@ defmodule Legion.Agent do
     end
   rescue
     _ -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   defp short_name(module), do: module |> Module.split() |> List.last()

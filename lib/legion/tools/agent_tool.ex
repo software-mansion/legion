@@ -110,8 +110,8 @@ defmodule Legion.Tools.AgentTool do
   the starting agent's `:sub_agent_idle_timeout` without a message (default
   thirty minutes), so one whose id was lost does not run on.
 
-  The start is checked against the rate limit the sub-agent inherits, as a
-  turn would be, so `:max_agents` counts it; a denied start returns
+  The start is checked against the `:max_agents` of the rate limit the
+  sub-agent inherits, so it counts from its start; a denied start returns
   `{:cancel, {:rate_limited, violations}}` and leaves nothing running.
   Raises if the agent is not in the allowed list, or if the starting agent
   already runs its `:max_sub_agents` (default 10).
@@ -122,16 +122,14 @@ defmodule Legion.Tools.AgentTool do
     %{max: max, idle_timeout: idle_timeout} = Vault.fetch!(:sub_agents)
     check_capacity!(owner_id, max)
     {:ok, owner} = Legion.lookup(owner_id)
-    {:ok, pid} = AgentServer.start_link(agent_module, idle_timeout: idle_timeout)
 
-    case AgentServer.enforce_start(pid) do
-      :ok ->
+    case AgentServer.start_link(agent_module, idle_timeout: idle_timeout) do
+      {:ok, pid} ->
         agent_id = AgentServer.get_agent_id(pid)
         :yes = :global.register_name(owned_name(owner_id, agent_id), stop_with_owner(pid, owner))
         {:ok, agent_id}
 
-      {:rate_limited, violations} ->
-        GenServer.stop(pid)
+      {:error, {:rate_limited, violations}} ->
         {:cancel, {:rate_limited, violations}}
     end
   end
