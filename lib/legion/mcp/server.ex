@@ -260,7 +260,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     @default_budget 2048
 
     # Matches Anubis's default `:session_idle_timeout`. Anonymous agents are
-    # stopped with their session in `terminate/2`; this is their backstop,
+    # stopped with their session process; this is their backstop,
     # and the only idle limit a named agent has, since named agents outlive
     # any one session. Raise both if you raise one.
     @idle_timeout :timer.minutes(30)
@@ -343,7 +343,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     @doc false
     # The vault is never a start option: the agent would keep the first
     # caller's for good.
-    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame, opts) do
+    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server}} = frame, opts) do
       {vault, opts} = Keyword.pop(opts, :vault, [])
 
       cond do
@@ -352,32 +352,70 @@ if Code.ensure_loaded?(Anubis.Server) do
                {:error, message} <- agent(server.__legion_agent__(), opts) do
             {:error, message}
           else
-            {:ok, pid} -> {pid, agent_id, vault, frame}
+            {:ok, pid} -> {pid, agent_id, vault}
           end
 
-        (pid = assigns[:legion_mcp_agent]) && Process.alive?(pid) ->
-          {pid, assigns.legion_mcp_agent_id, vault, frame}
+        anonymous = anonymous_agent(frame) ->
+          {pid, agent_id} = anonymous
+          {pid, agent_id, vault}
 
         true ->
           with {:ok, pid} <- agent(server.__legion_agent__(), opts) do
             agent_id = Legion.get_agent_id(pid)
-
-            frame =
-              frame
-              |> Frame.assign(:legion_mcp_agent, pid)
-              |> Frame.assign(:legion_mcp_agent_id, agent_id)
-
-            {pid, agent_id, vault, frame}
+            watch_session(session_key(frame), pid, agent_id)
+            {pid, agent_id, vault}
           end
       end
     end
 
     @doc false
-    def stop_anonymous_agent(%Frame{assigns: %{legion_mcp_agent: pid}}) do
-      DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+    def stop_anonymous_agent(%Frame{} = frame) do
+      for {_watcher, {pid, _agent_id}} <- Registry.lookup(Legion.MCP.Sessions, session_key(frame)),
+          do: DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+
+      :ok
     end
 
-    def stop_anonymous_agent(_frame), do: :ok
+    @doc false
+    # A watcher outlives its stopped agent for a moment, so the registry can
+    # hold a dead one.
+    def anonymous_agent(%Frame{} = frame) do
+      Enum.find_value(Registry.lookup(Legion.MCP.Sessions, session_key(frame)), fn
+        {_watcher, {pid, agent_id}} -> if Process.alive?(pid), do: {pid, agent_id}
+      end)
+    end
+
+    # Anubis runs each request in a task the session process starts, and a
+    # cancelled request kills that task along with the frame it would have
+    # returned, while the agent finishes the eval. So the session process,
+    # not the frame, owns the anonymous agent: a watcher registers it under
+    # the session and stops it when the session process ends.
+    defp session_key(%Frame{context: context}),
+      do: {List.first(Process.get(:"$callers", []), self()), context.session_id}
+
+    defp watch_session({session, _session_id} = key, pid, agent_id) do
+      caller = self()
+      ref = make_ref()
+
+      spawn(fn ->
+        {:ok, _watcher} = Registry.register(Legion.MCP.Sessions, key, {pid, agent_id})
+        session_ref = Process.monitor(session)
+        agent_ref = Process.monitor(pid)
+        send(caller, ref)
+
+        receive do
+          {:DOWN, ^session_ref, :process, _pid, _reason} ->
+            DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+
+          {:DOWN, ^agent_ref, :process, _pid, _reason} ->
+            :ok
+        end
+      end)
+
+      receive do
+        ^ref -> :ok
+      end
+    end
 
     @doc false
     # One `Legion.eval/3` on the session's agent, answered as a tool result:
@@ -400,7 +438,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     defp run(frame, code, opts) do
       case resolve_agent(frame, opts) do
         {:error, message} -> {:reply, Response.error(Response.tool(), message), frame}
-        {agent, agent_id, vault, frame} -> eval(frame, code, agent, agent_id, vault)
+        {agent, agent_id, vault} -> eval(frame, code, agent, agent_id, vault)
       end
     end
 
@@ -572,8 +610,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    def session_agent_id(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame) do
-      server.session(frame)[:agent_id] || assigns[:legion_mcp_agent_id]
+    def session_agent_id(%Frame{assigns: %{legion_mcp_server: server}} = frame) do
+      server.session(frame)[:agent_id] ||
+        with({_pid, agent_id} <- anonymous_agent(frame), do: agent_id)
     end
 
     @doc false

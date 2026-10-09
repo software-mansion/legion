@@ -41,6 +41,7 @@ defmodule Legion.Integration.MixedChatReplTest do
 
     start_supervised!(MemoryStore)
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+    start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
     start_supervised!({MixedMCP, transport: :streamable_http})
 
     bandit =

@@ -131,6 +131,10 @@ defmodule Legion.MCP.ServerTest do
     def tools, do: [Legion.Test.Support.SlowTool]
   end
 
+  defmodule AnonymousSlowMCP do
+    use Legion.MCP.Server, agent: SlowAgent, name: "anonymous-slow", version: "0.1.0"
+  end
+
   defmodule SharedSlowMCP do
     use Legion.MCP.Server, agent: SlowAgent, name: "shared-slow", version: "0.1.0"
 
@@ -233,6 +237,7 @@ defmodule Legion.MCP.ServerTest do
   setup do
     start_supervised!(MemoryStore)
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+    start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
     :ok
   end
 
@@ -256,6 +261,14 @@ defmodule Legion.MCP.ServerTest do
       Handlers.handle(request, server, frame)
 
     {error?, text, frame}
+  end
+
+  defp wait_for_anonymous_agent(frame) do
+    Server.anonymous_agent(frame) ||
+      (
+        Process.sleep(1)
+        wait_for_anonymous_agent(frame)
+      )
   end
 
   defp wait_until_busy(agent_id) do
@@ -455,7 +468,7 @@ defmodule Legion.MCP.ServerTest do
       assert {false, text, frame} = help(MathMCP, frame, %{"tool" => ~s|x") os.exit(|})
       assert text =~ "No tool named"
       assert text =~ "- `MathTool` -"
-      refute Map.has_key?(frame.assigns, :legion_mcp_agent)
+      refute Server.anonymous_agent(frame)
     end
 
     test "is no evaluation: a rate-limited session still reads it" do
@@ -640,7 +653,8 @@ defmodule Legion.MCP.ServerTest do
 
       assert text =~ "984"
       assert text =~ "Available variables: `x`"
-      assert Process.alive?(frame.assigns.legion_mcp_agent)
+      assert {pid, _agent_id} = Server.anonymous_agent(frame)
+      assert Process.alive?(pid)
     end
 
     test "sessions do not share variables" do
@@ -655,11 +669,43 @@ defmodule Legion.MCP.ServerTest do
     test "the agent stops with the session" do
       frame = initialized(MathMCP, frame())
       {false, _text, frame} = repl(MathMCP, frame, "return 1")
-      pid = frame.assigns.legion_mcp_agent
+      {pid, _agent_id} = Server.anonymous_agent(frame)
 
       MathMCP.terminate(:shutdown, frame)
 
       refute Process.alive?(pid)
+    end
+
+    test "the agent stops when its session process ends without terminate/2" do
+      frame = initialized(MathMCP, frame())
+      test = self()
+
+      # Anubis runs each request in a task the session process starts.
+      spawn(fn ->
+        Task.await(Task.async(fn -> repl(MathMCP, frame, "return 1") end))
+        send(test, {:agent, Server.anonymous_agent(frame)})
+      end)
+
+      assert_receive {:agent, {pid, _agent_id}}
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
+    test "a cancelled call leaves the agent with the session, so the next call queues behind it" do
+      frame = initialized(AnonymousSlowMCP, frame())
+
+      cancelled =
+        Task.async(fn -> repl(AnonymousSlowMCP, frame, "SlowTool.wait(200) x = 1") end)
+
+      {pid, agent_id} = wait_for_anonymous_agent(frame)
+      wait_until_busy(agent_id)
+      Task.shutdown(cancelled, :brutal_kill)
+
+      next = Task.async(fn -> repl(AnonymousSlowMCP, frame, "return x") end)
+
+      assert {false, text, _frame} = Task.await(next)
+      assert text =~ "1"
+      assert Server.anonymous_agent(frame) == {pid, agent_id}
     end
 
     test "every call is a span naming the session and the agent it ran in" do
@@ -668,7 +714,7 @@ defmodule Legion.MCP.ServerTest do
 
       {false, _text, frame} = repl(MathMCP, frame, "return 1")
       {true, error, _frame} = repl(MathMCP, frame, "return (")
-      agent_id = Legion.get_agent_id(frame.assigns.legion_mcp_agent)
+      {_pid, agent_id} = Server.anonymous_agent(frame)
 
       assert_received {^ref, [:legion, :mcp, :call, :start],
                        %{
@@ -742,7 +788,7 @@ defmodule Legion.MCP.ServerTest do
       assert {true, "Rate limit exceeded (max_evals)." <> _, frame} =
                repl(DeniedAnonymousMCP, frame, "return 1")
 
-      refute Map.has_key?(frame.assigns, :legion_mcp_agent)
+      refute Server.anonymous_agent(frame)
       assert %{active: 0} = DynamicSupervisor.count_children(Legion.AgentSupervisor)
     end
 
