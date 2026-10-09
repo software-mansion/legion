@@ -109,7 +109,9 @@ defmodule Legion.Store do
   tracking" for the `"at"` and `"message_index"` keys.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
-  while the turn is running and cleared from the final snapshot. Bindings with
+  while the turn is running, next to `:base_bindings`, the ones the turn
+  started from and goes back to when it ends: what `Legion.eval/3` made
+  outside any turn. The final snapshot holds those alone. Bindings with
   `binding_scope: :conversation` remain in the final snapshot, while
   iteration-scoped bindings are cleared before a step is saved.
 

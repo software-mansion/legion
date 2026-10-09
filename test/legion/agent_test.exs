@@ -108,10 +108,17 @@ defmodule Legion.AgentTest do
       assert config.max_retries == Legion.Executor.default_config().max_retries
     end
 
-    test "warns about unknown keys but keeps them" do
+    test "keeps unknown keys, and warns about them only from warn_unknown_keys/1" do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           assert %{bogus: true} = Legion.Agent.resolve_config(MinimalAgent, bogus: true)
+        end)
+
+      refute log =~ "Unknown Legion config keys"
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Legion.Agent.warn_unknown_keys(%{bogus: true})
         end)
 
       assert log =~ "Unknown Legion config keys: [:bogus]"
