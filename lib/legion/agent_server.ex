@@ -80,11 +80,21 @@ defmodule Legion.AgentServer do
     track_usage = Application.get_env(:legion, :track_usage, true)
 
     rate_limit = RateLimiter.resolve!(rate_limit_opts)
+    check_store!(rate_limit, store, track_usage)
     gen_opts = [name: Legion.AgentIndex.name(agent_id)]
     config = agent_module |> Legion.Agent.resolve_config(opts) |> Map.put(:rate_limit, rate_limit)
 
     {{agent_module, config, store, agent_id, persistence_frequency, track_usage, vault}, gen_opts}
   end
+
+  # A limiter that counts what the store writes checks it has one to count.
+  defp check_store!(%{limiter: limiter, rules: rules}, store, track_usage)
+       when not is_nil(limiter) and rules != [] do
+    if function_exported?(limiter, :check_store!, 3),
+      do: limiter.check_store!(store, track_usage, rules)
+  end
+
+  defp check_store!(_rate_limit, _store, _track_usage), do: :ok
 
   def call(agent, message, timeout \\ :infinity) do
     GenServer.call(agent, {:message, message}, timeout)
@@ -189,7 +199,7 @@ defmodule Legion.AgentServer do
 
   @impl true
   def handle_continue(%{start_mode: :resume, executor_state: executor_state}, state) do
-    if match?(%{role: "user"}, List.last(state.messages)) do
+    if unfinished_turn?(%{messages: state.messages, executor_state: executor_state}) do
       {_reply, state} = do_run(state, executor_state)
       {:noreply, state, idle_timeout(state)}
     else
@@ -202,6 +212,18 @@ defmodule Legion.AgentServer do
     {_reply, state} = do_run(state, executor_state)
     {:stop, :normal, state}
   end
+
+  @doc false
+  # Whether a conversation state stopped mid-turn: behind a checkpoint, or on
+  # a prompt with nothing after it. Resume and recovery finish only such a
+  # turn. A `Legion.eval/3` step, an MCP call, leaves neither, and finishing
+  # it would run the agent's own model over a conversation an outside model
+  # drives; nor does a turn that ended on its eval result.
+  def unfinished_turn?(%{executor_state: executor_state}) when executor_state != :nonexistent,
+    do: true
+
+  def unfinished_turn?(%{messages: messages}), do: match?(%{type: :user}, List.last(messages))
+  def unfinished_turn?(_conversation_state), do: false
 
   @impl true
   def terminate(_reason, state) do
@@ -317,7 +339,7 @@ defmodule Legion.AgentServer do
   # answered as an error and forgotten, so the conversation on record and the
   # one in memory stay the same.
   defp handle_eval(code, opts, state) do
-    case eval_refusal(opts, state) || enforce_rate_limit(state) do
+    case eval_refusal(code, opts, state) || enforce_rate_limit(state) do
       :ok ->
         action = %{"action" => "eval_and_continue", "code" => code}
         action_message = Executor.message(:assistant, Jason.encode!(action))
@@ -358,8 +380,9 @@ defmodule Legion.AgentServer do
   # code, whoever sends it. `:require_sandbox` is the caller's condition on
   # the agent it reached: `Legion.MCP.Server` finds named agents with
   # `Legion.lookup/1`, and one started elsewhere may run any sandbox.
-  defp eval_refusal(opts, %{agent_module: agent_module, config: config}) do
+  defp eval_refusal(code, opts, %{agent_module: agent_module, config: config}) do
     required = Keyword.get(opts, :require_sandbox, config.sandbox)
+    max_length = config.max_message_length
 
     evaluates? =
       Enum.any?(agent_module.action_types(), &(&1 in ~w(eval_and_continue eval_and_complete)))
@@ -374,6 +397,16 @@ defmodule Legion.AgentServer do
          "This call requires #{inspect(required)}; " <>
            "#{inspect(agent_module)} runs #{inspect(config.sandbox)}"}
 
+      # The code is kept as a message of the conversation, so it is held to
+      # the same limit as any other.
+      is_integer(max_length) and byte_size(code) > max_length ->
+        {:refused,
+         "The code is #{byte_size(code)} bytes, over the #{max_length} byte limit; " <>
+           "send less at a time"}
+
+      not String.valid?(code) ->
+        {:refused, "The code is not valid UTF-8"}
+
       true ->
         nil
     end
@@ -381,9 +414,11 @@ defmodule Legion.AgentServer do
 
   # The per-call vault holds for that call only: merged over the agent's
   # vault, minus the keys `init/1` sets for Legion, plus the tools the call
-  # leaves out (`Legion.Eval` and `Help` read them there), and the vault as
-  # it was put back after. A key one caller passed never reaches the next
-  # call or a later turn, and no caller replaces the agent's store or identity.
+  # leaves out (`Legion.Eval` and `Help` read them there) and the action it
+  # runs as, which the step is saved as too and whose result goes back to the
+  # caller (`HumanTool` reads it), and the vault as it was put back after. A
+  # key one caller passed never reaches the next call or a later turn, and no
+  # caller replaces the agent's store or identity.
   defp with_call_vault(opts, agent_module, fun) do
     saved = Vault.vault(propagate_vault: :none)
 
@@ -391,6 +426,7 @@ defmodule Legion.AgentServer do
     |> Keyword.get(:vault, [])
     |> Keyword.drop(@legion_vault_keys)
     |> Keyword.put(:excluded_tools, excluded_tools(opts, agent_module))
+    |> Keyword.put(:current_action, "eval_and_continue")
     |> Vault.unsafe_merge()
 
     try do

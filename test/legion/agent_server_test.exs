@@ -1296,6 +1296,33 @@ defmodule Legion.AgentServerTest do
       refute_receive :llm_requested, 100
     end
 
+    test "a conversation an outside model drove resumes and recovers without a request" do
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "resume-eval", store: MemoryStore)
+      assert {:ok, _text} = Legion.eval(pid, "x = 1")
+      GenServer.stop(pid)
+
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_requested)
+        llm_response("unexpected")
+      end)
+
+      assert {:ok, resumed} = Legion.resume("resume-eval", store: MemoryStore)
+
+      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
+               Legion.get_messages(resumed)
+
+      GenServer.stop(resumed)
+
+      # As the rate limiter leaves a row it marked running.
+      {:ok, payload} = MemoryStore.get("resume-eval")
+      :ok = MemoryStore.save(%{payload | status: :running})
+
+      assert {:error, :not_recoverable} = Legion.recover("resume-eval", store: MemoryStore)
+      refute_received :llm_requested
+    end
+
     test "resume/2 returns not_resumable for an agent_id the store has no run for" do
       assert {:error, :not_resumable} = Legion.resume("ghost", store: MemoryStore)
     end
@@ -1697,6 +1724,21 @@ defmodule Legion.AgentServerTest do
       assert text =~ "owner"
     end
 
+    test "runs as eval_and_continue, whatever action the last turn left behind" do
+      # As the executor leaves it after a turn that ended in eval_and_complete.
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_action: "eval_and_complete"])
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_action()")
+      assert text =~ "eval_and_continue"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.current_action()",
+                 vault: [current_action: "eval_and_complete"]
+               )
+
+      assert text =~ "eval_and_continue"
+    end
+
     test "a per-call :vault cannot replace the keys Legion sets" do
       {:ok, pid} = Legion.start_link(VaultAgent, agent_id: "eval-own-keys", store: MemoryStore)
 
@@ -1743,6 +1785,22 @@ defmodule Legion.AgentServerTest do
       assert text =~ "ReadOnlyAgent runs no code"
       refute_received {:enforced, _agent_id, _identity, _policy}
       assert MemoryStore.load("eval-read-only") == :error
+    end
+
+    test "code over max_message_length or not UTF-8 is refused and not kept" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "eval-oversize",
+          max_message_length: 10
+        )
+
+      assert {:error, "The code is 11 bytes, over the 10 byte limit" <> _} =
+               AgentServer.eval(pid, "return 1+11")
+
+      assert {:error, "The code is not valid UTF-8"} = AgentServer.eval(pid, "return \"\xFF\"")
+      assert MemoryStore.load("eval-oversize") == :error
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
     end
 
     test ":require_sandbox refuses an agent that runs another sandbox" do

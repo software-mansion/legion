@@ -85,7 +85,8 @@ defmodule Legion.Agent do
         content is truncated with a `[... truncated N bytes ...]` marker.
         Applies to text content only: each text part of a multipart message is
         truncated individually, while image data and URLs pass through untouched.
-        Defaults to `40_000`. Set to `:infinity` to disable truncation.
+        Code sent with `Legion.eval/3` is held to it too, and refused rather
+        than truncated. Defaults to `40_000`. Set to `:infinity` to disable.
       - `max_bindings_bytes` — max size, as `:erlang.external_size/1` measures
         it, of the variables a code execution leaves behind. An execution that
         would exceed it fails with an error the agent reads, and the previous

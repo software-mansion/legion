@@ -5,6 +5,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   alias Legion.RateLimiter.Policy
   alias Legion.RateLimiter.Rule
   alias Legion.Test.Support.LegionAgentsMigration
+  alias Legion.Test.Support.MathAgent
   alias Legion.Test.Support.PostgresRepo, as: Repo
 
   @ip_key %{"ip" => "203.0.113.42"}
@@ -14,6 +15,14 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
   defmodule RateLimiter do
     use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
+  end
+
+  defmodule Store do
+    use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo
+  end
+
+  defmodule OtherTableStore do
+    use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo, table: "other_agents"
   end
 
   setup do
@@ -490,6 +499,38 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
       assert Enum.count(outcomes, &(&1 == :ok)) == 1
       assert Enum.count(outcomes, &(&1 == :exceeded)) == 19
+    end
+  end
+
+  describe "starting an agent" do
+    test "usage limits need a store writing to the limiter's table" do
+      for limit <- [:max_tokens, :max_evals, :max_running_agents],
+          store <- [nil, Legion.Test.Support.MemoryStore, OtherTableStore] do
+        rate_limit = [limiter: RateLimiter, rules: [rule(@ip_key, policy([{limit, 1}]))]]
+
+        assert_raise ArgumentError, ~r/need a Legion.Store.Postgres store/, fn ->
+          Legion.start_link(MathAgent, store: store, rate_limit: rate_limit)
+        end
+      end
+
+      rate_limit = [limiter: RateLimiter, rules: [rule(@ip_key, policy(max_evals: 1))]]
+      assert {:ok, _pid} = Legion.start_link(MathAgent, store: Store, rate_limit: rate_limit)
+    end
+
+    test "max_agents needs no store" do
+      rate_limit = [limiter: RateLimiter, rules: [rule(@ip_key, policy(max_agents: 1))]]
+      assert {:ok, _pid} = Legion.start_link(MathAgent, rate_limit: rate_limit)
+    end
+
+    test "token and eval limits need usage tracking" do
+      Application.put_env(:legion, :track_usage, false)
+      on_exit(fn -> Application.delete_env(:legion, :track_usage) end)
+
+      rate_limit = [limiter: RateLimiter, rules: [rule(@ip_key, policy(max_evals: 1))]]
+
+      assert_raise ArgumentError, ~r/need usage tracking/, fn ->
+        Legion.start_link(MathAgent, store: Store, rate_limit: rate_limit)
+      end
     end
   end
 

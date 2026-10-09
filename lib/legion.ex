@@ -181,7 +181,9 @@ defmodule Legion do
 
   An agent whose `action_types/0` allow neither `"eval_and_continue"` nor
   `"eval_and_complete"` runs no code, so it refuses every call with
-  `{:error, text}`, before the rate limit and without saving a step.
+  `{:error, text}`, before the rate limit and without saving a step. So is
+  code that is not valid UTF-8 or longer than the agent's
+  `:max_message_length`, since it would be kept in the conversation.
 
   ## Options
 
@@ -315,9 +317,9 @@ defmodule Legion do
   determine its agent module,
   then atomically starts it under the same `agent_id`. If a live process already
   owns that ID, returns the existing pid instead. A new process restores the
-  conversation and continues execution in the background. It resumes from a
-  saved checkpoint when one exists; otherwise it starts a new executor loop
-  with the restored history.
+  conversation and, when it stopped mid-turn, finishes that turn in the
+  background: from a saved checkpoint when one exists, or from a prompt with
+  nothing after it. Otherwise it waits for the next message.
 
   `opts` are passed through to `start_link/2`. Rate-limit rules are not
   persisted, so the resumed agent is checked on its later turns only when
@@ -407,32 +409,32 @@ defmodule Legion do
 
     store = store!(opts, :recover)
 
-    case store.get(agent_id) do
-      {:ok, %Payload{agent_module: agent_module, status: :running, parent_agent_id: nil}}
-      when not is_nil(agent_module) ->
-        # The recovered turn is never checked, so opt out of rate limiting to
-        # keep a globally configured limiter from warning once per recovery.
-        opts =
-          opts
-          |> Keyword.put_new(:rate_limit, rules: [])
-          |> Keyword.merge(agent_id: agent_id, store: store, start_mode: :recover)
+    with {:ok,
+          %Payload{agent_module: agent_module, status: :running, parent_agent_id: nil} = payload}
+         when not is_nil(agent_module) <- store.get(agent_id),
+         true <- AgentServer.unfinished_turn?(payload.conversation_state) do
+      # The recovered turn is never checked, so opt out of rate limiting to
+      # keep a globally configured limiter from warning once per recovery.
+      opts =
+        opts
+        |> Keyword.put_new(:rate_limit, rules: [])
+        |> Keyword.merge(agent_id: agent_id, store: store, start_mode: :recover)
 
-        case AgentServer.start_monitor(agent_module, opts) do
-          {:ok, {pid, ref}} ->
-            receive do
-              {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
-              {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
-            end
+      case AgentServer.start_monitor(agent_module, opts) do
+        {:ok, {pid, ref}} ->
+          receive do
+            {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
+            {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
+          end
 
-          {:error, {:already_started, _pid}} ->
-            {:error, :already_running}
+        {:error, {:already_started, _pid}} ->
+          {:error, :already_running}
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      _ ->
-        {:error, :not_recoverable}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      _ -> {:error, :not_recoverable}
     end
   end
 

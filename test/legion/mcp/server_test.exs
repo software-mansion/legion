@@ -147,6 +147,33 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: AgentToolAgent, name: "agent-tool", version: "0.1.0"
   end
 
+  defmodule HumanToolAgent do
+    @moduledoc "Agent that asks a human and does math."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.HumanTool, MathTool]
+  end
+
+  defmodule HumanToolMCP do
+    use Legion.MCP.Server, agent: HumanToolAgent, name: "human-tool", version: "0.1.0"
+  end
+
+  defmodule ServedHumanToolMCP do
+    use Legion.MCP.Server,
+      agent: HumanToolAgent,
+      name: "served-human-tool",
+      version: "0.1.0",
+      exclude_tools: []
+  end
+
+  defmodule NoMathMCP do
+    use Legion.MCP.Server,
+      agent: HumanToolAgent,
+      name: "no-math",
+      version: "0.1.0",
+      exclude_tools: [MathTool]
+  end
+
   defmodule FullDocsAgent do
     @moduledoc "Agent that wants its tools embedded in full."
     use Legion.Agent
@@ -498,6 +525,34 @@ defmodule Legion.MCP.ServerTest do
 
       assert {:ok, text} = Legion.eval(pid, "return AgentTool == nil or LocalTool == nil")
       assert text =~ "false"
+    end
+  end
+
+  describe ":exclude_tools" do
+    test "leaves HumanTool out by default" do
+      refute HumanToolMCP.server_instructions() =~ "HumanTool"
+      assert HumanToolMCP.server_instructions() =~ "MathTool"
+
+      frame = initialized(HumanToolMCP, frame())
+      assert {false, text, _frame} = repl(HumanToolMCP, frame, "return HumanTool == nil")
+      assert text =~ "true"
+    end
+
+    test "[] serves HumanTool, and AgentTool stays out whatever it says" do
+      assert ServedHumanToolMCP.server_instructions() =~ "HumanTool"
+      refute ServedHumanToolMCP.server_instructions() =~ "AgentTool"
+    end
+
+    test "names the tools left out instead of HumanTool" do
+      assert NoMathMCP.server_instructions() =~ "HumanTool"
+      refute NoMathMCP.server_instructions() =~ "MathTool"
+
+      frame = initialized(NoMathMCP, frame())
+      assert {false, text, frame} = repl(NoMathMCP, frame, "return MathTool == nil")
+      assert text =~ "true"
+
+      assert {true, text, _frame} = help(NoMathMCP, frame, %{"tool" => "Math Tool"})
+      refute text =~ "MathTool"
     end
   end
 
