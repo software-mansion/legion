@@ -108,7 +108,9 @@ defmodule Legion.Tools.AgentTool do
   Only the agent that started the sub-agent reaches it by its id. The
   sub-agent stops when that agent stops, when `stop/1` stops it, or after
   the starting agent's `:sub_agent_idle_timeout` without a message (default
-  thirty minutes), so one whose id was lost does not run on.
+  thirty minutes), so one whose id was lost does not run on. Unless the
+  starting agent's `:binding_scope` is `:conversation`, it also stops when
+  the turn that started it ends, with the variables that could hold its id.
 
   The start is checked against the `:max_agents` of the rate limit the
   sub-agent inherits, so it counts from its start; a denied start returns
@@ -343,17 +345,32 @@ defmodule Legion.Tools.AgentTool do
   # those whose sub-agent is alive count, and a stopped one frees its slot
   # at once.
   defp check_capacity!(owner_id, max) do
-    running =
-      Enum.count(:global.registered_names(), fn
-        {:legion_sub_agent, ^owner_id, agent_id} -> Legion.lookup(agent_id) != :error
-        _name -> false
-      end)
+    running = length(running(owner_id))
 
     if running >= max do
       raise ArgumentError,
             "this agent already runs #{running} sub-agents, as many as it may " <>
               "(:max_sub_agents); stop one with stop/1 first"
     end
+  end
+
+  @doc false
+  # The ids of the sub-agents `owner_id` runs.
+  def running(owner_id) do
+    for {:legion_sub_agent, ^owner_id, agent_id} <- :global.registered_names(),
+        Legion.lookup(agent_id) != :error,
+        do: agent_id
+  end
+
+  @doc false
+  # Stops `owner_id`'s sub-agents other than `kept` at once, mid-turn or not:
+  # their ids went with the bindings that held them, so nothing reaches them.
+  def stop_running(owner_id, kept) do
+    for agent_id <- running(owner_id) -- kept, {:ok, pid} <- [Legion.lookup(agent_id)] do
+      Process.exit(pid, :shutdown)
+    end
+
+    :ok
   end
 
   # Anything that is not one of this agent's running sub-agents lands here:

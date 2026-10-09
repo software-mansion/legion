@@ -95,10 +95,10 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     A `:sandbox_timeout` of `:infinity` has no default to derive; defining
     `request_timeout/0` is required then. Both transports use it: the child
-    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP. Note that
-    the transport only stops waiting; the eval keeps running, and its step is
-    saved and counted like any other. A retry from the host runs the code a
-    second time.
+    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP. A call
+    still waiting for a busy agent when it times out never runs. One already
+    running finishes, and its step is saved and counted like any other, so
+    a retry from the host runs the code a second time.
 
     ## Instruction size
 
@@ -422,13 +422,15 @@ if Code.ensure_loaded?(Anubis.Server) do
         code: code
       }
 
+      opts = [
+        vault: vault,
+        require_agent: server.__legion_agent__(),
+        require_sandbox: Legion.Sandbox.Lua,
+        exclude_tools: &excluded_tool?(server, &1)
+      ]
+
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-        case Legion.eval(agent, code,
-               vault: vault,
-               require_agent: server.__legion_agent__(),
-               require_sandbox: Legion.Sandbox.Lua,
-               exclude_tools: &excluded_tool?(server, &1)
-             ) do
+        case timed_eval(agent, code, opts, server.request_timeout()) do
           {:ok, text} ->
             {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 
@@ -443,6 +445,19 @@ if Code.ensure_loaded?(Anubis.Server) do
              %{success: false, error: error}}
         end
       end)
+    end
+
+    # Waits as long as the transport does. The request process then finishes
+    # and exits, so a call still queued behind a busy agent is skipped
+    # instead of running for a host that gave up and may retry; one already
+    # running finishes.
+    defp timed_eval(agent, code, opts, timeout) do
+      Legion.eval(agent, code, [timeout: timeout] ++ opts)
+    catch
+      :exit, {:timeout, _call} ->
+        {:error,
+         "The call timed out after #{timeout} ms. It may still finish and its step be " <>
+           "saved, so check the variables before running it again."}
     end
 
     @doc false

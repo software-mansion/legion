@@ -125,6 +125,20 @@ defmodule Legion.MCP.ServerTest do
     def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:short", idle_timeout: 50]
   end
 
+  defmodule SlowAgent do
+    @moduledoc "Agent whose tool can outlast the transport."
+    use Legion.Agent
+
+    def tools, do: [Legion.Test.Support.SlowTool]
+  end
+
+  defmodule SharedSlowMCP do
+    use Legion.MCP.Server, agent: SlowAgent, name: "shared-slow", version: "0.1.0"
+
+    def request_timeout, do: 200
+    def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:slow"]
+  end
+
   defmodule ElixirAgent do
     @moduledoc "Agent that delegates work from the Elixir sandbox."
     use Legion.Agent
@@ -266,6 +280,19 @@ defmodule Legion.MCP.ServerTest do
       Handlers.handle(request, server, frame)
 
     {error?, text, frame}
+  end
+
+  # Until the agent is in the middle of a call.
+  defp wait_until_busy(agent_id) do
+    with {:ok, pid} <- Legion.lookup(agent_id),
+         {:current_stacktrace, stacktrace} <- Process.info(pid, :current_stacktrace),
+         true <- List.keymember?(stacktrace, Legion.AgentServer, 0) do
+      :ok
+    else
+      _waiting ->
+        Process.sleep(1)
+        wait_until_busy(agent_id)
+    end
   end
 
   defp help(server, frame, arguments) do
@@ -792,6 +819,26 @@ defmodule Legion.MCP.ServerTest do
 
       assert length(messages) == 8
       assert List.keyfind(bindings, "x", 0) == {"x", 4}
+    end
+
+    test "a call that times out behind a busy agent never runs" do
+      busy = initialized(SharedSlowMCP, frame("host-1"))
+      queued = initialized(SharedSlowMCP, frame("host-2"))
+
+      assert {false, _text, _frame} = repl(SharedSlowMCP, busy, "return 0")
+
+      slow =
+        Task.async(fn -> repl(SharedSlowMCP, busy, "SlowTool.wait(300) slow_done = true") end)
+
+      wait_until_busy("mcp:user:slow")
+
+      for task <- [Task.async(fn -> repl(SharedSlowMCP, queued, "ran = true") end), slow] do
+        assert {true, "The call timed out after 200 ms." <> _, _frame} = Task.await(task)
+      end
+
+      assert {false, text, _frame} = repl(SharedSlowMCP, busy, "return {slow_done, ran}")
+      assert text =~ ~s([true])
+      refute text =~ "ran"
     end
 
     test "an agent stopped for idleness continues from the store on the next call" do

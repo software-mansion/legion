@@ -447,11 +447,25 @@ defmodule Legion.AgentServerTest do
       assert content =~ "[... truncated 5000 bytes ...]"
     end
 
-    test "start_link refuses anything but a positive integer or :infinity" do
-      for value <- [nil, 0] do
-        assert_raise ArgumentError,
-                     ~r/expected :max_message_length to be a positive integer or :infinity/,
-                     fn -> Legion.start_link(MathAgent, max_message_length: value) end
+    test "start_link refuses a limit that is not a big enough integer or :infinity" do
+      for {key, bad_values, expected} <- [
+            {:max_message_length, [nil, 0], "a positive integer"},
+            {:idle_timeout, [nil, 0, -1, "100"], "a positive integer"},
+            {:max_bindings_bytes, [nil, 0], "a positive integer"},
+            {:sub_agent_idle_timeout, [nil, 0], "a positive integer"},
+            {:max_sub_agents, [nil, -1, 1.5], "a non-negative integer"}
+          ],
+          value <- bad_values do
+        message = "expected #{inspect(key)} to be #{expected} or :infinity"
+
+        assert_raise ArgumentError, ~r/#{Regex.escape(message)}/, fn ->
+          Legion.start_link(MathAgent, [{key, value}])
+        end
+      end
+
+      for {key, value} <- [idle_timeout: :infinity, idle_timeout: 50, max_sub_agents: 0] do
+        assert {:ok, pid} = Legion.start_link(MathAgent, [{key, value}])
+        GenServer.stop(pid)
       end
     end
   end

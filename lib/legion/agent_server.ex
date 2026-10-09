@@ -17,6 +17,7 @@ defmodule Legion.AgentServer do
   alias Legion.RateLimiter.ExceededError
   alias Legion.RateLimiter.Policy
   alias Legion.Store.Payload
+  alias Legion.Tools.AgentTool
   alias ReqLLM.Message.ContentPart
 
   # What `init/1` puts in the Vault for Legion and its tools; a per-call
@@ -554,6 +555,12 @@ defmodule Legion.AgentServer do
 
     executor_config = Map.put(state.config, :checkpoint, checkpoint)
 
+    # Unless bindings outlive the turn, the ids of the sub-agents it starts
+    # go with them at its end, and so do the sub-agents.
+    sub_agents_before =
+      if not conversation_scope? and AgentTool in state.agent_module.tools(),
+        do: AgentTool.running(state.agent_id)
+
     {status, value, final_messages, final_bindings, turn_usage} =
       Telemetry.span(
         [:legion, :agent, :message],
@@ -583,6 +590,8 @@ defmodule Legion.AgentServer do
            }}
         end
       )
+
+    if sub_agents_before, do: AgentTool.stop_running(state.agent_id, sub_agents_before)
 
     kept_bindings =
       cond do
