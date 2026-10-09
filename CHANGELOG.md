@@ -1,18 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 - 2026-10-09
+
+### Breaking
+
+- Default model bumped to `openai:gpt-5.6-luna`
+- [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) - `start_link/1,2` return the sub-agent's id instead of a pid, and `call/2`, `cast/2` and the new `stop/1` take that id; only the agent that started a sub-agent reaches it, and the sub-agent stops when that agent stops, when the turn that started it ends unless `:binding_scope` is `:conversation`, or after `:sub_agent_idle_timeout` without a message (default thirty minutes). An agent runs at most `:max_sub_agents` at once (default 10), and a start is checked against the rate limit, returning `{:cancel, {:rate_limited, violations}}` when denied
+- [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) is in every agent's sandbox, so a tool of your own with the short name `Help` is no longer reachable; `use Legion.Agent` warns about it
+- `:max_bindings_bytes` (default `10_000_000`) fails an execution that would leave larger variables behind; set it to `:infinity` for the old behaviour
+- [`Legion.RateLimiter.Postgres`](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html) - an agent whose rules set `:max_tokens`, `:max_evals` or `:max_running_agents` raises at start unless its store is a `Legion.Store.Postgres` on the limiter's repo and table, since those limits count what that store writes
+- [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) - `check/2` no longer reports syntax errors; parsing moved inside the sandbox process, under its limits, and syntax errors come back from `execute/5`
+- Rate limiting - an agent's start is checked against `:max_agents`, so it caps the agents themselves: a denied `Legion.start_link/2` returns `{:error, {:rate_limited, violations}}` with no process started and nothing saved, and `Legion.execute/3` returns `{:cancel, {:rate_limited, violations}}`. Resumed and recovered runs are not checked
+- An agent id belongs to one agent module: starting another module under an id whose stored conversation is not its own returns `{:error, {:agent_module_mismatch, stored}}`
+- [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) and [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) finish only a conversation that stopped mid-turn, behind a checkpoint or on a prompt with nothing after it
 
 ### Changes
 
-- Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps recorded code evaluations per window; usage entries carry `"evals" => 1` when the request's action ran code
-- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as `repl` and `help` tools, with stdio and Streamable HTTP transports (mounted with [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html)), OAuth 2.1, a `session/1` callback choosing the agent per call, and a `request_timeout/0` derived from the sandbox timeout; needs the optional `:anubis_mcp` dependency
-- `use Legion.MCP.Server` warns at start when the instructions or the `repl` tool description are longer than `:instructions_budget` (default 2048, Claude Code's cap)
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) serves a Lua agent to MCP hosts as `repl` and `help` tools over stdio or Streamable HTTP ([`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html), which refuses browser requests from origins other than `localhost` unless listed in `:allowed_origins`), with OAuth 2.1 and a `session/1` callback choosing the agent, vault and rate limits per call; `Legion.Tools.AgentTool` and `Legion.Tools.HumanTool` are left out. Needs the optional `{:anubis_mcp, "~> 2.0"}` dependency; see the [MCP guide](https://hexdocs.pm/legion/mcp.html)
 - [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
-- `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
-- Tool discovery - `tool_docs: :discovery` in [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) lists tools in the system prompt by name and one-line summary instead of embedding their descriptions; the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) tool returns a tool's full description on demand with `Help.help("Name")`; tools gain an overridable [`Legion.Tool.summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), by default the first sentence of the `@moduledoc`
-- MCP server - `tool_docs` defaults to `:discovery` over MCP, so the [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) instructions carry the agent's `@moduledoc` and list its tools by name and one-line summary; a second tool, `help`, evaluates `Help.help/1` on the session's agent and returns a tool's full description, so a lookup is saved and counted like a `repl` call; each server's `repl` tool description carries its own sandbox's language and rules, and the `:instructions_budget` warning covers that description too
-- `use Legion.Agent` warns at compile time when two of an agent's tools share a short name, the built-in [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) included
-- LLM usage tracking - `:step` stores now persist usage with every step checkpoint instead of only at turn end
+- Tool discovery - `tool_docs: :on_demand` lists tools in the prompt by a one-line [`summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), and `Help.help(Name)` returns a tool's full description; the default over MCP
+- Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps code evaluations per window
+- [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2) takes `:vault`, put in the agent process for its tools, and `:idle_timeout`, which stops an agent nobody calls
+- `max_message_length` defaults to `40_000` bytes and also bounds code sent with `Legion.eval/3`
+- Lua agents hold sub-agent conversations through [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html), whose ids cross the Lua bridge
+- `:step` stores persist usage with every checkpoint instead of only at turn end
 
 ## v0.5.1 - 2026-09-25
 
