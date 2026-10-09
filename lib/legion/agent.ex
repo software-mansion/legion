@@ -94,6 +94,11 @@ defmodule Legion.Agent do
         a store, on disk. Set to `:infinity` to disable (default: `10_000_000`)
       - `idle_timeout` — milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
+      - `max_sub_agents` — how many sub-agents from `Legion.Tools.AgentTool.start_link/1`
+        the agent may run at once (default: `10`)
+      - `sub_agent_idle_timeout` — milliseconds without a message after which
+        such a sub-agent stops, overriding its own `idle_timeout`
+        (default: thirty minutes)
       - `tool_docs` — how the system prompt documents the agent's tools:
         `:inline` embeds every tool's description, `:on_demand` lists them by
         `summary/0` and names the built-in `Legion.Tools.Help` tool, which is
@@ -148,7 +153,7 @@ defmodule Legion.Agent do
     end
   end
 
-  @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode tool_docs)a
+  @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries max_sub_agents model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode sub_agent_idle_timeout tool_docs)a
 
   @doc false
   # Resolves the effective config for `agent_module`: Executor defaults, then the
