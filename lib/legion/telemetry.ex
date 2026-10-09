@@ -71,13 +71,17 @@ defmodule Legion.Telemetry do
   ## MCP Events
 
   A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
-  sandbox and rate limit events above. On top of those, every `repl` call is
-  a span that ties them to the MCP session:
+  sandbox and rate limit events above. On top of those, every `repl` and
+  `help` call is a span that ties them to the MCP session:
 
-  - `[:legion, :mcp, :call, :start | :stop | :exception]` - one `repl` call
-    (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
-    denied call has no eval span)
+  - `[:legion, :mcp, :call, :start | :stop | :exception]` - one `repl` or
+    `help` call. A `repl` span wraps the `[:legion, :sandbox, :eval]` span of
+    the same `agent_id`; a denied call has no eval span, and a `help` call
+    runs no eval at all.
     - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
+      for `repl`. A `help` call carries `tool: String.t() | nil` (`nil` lists
+      every tool) instead of `code`, and its `agent_id` is `nil` until the
+      session has an agent.
     - Stop adds: `success`, and `error` with the text the host's model was
       given when the code failed or the call was rate limited.
 
@@ -315,6 +319,10 @@ defmodule Legion.Telemetry do
   def handle_event([:legion, :sandbox, :eval, :exception], measurements, meta, opts) do
     ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
     log(opts, meta, "    eval:exception #{inspect(meta.reason)} #{ms}ms", :error)
+  end
+
+  def handle_event([:legion, :mcp, :call, :start], _measurements, %{tool: tool} = meta, opts) do
+    log(opts, meta, "mcp:call:start #{short(meta.agent)} help #{tool || "(every tool)"}")
   end
 
   def handle_event([:legion, :mcp, :call, :start], _measurements, meta, opts) do

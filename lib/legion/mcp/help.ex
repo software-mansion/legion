@@ -13,6 +13,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     alias Anubis.Server.Frame
     alias Anubis.Server.Response
     alias Legion.MCP.Server
+    alias Legion.Telemetry
 
     schema do
       field :tool, :string,
@@ -20,11 +21,23 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     # Answered from the agent's tool docs, not by the agent: a lookup is no
-    # step of the conversation and no evaluation to rate limit.
+    # step of the conversation and no evaluation to rate limit. It is still
+    # an MCP call span, so a session's lookups can be followed.
     @impl true
     def execute(params, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
-      text = Server.tool_help(server, Map.get(params, :tool))
-      {:reply, Response.text(Response.tool(), text), frame}
+      name = Map.get(params, :tool)
+
+      metadata = %{
+        agent: server.__legion_agent__(),
+        agent_id: Server.session_agent_id(frame),
+        session_id: frame.context.session_id,
+        tool: name
+      }
+
+      Telemetry.span([:legion, :mcp, :call], metadata, fn ->
+        text = Server.tool_help(server, name)
+        {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
+      end)
     end
 
     def execute(_params, %Frame{} = frame) do

@@ -490,6 +490,29 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "- `Help` -"
     end
 
+    test "is an MCP call span naming the tool, with the agent id once the session has one" do
+      ref = attach([[:legion, :mcp, :call, :start], [:legion, :mcp, :call, :stop]])
+      frame = initialized(MathMCP, frame("session-9"))
+
+      assert {false, _text, _frame} = help(MathMCP, frame, %{"tool" => "MathTool"})
+
+      assert_received {^ref, [:legion, :mcp, :call, :start],
+                       %{
+                         agent: MathAgent,
+                         agent_id: nil,
+                         session_id: "session-9",
+                         tool: "MathTool"
+                       }}
+
+      assert_received {^ref, [:legion, :mcp, :call, :stop], %{success: true, tool: "MathTool"}}
+
+      named = initialized(UserMCP, frame("host", %{sub: "alice"}))
+      assert {false, _text, _frame} = help(UserMCP, named, %{})
+
+      assert_received {^ref, [:legion, :mcp, :call, :start],
+                       %{agent_id: "mcp:user:alice", tool: nil}}
+    end
+
     test "refuses before the session is initialized" do
       assert {true, text, _frame} = help(MathMCP, frame(), %{})
       assert text =~ "not initialized"
