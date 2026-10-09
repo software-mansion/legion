@@ -125,8 +125,10 @@ defmodule Legion.Tools.AgentTool do
     check_capacity!(owner_id, max)
     {:ok, owner} = Legion.lookup(owner_id)
 
-    case AgentServer.start_link(agent_module, idle_timeout: idle_timeout) do
-      {:ok, pid} ->
+    # Unlinked: the caller is the eval process, which the sandbox kills on a
+    # timeout. stop_with_owner/2 ties the sub-agent to its owner instead.
+    case AgentServer.start_monitor(agent_module, idle_timeout: idle_timeout) do
+      {:ok, {pid, _ref}} ->
         agent_id = AgentServer.get_agent_id(pid)
         :yes = :global.register_name(owned_name(owner_id, agent_id), stop_with_owner(pid, owner))
         {:ok, agent_id}
