@@ -1,5 +1,6 @@
 defmodule Legion.Tools.AgentToolTest do
   use ExUnit.Case, async: false
+  use Mimic
 
   alias Legion.RateLimiter.{ExceededError, Policy, Rule}
   alias Legion.Tools.AgentTool
@@ -24,6 +25,15 @@ defmodule Legion.Tools.AgentToolTest do
     def tools, do: [AgentTool]
     def tool_config(AgentTool), do: [agents: [ChildAgent]]
     def config, do: %{max_sub_agents: 1}
+  end
+
+  defmodule ConversationOwnerAgent do
+    @moduledoc "Agent whose sub-agent ids outlive the turn with its bindings."
+    use Legion.Agent
+
+    def tools, do: [AgentTool]
+    def tool_config(AgentTool), do: [agents: [ChildAgent]]
+    def config, do: %{binding_scope: :conversation}
   end
 
   defmodule OwnerOnlyLimiter do
@@ -98,6 +108,59 @@ defmodule Legion.Tools.AgentToolTest do
 
       assert {:error, text} = Legion.eval(owner, "AgentTool.start_link(ChildAgent)")
       assert text =~ "already runs 0 sub-agents"
+    end
+  end
+
+  describe "a turn's sub-agents" do
+    setup :set_mimic_global
+
+    setup do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        {:ok,
+         %ReqLLM.Response{
+           id: "test",
+           model: "test",
+           context: nil,
+           object: %{
+             "action" => "eval_and_complete",
+             "code" => "started = AgentTool.start_link(ChildAgent)[2] return started",
+             "result" => ""
+           },
+           usage: %{turn_usage: 0}
+         }}
+      end)
+
+      :ok
+    end
+
+    test "stop when it ends, but not those started before it" do
+      owner = start_owner()
+      assert {:ok, _text} = Legion.eval(owner, "kept = AgentTool.start_link(ChildAgent)[2]")
+      [kept] = sub_agents(owner)
+
+      assert {:ok, started} = Legion.call(owner, "start one")
+
+      wait_until(fn -> Legion.lookup(started) == :error end)
+      assert {:ok, _pid} = Legion.lookup(kept)
+    end
+
+    test "run on when bindings outlive the turn" do
+      owner = start_owner(ConversationOwnerAgent)
+
+      assert {:ok, started} = Legion.call(owner, "start one")
+      {:ok, pid} = Legion.lookup(started)
+      ref = Process.monitor(pid)
+
+      refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 100
+    end
+  end
+
+  defp wait_until(condition) do
+    if condition.() do
+      :ok
+    else
+      Process.sleep(1)
+      wait_until(condition)
     end
   end
 

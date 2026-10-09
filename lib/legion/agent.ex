@@ -153,12 +153,20 @@ defmodule Legion.Agent do
     end
   end
 
+  @limit_minimums [
+    idle_timeout: 1,
+    max_bindings_bytes: 1,
+    max_message_length: 1,
+    max_sub_agents: 0,
+    sub_agent_idle_timeout: 1
+  ]
+
   @known_config_keys ~w(binding_scope eval_guard idle_timeout max_bindings_bytes max_iterations max_message_length max_retries max_sub_agents model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode sub_agent_idle_timeout tool_docs)a
 
   @doc false
   # Resolves the effective config for `agent_module`: Executor defaults, then the
   # `:legion, :config` app env, then `agent_module.config/0`, then `opts`. Warns
-  # about unknown keys and validates `:max_message_length`. Shared by every
+  # about unknown keys and validates the limits and `:tool_docs`. Shared by every
   # driver that runs the agent (AgentServer, Legion.MCP.Server).
   def resolve_config(agent_module, opts \\ []) do
     app_config = Application.get_env(:legion, :config, %{})
@@ -176,7 +184,7 @@ defmodule Legion.Agent do
       Logger.warning("Unknown Legion config keys: #{inspect(unknown)}")
     end
 
-    validate_max_message_length(merged)
+    validate_limits(merged)
     validate_tool_docs(merged)
 
     merged
@@ -193,17 +201,27 @@ defmodule Legion.Agent do
     :ok
   end
 
-  defp validate_max_message_length(%{max_message_length: :infinity}), do: :ok
+  # Checked here, in the caller, so a bad value fails `start_link` instead of
+  # the agent process right after it started.
+  defp validate_limits(config) do
+    for {key, minimum} <- @limit_minimums, Map.has_key?(config, key) do
+      case Map.fetch!(config, key) do
+        :infinity ->
+          :ok
 
-  defp validate_max_message_length(%{max_message_length: n}) when is_integer(n) and n > 0,
-    do: :ok
+        value when is_integer(value) and value >= minimum ->
+          :ok
 
-  defp validate_max_message_length(%{max_message_length: other}) do
-    raise ArgumentError,
-          "expected :max_message_length to be a positive integer or :infinity, got: #{inspect(other)}"
+        other ->
+          raise ArgumentError,
+                "expected #{inspect(key)} to be #{limit_description(minimum)} or :infinity, " <>
+                  "got: #{inspect(other)}"
+      end
+    end
   end
 
-  defp validate_max_message_length(_config), do: :ok
+  defp limit_description(0), do: "a non-negative integer"
+  defp limit_description(1), do: "a positive integer"
 
   defp validate_tool_docs(%{tool_docs: tool_docs}) when tool_docs not in [:inline, :on_demand] do
     raise ArgumentError,
