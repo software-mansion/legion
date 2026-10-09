@@ -106,8 +106,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     `@moduledoc` and one line per tool; the model reads a tool in full with
     `help`. For an agent with a one-line `@moduledoc` and one tool that is
     about 1,000 characters, and each tool adds a line. The sandbox rules
-    are in the `repl` tool description instead, about 1,450 characters for
-    Lua. When the server starts, it renders both and logs
+    are in the `repl` tool description instead, about 1,450 characters.
+    When the server starts, it renders both and logs
     a warning for either that is longer than `:instructions_budget`, naming
     the last words the host will read and any sections after them. For the
     instructions, answer it by shortening the agent's `@moduledoc` or

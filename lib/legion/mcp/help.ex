@@ -39,9 +39,6 @@ if Code.ensure_loaded?(Anubis.Server) do
       {:reply, Response.error(Response.tool(), message), frame}
     end
 
-    # Lua, the only sandbox served, needs the `return`. The name is
-    # interpolated into code, so only a bare word passes: anything else would
-    # be a syntax error saved as a failed step.
     defp code(nil), do: {:ok, "return Help.help()"}
 
     defp code(name) do
