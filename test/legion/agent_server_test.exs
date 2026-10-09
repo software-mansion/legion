@@ -62,6 +62,13 @@ defmodule Legion.AgentServerTest do
     use Legion.Agent
   end
 
+  defmodule ReadOnlyAgent do
+    @moduledoc "Agent that answers without running code."
+    use Legion.Agent
+
+    def action_types, do: ~w(return done)
+  end
+
   defmodule DelegatingAgent do
     @moduledoc "Agent that delegates work to ChildAgent."
     use Legion.Agent
@@ -415,17 +422,17 @@ defmodule Legion.AgentServerTest do
       assert content =~ "[... truncated 40 bytes ...]"
     end
 
-    test "default of 20_000 applies when no override is given anywhere" do
+    test "default of 40_000 applies when no override is given anywhere" do
       Application.delete_env(:legion, :config)
       on_exit(fn -> Application.delete_env(:legion, :config) end)
 
       capture_user_content(self())
 
       {:ok, pid} = Legion.start_link(MathAgent)
-      {:ok, _} = Legion.call(pid, String.duplicate("a", 25_000))
+      {:ok, _} = Legion.call(pid, String.duplicate("a", 45_000))
 
       assert_received {:user_content, content}
-      assert String.starts_with?(content, String.duplicate("a", 20_000))
+      assert String.starts_with?(content, String.duplicate("a", 40_000))
       assert content =~ "[... truncated 5000 bytes ...]"
     end
   end
@@ -1671,6 +1678,43 @@ defmodule Legion.AgentServerTest do
       assert text =~ "alice"
     end
 
+    test "a per-call :vault holds for that call only" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "owner"])
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()",
+                 vault: [current_user: "alice", token: "alice-secret"]
+               )
+
+      assert text =~ "alice-secret"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.token()", vault: [current_user: "bob"])
+
+      refute text =~ "alice-secret"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_user()")
+      assert text =~ "owner"
+    end
+
+    test "a per-call :vault cannot replace the keys Legion sets" do
+      {:ok, pid} = Legion.start_link(VaultAgent, agent_id: "eval-own-keys", store: MemoryStore)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_id()",
+                 vault: [agent_id: "forged", agent_module: MathAgent]
+               )
+
+      assert text =~ "eval-own-keys"
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return VaultTool.agent_module()",
+                 vault: [agent_module: MathAgent]
+               )
+
+      assert text =~ "VaultAgent"
+    end
+
     test "seeds :agent_module so tools can find the agent they run under" do
       {:ok, pid} = Legion.start_link(VaultAgent)
 
@@ -1687,6 +1731,118 @@ defmodule Legion.AgentServerTest do
       assert {:cancel, {:rate_limited, [:max_agents]}} = AgentServer.eval(pid, "return 1")
       assert_received {:enforced, "eval-denied", _identity, _policy}
       assert MemoryStore.load("eval-denied") == :error
+    end
+
+    test "an agent whose action_types allow no evaluation refuses, before the rate limit" do
+      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      {:ok, pid} =
+        Legion.start_link(ReadOnlyAgent, [store: MemoryStore, agent_id: "eval-read-only"] ++ opts)
+
+      assert {:error, text} = AgentServer.eval(pid, "return 1")
+      assert text =~ "ReadOnlyAgent runs no code"
+      refute_received {:enforced, _agent_id, _identity, _policy}
+      assert MemoryStore.load("eval-read-only") == :error
+    end
+
+    test ":require_sandbox refuses an agent that runs another sandbox" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: MemoryStore,
+          agent_id: "eval-elixir",
+          sandbox: Legion.Sandbox.Elixir
+        )
+
+      assert {:error, text} =
+               AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Lua)
+
+      assert text =~ "requires Legion.Sandbox.Lua"
+      assert text =~ "runs Legion.Sandbox.Elixir"
+      assert MemoryStore.load("eval-elixir") == :error
+
+      assert {:ok, _text} = AgentServer.eval(pid, "1 + 1", require_sandbox: Legion.Sandbox.Elixir)
+    end
+
+    test ":exclude_tools leaves tools out of that call only" do
+      {:ok, pid} = Legion.start_link(MathAgent)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, "return {MathTool == nil, Help.help()}",
+                 exclude_tools: [Legion.Test.Support.MathTool]
+               )
+
+      assert text =~ "true"
+      refute text =~ "MathTool"
+
+      assert {:ok, text} = AgentServer.eval(pid, "return {MathTool == nil, Help.help()}")
+      assert text =~ "false"
+      assert text =~ "MathTool"
+    end
+  end
+
+  describe "long-lived sub-agents" do
+    test "Lua holds one sub-agent conversation across executions" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent)
+
+      assert {:ok, first} =
+               AgentServer.eval(pid, """
+               writer = AgentTool.start_link(ChildAgent)[2]
+               return AgentTool.call(writer, "draft")[2]
+               """)
+
+      assert {:ok, second} =
+               AgentServer.eval(pid, ~s|return AgentTool.call(writer, "tighten")[2]|)
+
+      assert first =~ "turn 1"
+      assert second =~ "turn 2"
+    end
+
+    test "start_link/2 casts the task, and its id stands in for the pid it used to return" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        llm_response("turn #{Enum.count(messages, &(&1[:role] == "user"))}")
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent, sandbox: Legion.Sandbox.Elixir)
+
+      assert {:ok, text} =
+               AgentServer.eval(pid, """
+               {:ok, pid} = AgentTool.start_link(ChildAgent, "draft")
+               {:ok, reply} = AgentTool.call(pid, "tighten")
+               reply
+               """)
+
+      assert text =~ "turn 2"
+    end
+
+    test "only the owner reaches a sub-agent, which stops with it even mid-turn" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, {:sub_agent_turn, Vault.get(:agent_id)})
+        Process.sleep(:infinity)
+      end)
+
+      {:ok, owner} = Legion.start_link(DelegatingAgent)
+      {:ok, other} = Legion.start_link(DelegatingAgent)
+
+      {:ok, _text} =
+        AgentServer.eval(owner, ~s|AgentTool.cast(AgentTool.start_link(ChildAgent)[2], "draft")|)
+
+      assert_receive {:sub_agent_turn, agent_id}
+      {:ok, sub_agent} = Legion.lookup(agent_id)
+
+      assert {:error, text} =
+               AgentServer.eval(other, ~s|return AgentTool.call("#{agent_id}", "hi")|)
+
+      assert text =~ "is not a running sub-agent of this agent"
+
+      ref = Process.monitor(sub_agent)
+      GenServer.stop(owner)
+      assert_receive {:DOWN, ^ref, :process, ^sub_agent, :shutdown}
     end
   end
 

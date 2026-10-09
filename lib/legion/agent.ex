@@ -42,7 +42,7 @@ defmodule Legion.Agent do
 
     - `config/0` — agent-level configuration merged with application config and
       call-time opts. Defaults to `%{}`. Available keys:
-      - `model` — LLM model identifier (default: `"openai:gpt-5.4"`)
+      - `model` — LLM model identifier (default: `"openai:gpt-5.6-luna"`)
       - `sandbox` — a `Legion.Sandbox` module that validates and evaluates the
         code the agent writes. `Legion.Sandbox.Lua` (the default) evaluates Lua
         in a pure-Elixir VM where only bridged tool functions can reach the
@@ -85,24 +85,25 @@ defmodule Legion.Agent do
         content is truncated with a `[... truncated N bytes ...]` marker.
         Applies to text content only: each text part of a multipart message is
         truncated individually, while image data and URLs pass through untouched.
-        Defaults to `20_000`. Set to `:infinity` to disable truncation.
+        Defaults to `40_000`. Set to `:infinity` to disable truncation.
       - `max_bindings_bytes` — max size, as `:erlang.external_size/1` measures
         it, of the variables a code execution leaves behind. An execution that
         would exceed it fails with an error the agent reads, and the previous
         variables stand. Bounds what a conversation holds in memory and, with
-        a store, on disk. Set to `:infinity` to disable (default: `:infinity`)
+        a store, on disk. Set to `:infinity` to disable (default: `10_000_000`)
       - `idle_timeout` — milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
       - `tool_docs` — how the system prompt documents the agent's tools:
-        `:full` embeds every tool's description, `:discovery` lists them by
+        `:inline` embeds every tool's description, `:on_demand` lists them by
         `summary/0` and names the built-in `Legion.Tools.Help` tool, which is
         in the sandbox either way; see `Legion.Tools.Help` and
-        `Legion.MCP.Server` (default: `:full`, or `:discovery` over MCP)
+        `Legion.MCP.Server` (default: `:inline`, or `:on_demand` over MCP)
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.
       Override to restrict the agent - for example, a read-only agent that should
-      never execute code can use `~w(return done)`.
+      never execute code can use `~w(return done)`. Such an agent also refuses
+      code sent with `Legion.eval/3`, so it cannot be served over MCP.
   """
 
   @callback tools() :: [module()]

@@ -32,12 +32,29 @@ if Code.ensure_loaded?(Anubis.Server) do
     `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
     session's agent, so a lookup is a step of the conversation, saved, rate
     limited and traced like a `repl` call. The agent makes no LLM request of
-    its own; what a call costs is one evaluation, plus whatever its tools do
-    (`AgentTool`, for one).
+    its own; what a call costs is one evaluation, plus whatever its tools do.
 
-    Built on the optional `:anubis_mcp` dependency, which speaks the protocol,
+    Built on `:anubis_mcp`, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
-    Requires `Legion` in the supervision tree.
+    It is an optional dependency of Legion, so add `{:anubis_mcp, "~> 2.0"}`
+    to your deps; this module exists only with it. Requires `Legion` in the
+    supervision tree.
+
+    Only agents on `Legion.Sandbox.Lua` can be served. Over MCP the code comes
+    from whoever reaches the endpoint, not from a model the application
+    prompts, and the Lua VM has nothing of the host's but the agent's tools.
+    A server whose agent's config names another sandbox fails to start, with
+    the reason in the supervisor's report; a call whose `session/1` names one,
+    or that reaches a named agent started elsewhere on another, is answered
+    with a tool error. So is every call to an agent whose `action_types/0`
+    allow no evaluation.
+
+    For the same reason a tool whose `c:Legion.Tool.mcp?/0` returns `false` is
+    left out over MCP, even when the agent lists it: the instructions and
+    `help` do not list it and `repl` code cannot call it. Chat with the same
+    agent keeps it. `Legion.Tools.AgentTool` is one: its sub-agents would run
+    tasks the caller writes, on the application's model and in whatever
+    sandbox they use.
 
     ## Options
 
@@ -84,13 +101,13 @@ if Code.ensure_loaded?(Anubis.Server) do
     2,048 characters (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` raises it, per
     user, not per server) and appends "[truncated]"; it cuts every tool
     description at the same length. So over MCP the instructions follow
-    `tool_docs: :discovery` unless the agent's `config/0` says otherwise
+    `tool_docs: :on_demand` unless the agent's `config/0` says otherwise
     (see `Legion.Agent`). They then carry the agent's
     `@moduledoc` and one line per tool; the model reads a tool in full with
     `help`. For an agent with a one-line `@moduledoc` and one tool that is
     about 1,000 characters, and each tool adds a line. The sandbox rules
-    are in the `repl` tool description instead: about 1,450 characters for
-    Lua, 1,950 for Elixir. When the server starts, it renders both and logs
+    are in the `repl` tool description instead, about 1,450 characters.
+    When the server starts, it renders both and logs
     a warning for either that is longer than `:instructions_budget`, naming
     the last words the host will read and any sections after them. For the
     instructions, answer it by shortening the agent's `@moduledoc` or
@@ -98,7 +115,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     sandbox's rules. Set the budget to what your hosts read if it is not
     Claude Code's.
 
-    `tool_docs: :full` in `config/0` embeds every tool's description in the
+    `tool_docs: :inline` in `config/0` embeds every tool's description in the
     instructions instead, as chat does, and brings the sandbox rules back
     with them. That alone is past Claude Code's cap before the first tool,
     so expect the warning; `server_instructions/0` is the way out.
@@ -151,14 +168,16 @@ if Code.ensure_loaded?(Anubis.Server) do
     another host, continues the same conversation. `:agent_id` needs a store;
     see `Legion.Store`.
 
-    `:vault` is put in the agent before every call, so it may change from
-    request to request: a refreshed token, a tenant switch. It is how tools
-    learn who is calling.
+    `:vault` is put in the agent for one call and taken out after it, so it
+    may change from request to request: a refreshed token, a tenant switch.
+    A key one call passed is gone by the next, whichever session sends it.
+    It is how tools learn who is calling.
 
     Every other option is read once, by whoever starts the agent, and holds
     until it stops. An agent already running under that id, started by
     `Legion.start_link/2` before the MCP call arrived, keeps its own
-    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused.
+    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. Its
+    sandbox must still be Lua, or every call to it is refused.
 
     `:idle_timeout` stops the agent once nobody calls, after thirty minutes
     by default. The store then holds the conversation and the next call
@@ -267,8 +286,17 @@ if Code.ensure_loaded?(Anubis.Server) do
         def request_timeout, do: Legion.MCP.Server.request_timeout(unquote(agent))
 
         def child_spec(opts) do
-          Legion.MCP.Server.check_instructions(__MODULE__, unquote(budget))
-          super(Keyword.put_new(opts, :request_timeout, request_timeout()))
+          case Legion.MCP.Server.check_sandbox(
+                 unquote(agent),
+                 Legion.Agent.resolve_config(unquote(agent))
+               ) do
+            :ok ->
+              Legion.MCP.Server.check_instructions(__MODULE__, unquote(budget))
+              super(Keyword.put_new(opts, :request_timeout, request_timeout()))
+
+            {:error, message} ->
+              %{id: __MODULE__, start: {Legion.MCP.Server, :refuse_start, [message]}}
+          end
         end
 
         def session(_frame), do: []
@@ -305,8 +333,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     # The agent a call runs in, with the vault to seed it with: the one
     # `session/1` names, started if need be, or else the session's own
     # anonymous agent, kept in the frame.
-    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame) do
-      opts = server.session(frame)
+    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame, opts) do
       vault = Keyword.get(opts, :vault, [])
 
       cond do
@@ -348,7 +375,20 @@ if Code.ensure_loaded?(Anubis.Server) do
     # call. The agent owns the variables, saves the step and enforces the
     # rate limit.
     def run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code) do
-      {agent, agent_id, vault, frame} = resolve_agent(frame)
+      opts = server.session(frame)
+
+      case session_sandbox(server.__legion_agent__(), opts) do
+        :ok -> run(frame, code, opts)
+        {:error, message} -> {:reply, Response.error(Response.tool(), message), frame}
+      end
+    end
+
+    defp session_sandbox(agent_module, opts) do
+      if Keyword.has_key?(opts, :sandbox), do: check_sandbox(agent_module, opts), else: :ok
+    end
+
+    defp run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code, opts) do
+      {agent, agent_id, vault, frame} = resolve_agent(frame, opts)
 
       metadata = %{
         agent: server.__legion_agent__(),
@@ -358,7 +398,11 @@ if Code.ensure_loaded?(Anubis.Server) do
       }
 
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-        case Legion.eval(agent, code, vault: vault) do
+        case Legion.eval(agent, code,
+               vault: vault,
+               require_sandbox: Legion.Sandbox.Lua,
+               exclude_tools: &excluded_tool?/1
+             ) do
           {:ok, text} ->
             {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 
@@ -396,12 +440,22 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    # The sandbox a session's agent runs: the agent's config, overridden by
-    # the session's `:sandbox` option if it passes one. Resolved from those
-    # alone, so callers need no call into the agent process.
-    def sandbox(agent_module, session_opts) do
-      Agent.resolve_config(agent_module, Keyword.take(session_opts, [:sandbox])).sandbox
+    def check_sandbox(agent_module, config) do
+      case config[:sandbox] do
+        Legion.Sandbox.Lua ->
+          :ok
+
+        other ->
+          {:error,
+           "Legion.MCP.Server serves Legion.Sandbox.Lua agents only; " <>
+             "#{inspect(agent_module)} runs #{inspect(other)}"}
+      end
     end
+
+    @doc false
+    # The start function of a child spec `check_sandbox/2` refused: the
+    # supervisor reports the message as the reason the server did not start.
+    def refuse_start(message), do: {:error, message}
 
     @doc false
     # Logged once, when the supervisor builds the child spec, so an oversize
@@ -465,8 +519,21 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     @doc false
     def instructions(agent_module) do
-      AgentPrompt.system_prompt(agent_module, Agent.resolve_config(agent_module), mode: :mcp)
+      AgentPrompt.system_prompt(agent_module, Agent.resolve_config(agent_module),
+        mode: :mcp,
+        exclude_tools: excluded_tools(agent_module)
+      )
     end
+
+    @doc false
+    def tool_index(agent_module),
+      do: AgentPrompt.tool_index(agent_module, excluded_tools(agent_module))
+
+    defp excluded_tools(agent_module), do: Enum.filter(agent_module.tools(), &excluded_tool?/1)
+
+    # Loaded first, so a tool not yet loaded is not served for lack of `mcp?/0`.
+    defp excluded_tool?(tool),
+      do: Code.ensure_loaded?(tool) and function_exported?(tool, :mcp?, 0) and not tool.mcp?()
 
     @doc false
     # Anubis's transport calls the session with this timeout; it must outlast

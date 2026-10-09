@@ -85,7 +85,9 @@ defmodule Legion.MixProject do
       {:telemetry, "~> 1.0"},
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
-      {:anubis_mcp, "~> 2.0", optional: true},
+      # Legion.MCP.Server; Legion.MCP.Plug needs plug too
+      {:anubis_mcp, "~> 1.8 or ~> 2.0", optional: true},
+      {:plug, "~> 1.18", optional: true},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
