@@ -249,9 +249,9 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     ## Telemetry
 
-    Every `repl` call is a `[:legion, :mcp, :call]` span carrying the MCP
-    session id and the agent id it ran in; the agent's own events fire
-    inside it. See `Legion.Telemetry`.
+    Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
+    the MCP session id and the agent id; the agent's own events fire inside
+    a `repl` span. See `Legion.Telemetry`.
     """
 
     require Logger
@@ -586,6 +586,13 @@ if Code.ensure_loaded?(Anubis.Server) do
         mode: :mcp,
         exclude_tools: excluded_tools(server)
       )
+    end
+
+    @doc false
+    # The id of the agent a call from `frame` would run in: the one `session/1`
+    # names, or the session's own once it is started. Nil before that.
+    def session_agent_id(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame) do
+      server.session(frame)[:agent_id] || assigns[:legion_mcp_agent_id]
     end
 
     @doc false
