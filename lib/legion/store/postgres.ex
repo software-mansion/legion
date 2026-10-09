@@ -214,7 +214,6 @@ defmodule Legion.Store.Postgres do
   defp decode_conversation_state(binary) when is_binary(binary) do
     state = :erlang.binary_to_term(binary)
 
-    # `:base_bindings` only where a step checkpoint saved it.
     Map.merge(
       %{messages: [], bindings: [], executor_state: :nonexistent},
       Map.take(state, [:messages, :bindings, :base_bindings, :executor_state])

@@ -21,8 +21,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     # Answered from the agent's tool docs, not by the agent: a lookup is no
-    # step of the conversation and no evaluation to rate limit. It is still
-    # an MCP call span, so a session's lookups can be followed.
+    # step of the conversation and no evaluation to rate limit.
     @impl true
     def execute(params, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
       name = Map.get(params, :tool)
