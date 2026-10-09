@@ -89,7 +89,7 @@ defmodule Legion.AgentPrompt do
   end
 
   # Help lists itself: the model must know it exists.
-  defp listed_tools(agent, excluded), do: (agent.tools() -- excluded) ++ [Help]
+  defp listed_tools(agent, excluded), do: Enum.uniq((agent.tools() -- excluded) ++ [Help])
 
   defp summary(module) do
     Code.ensure_loaded!(module)

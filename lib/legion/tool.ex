@@ -10,20 +10,20 @@ defmodule Legion.Tool do
 
   ## Overridable
 
-    - `description/0` — override to return a hand-written summary **instead of**
+    - `description/0` - override to return a hand-written summary **instead of**
       the source code. Defaults to the module's source code.
-    - `description/1` — like `description/0`, but receives the active sandbox
+    - `description/1` - like `description/0`, but receives the active sandbox
       module, for tools whose usage differs by generated language. Preferred
       over `description/0` when defined.
-    - `summary/0` — override to return the one sentence that stands for the tool
+    - `summary/0` - override to return the one sentence that stands for the tool
       in the tool list under `tool_docs: :on_demand`. Defaults to the first
       sentence of the `@moduledoc`, else of a hand-written `description/0`, else
       the module's short name. The example below has no `@moduledoc`, so its
-      summary is `WeatherTool — fetches current weather data.` Mark an
+      summary is `WeatherTool - fetches current weather data.` Mark an
       override `@impl Legion.Tool`: an unmarked `summary/0`, perhaps a tool
       function that was there first, gets a compile-time warning, since
       Legion takes it over and Lua code cannot call it.
-    - `extra_allowed_modules/0` — override to return additional modules that the
+    - `extra_allowed_modules/0` - override to return additional modules that the
       sandbox should alias and permit when this tool is available. Defaults to `[]`.
       Useful for tools like `Legion.Tools.AgentTool` that dispatch to other modules
       the agent needs to reference by name.
@@ -38,10 +38,10 @@ defmodule Legion.Tool do
 
         def description do
           \"""
-          WeatherTool — fetches current weather data.
+          WeatherTool - fetches current weather data.
 
           ## Functions
-          - `current(city)` — returns weather JSON for the given city name.
+          - `current(city)` - returns weather JSON for the given city name.
           \"""
         end
 
