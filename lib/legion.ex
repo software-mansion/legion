@@ -198,7 +198,8 @@ defmodule Legion do
       call only, for tools to read; the per-call form of the `:vault` option
       of `start_link/2`. The agent's vault is restored after the call, and
       the keys Legion sets itself (`:agent_id`, `:parent_agent_id`,
-      `:agent_module`, `:sandbox`, `:store`, `:rate_limit`) are ignored
+      `:agent_module`, `:sandbox`, `:store`, `:rate_limit`, `:sub_agents`)
+      are ignored
     - `:require_agent` - an agent module; the call is refused like the
       above unless the agent is one. For a caller that reaches an agent by
       id and cannot know how it was started
