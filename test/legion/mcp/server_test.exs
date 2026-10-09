@@ -7,7 +7,7 @@ defmodule Legion.MCP.ServerTest do
   alias Legion.RateLimiter.{ExceededError, Policy, Rule}
   alias Legion.Sandbox.Lua
   alias Legion.Store.Payload
-  alias Legion.Test.Support.{MathAgent, MathTool, MemoryStore, VaultTool}
+  alias Legion.Test.Support.{LocalTool, MathAgent, MathTool, MemoryStore, VaultTool}
 
   defmodule MathMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "math", version: "1.2.3"
@@ -128,7 +128,7 @@ defmodule Legion.MCP.ServerTest do
     @moduledoc "Agent that delegates work."
     use Legion.Agent
 
-    def tools, do: [Legion.Tools.AgentTool]
+    def tools, do: [Legion.Tools.AgentTool, LocalTool]
   end
 
   defmodule AgentToolMCP do
@@ -448,7 +448,7 @@ defmodule Legion.MCP.ServerTest do
     end
   end
 
-  describe "AgentTool" do
+  describe "a tool whose mcp?/0 is false, as AgentTool" do
     test "is left out of the instructions, help and repl" do
       refute match?(
                %{start: {Server, :refuse_start, _arguments}},
@@ -456,14 +456,18 @@ defmodule Legion.MCP.ServerTest do
              )
 
       refute AgentToolMCP.server_instructions() =~ "AgentTool"
+      refute AgentToolMCP.server_instructions() =~ "LocalTool"
 
       frame = initialized(AgentToolMCP, frame())
 
-      assert {false, text, frame} = repl(AgentToolMCP, frame, "return AgentTool == nil")
+      assert {false, text, frame} =
+               repl(AgentToolMCP, frame, "return AgentTool == nil and LocalTool == nil")
+
       assert text =~ "true"
 
       assert {false, text, frame} = help(AgentToolMCP, frame, %{})
       refute text =~ "AgentTool"
+      refute text =~ "LocalTool"
 
       assert {false, text, _frame} = help(AgentToolMCP, frame, %{"tool" => "AgentTool"})
       assert text =~ "No tool named"
@@ -475,10 +479,12 @@ defmodule Legion.MCP.ServerTest do
 
       frame = initialized(PresetMCP, frame())
 
-      assert {false, text, _frame} = repl(PresetMCP, frame, "return AgentTool == nil")
+      assert {false, text, _frame} =
+               repl(PresetMCP, frame, "return AgentTool == nil and LocalTool == nil")
+
       assert text =~ "true"
 
-      assert {:ok, text} = Legion.eval(pid, "return AgentTool == nil")
+      assert {:ok, text} = Legion.eval(pid, "return AgentTool == nil or LocalTool == nil")
       assert text =~ "false"
     end
   end

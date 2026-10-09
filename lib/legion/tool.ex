@@ -27,6 +27,9 @@ defmodule Legion.Tool do
       sandbox should alias and permit when this tool is available. Defaults to `[]`.
       Useful for tools like `Legion.Tools.AgentTool` that dispatch to other modules
       the agent needs to reference by name.
+    - `mcp?/0` - override to return `false` to leave the tool out when the
+      agent is served over `Legion.MCP.Server`, where an outside caller writes
+      the code. Defaults to `true`.
 
   ## Example
 
@@ -75,6 +78,9 @@ defmodule Legion.Tool do
   @callback summary() :: String.t()
   @callback extra_allowed_modules() :: [module()]
 
+  @doc "Whether `Legion.MCP.Server` serves the tool. Defaults to `true`."
+  @callback mcp?() :: boolean()
+
   @optional_callbacks description: 1
 
   defmacro __using__(_opts) do
@@ -87,8 +93,9 @@ defmodule Legion.Tool do
 
       def description, do: unquote(source)
       def extra_allowed_modules, do: []
+      def mcp?, do: true
 
-      defoverridable description: 0, extra_allowed_modules: 0
+      defoverridable description: 0, extra_allowed_modules: 0, mcp?: 0
     end
   end
 

@@ -54,7 +54,13 @@ defmodule Legion.Sandbox.Lua do
   @max_code_size 64 * 1024
 
   # Defined by `use Legion.Tool`, not part of a tool's callable surface.
-  @tool_meta_functions [description: 0, description: 1, summary: 0, extra_allowed_modules: 0]
+  @tool_meta_functions [
+    description: 0,
+    description: 1,
+    summary: 0,
+    extra_allowed_modules: 0,
+    mcp?: 0
+  ]
 
   @module_key "__module"
 

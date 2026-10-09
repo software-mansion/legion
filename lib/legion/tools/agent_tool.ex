@@ -35,6 +35,11 @@ defmodule Legion.Tools.AgentTool do
   @impl Legion.Tool
   def extra_allowed_modules, do: Vault.get(__MODULE__, [])[:agents] || []
 
+  # Over MCP, sub-agents would run tasks the caller writes, on the
+  # application's model and in whatever sandbox they use.
+  @impl Legion.Tool
+  def mcp?, do: false
+
   @impl Legion.Tool
   def description(sandbox) do
     summaries =

@@ -323,7 +323,7 @@ defmodule Legion.AgentServer do
         action_message = Executor.message(:assistant, Jason.encode!(action))
 
         {reply, result_message, bindings} =
-          with_call_vault(opts, fn -> run_eval(code, state) end)
+          with_call_vault(opts, state.agent_module, fn -> run_eval(code, state) end)
 
         entry = %{
           "at" => System.system_time(:millisecond),
@@ -384,13 +384,13 @@ defmodule Legion.AgentServer do
   # leaves out (`Legion.Eval` and `Help` read them there), and the vault as
   # it was put back after. A key one caller passed never reaches the next
   # call or a later turn, and no caller replaces the agent's store or identity.
-  defp with_call_vault(opts, fun) do
+  defp with_call_vault(opts, agent_module, fun) do
     saved = Vault.vault(propagate_vault: :none)
 
     opts
     |> Keyword.get(:vault, [])
     |> Keyword.drop(@legion_vault_keys)
-    |> Keyword.put(:excluded_tools, Keyword.get(opts, :exclude_tools, []))
+    |> Keyword.put(:excluded_tools, excluded_tools(opts, agent_module))
     |> Vault.unsafe_merge()
 
     try do
@@ -399,6 +399,15 @@ defmodule Legion.AgentServer do
       # Vault has no replace or delete, so this writes its process
       # dictionary key directly; switch once Vault can drop keys itself.
       Process.put(:__vault__, saved)
+    end
+  end
+
+  # A function is applied to this agent's tools, for a caller that reaches an
+  # agent by id and cannot know which tools it has.
+  defp excluded_tools(opts, agent_module) do
+    case Keyword.get(opts, :exclude_tools, []) do
+      excluded? when is_function(excluded?, 1) -> Enum.filter(agent_module.tools(), excluded?)
+      excluded -> excluded
     end
   end
 

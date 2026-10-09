@@ -49,11 +49,12 @@ if Code.ensure_loaded?(Anubis.Server) do
     with a tool error. So is every call to an agent whose `action_types/0`
     allow no evaluation.
 
-    For the same reason `Legion.Tools.AgentTool` is left out over MCP, even
-    when the agent lists it: its sub-agents would run tasks the caller writes,
-    on the application's model and in whatever sandbox they use. The
-    instructions and `help` do not list it and `repl` code cannot call it.
-    Chat with the same agent keeps it.
+    For the same reason a tool whose `c:Legion.Tool.mcp?/0` returns `false` is
+    left out over MCP, even when the agent lists it: the instructions and
+    `help` do not list it and `repl` code cannot call it. Chat with the same
+    agent keeps it. `Legion.Tools.AgentTool` is one: its sub-agents would run
+    tasks the caller writes, on the application's model and in whatever
+    sandbox they use.
 
     ## Options
 
@@ -257,11 +258,6 @@ if Code.ensure_loaded?(Anubis.Server) do
     # guard, store save.
     @request_slack :timer.seconds(30)
 
-    # Left out of every call, the instructions and `help`: sub-agents would run
-    # tasks the caller writes, on the application's model and in whatever
-    # sandbox they use.
-    @excluded_tools [Legion.Tools.AgentTool]
-
     defmacro __using__(opts) do
       {agent, anubis_opts} = Keyword.pop!(opts, :agent)
       {budget, anubis_opts} = Keyword.pop(anubis_opts, :instructions_budget, @default_budget)
@@ -407,7 +403,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         case Legion.eval(agent, code,
                vault: vault,
                require_sandbox: Legion.Sandbox.Lua,
-               exclude_tools: @excluded_tools
+               exclude_tools: &excluded_tool?/1
              ) do
           {:ok, text} ->
             {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
@@ -529,13 +525,20 @@ if Code.ensure_loaded?(Anubis.Server) do
     def instructions(agent_module) do
       AgentPrompt.system_prompt(agent_module, Agent.resolve_config(agent_module),
         mode: :mcp,
-        exclude_tools: @excluded_tools
+        exclude_tools: excluded_tools(agent_module)
       )
     end
 
     @doc false
     # The tool list `help` answers a malformed name with, as a call sees it.
-    def tool_index(agent_module), do: AgentPrompt.tool_index(agent_module, @excluded_tools)
+    def tool_index(agent_module),
+      do: AgentPrompt.tool_index(agent_module, excluded_tools(agent_module))
+
+    defp excluded_tools(agent_module), do: Enum.filter(agent_module.tools(), &excluded_tool?/1)
+
+    # Loaded first, so a tool not yet loaded is not served for lack of `mcp?/0`.
+    defp excluded_tool?(tool),
+      do: Code.ensure_loaded?(tool) and function_exported?(tool, :mcp?, 0) and not tool.mcp?()
 
     @doc false
     # Anubis's transport calls the session with this timeout; it must outlast
