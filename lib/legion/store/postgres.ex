@@ -105,6 +105,11 @@ defmodule Legion.Store.Postgres do
       @impl Legion.Store
       def persistence_frequency, do: unquote(persistence_frequency)
 
+      @doc false
+      # Where the rows live, so `Legion.RateLimiter.Postgres` can check that
+      # it counts the rows this store writes.
+      def __legion_table__, do: {unquote(repo), unquote(table)}
+
       @impl Legion.Store
       def get(agent_id) when not is_binary(agent_id), do: :error
 

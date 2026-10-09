@@ -28,7 +28,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         :error ->
           message =
             "Tool names are single words, as listed. Tools:\n" <>
-              Server.tool_index(server.__legion_agent__())
+              Server.tool_index(server)
 
           {:reply, Response.error(Response.tool(), message), frame}
       end

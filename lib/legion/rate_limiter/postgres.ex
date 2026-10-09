@@ -85,10 +85,13 @@ defmodule Legion.RateLimiter.Postgres do
 
   `:max_evals` is evaluated the same way from recorded `"evals"` usage.
 
-  Token and eval limits require Legion usage tracking, which is enabled by
-  default. If your application configures `config :legion, :track_usage, false`,
-  leave `:max_tokens` and `:max_evals` as `nil`; agent limits do not require
-  usage tracking.
+  `:max_tokens`, `:max_evals` and `:max_running_agents` read what the agent's
+  store writes, so they need that store to be a `Legion.Store.Postgres` on
+  the limiter's repo and table; an agent started with them and any other
+  store, or none, raises `ArgumentError`. Token and eval limits also require
+  Legion usage tracking, which is enabled by default: with
+  `config :legion, :track_usage, false` they raise too. `:max_agents` needs
+  neither.
 
   ## Options
 
@@ -138,6 +141,47 @@ defmodule Legion.RateLimiter.Postgres do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
             "#{inspect(agent_id)}, #{inspect(other)}"
+  end
+
+  @usage_limits ~w(max_tokens max_evals max_running_agents)a
+
+  @doc false
+  # Called when an agent starts. `:max_tokens` and `:max_evals` are summed
+  # from the usage the agent's store writes to this table, and only that
+  # store writes back the `idle` that frees a `:max_running_agents` slot. With
+  # any other store, or none, the first two never deny and the last never
+  # frees, so the agent does not start.
+  def check_store!(table, store, track_usage, rules) do
+    limits =
+      for %Rule{policy: policy} <- rules,
+          limit <- @usage_limits,
+          Map.get(policy, limit) != nil,
+          uniq: true,
+          do: limit
+
+    cond do
+      limits == [] ->
+        :ok
+
+      store_table(store) != table ->
+        raise ArgumentError,
+              "rate-limit rules with #{Enum.map_join(limits, ", ", &inspect/1)} need a " <>
+                "Legion.Store.Postgres store on the limiter's repo and table, " <>
+                "got store: #{inspect(store)}"
+
+      not track_usage and Enum.any?(limits, &(&1 in [:max_tokens, :max_evals])) ->
+        raise ArgumentError,
+              "rate-limit rules with :max_tokens or :max_evals need usage tracking, " <>
+                "which `config :legion, :track_usage, false` turns off"
+
+      true ->
+        :ok
+    end
+  end
+
+  defp store_table(store) do
+    if store && Code.ensure_loaded?(store) && function_exported?(store, :__legion_table__, 0),
+      do: store.__legion_table__()
   end
 
   # Serializes concurrent calls for the same identity so `:max_agents` counts
@@ -312,6 +356,16 @@ defmodule Legion.RateLimiter.Postgres do
           unquote(repo),
           Record,
           agent_id,
+          rules
+        )
+      end
+
+      @doc false
+      def check_store!(store, track_usage, rules) do
+        RateLimiter.Postgres.check_store!(
+          {unquote(repo), unquote(table)},
+          store,
+          track_usage,
           rules
         )
       end
