@@ -65,7 +65,10 @@ defmodule Legion.RateLimiter do
   below it raise rather than re-enable it. Each sub-agent is a separate agent
   ID in every group, so it counts towards `:max_agents`, towards
   `:max_running_agents` while its turn runs, and its usage towards
-  `:max_tokens`.
+  `:max_tokens`. A long-lived one from `Legion.Tools.AgentTool.start_link/1`
+  counts towards `:max_agents` from its start, before any turn. A parent
+  waiting on a sub-agent is mid-turn too, so the two hold two
+  `:max_running_agents` slots: with a limit of `1`, no sub-agent ever runs.
 
   Rules must agree on their identities: two rules may share a field only with
   the same value, since the adapter records one group membership per agent.

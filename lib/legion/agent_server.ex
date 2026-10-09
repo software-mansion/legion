@@ -20,7 +20,7 @@ defmodule Legion.AgentServer do
 
   # What `init/1` puts in the Vault for Legion and its tools; a per-call
   # vault cannot replace them.
-  @legion_vault_keys ~w(agent_id parent_agent_id agent_module sandbox store rate_limit)a
+  @legion_vault_keys ~w(agent_id parent_agent_id agent_module sandbox store rate_limit sub_agents)a
 
   defstruct [
     :agent_module,
@@ -113,6 +113,12 @@ defmodule Legion.AgentServer do
     GenServer.call(agent, {:eval, code, opts}, timeout)
   end
 
+  @doc false
+  # Checks the agent's rate limit for its start, before any turn, the way a
+  # turn would; `Legion.Tools.AgentTool` starts sub-agents with it, so a
+  # denied one never runs. Returns `:ok` or `{:rate_limited, violations}`.
+  def enforce_start(agent), do: GenServer.call(agent, :enforce_start)
+
   def get_messages(agent) do
     GenServer.call(agent, :get_messages)
   end
@@ -155,6 +161,12 @@ defmodule Legion.AgentServer do
 
     Legion.Agent.seed_tool_configs(agent_module)
     Vault.unsafe_put(:rate_limit, config.rate_limit)
+
+    # What `Legion.Tools.AgentTool` holds this agent's sub-agents to.
+    Vault.unsafe_put(:sub_agents, %{
+      max: config.max_sub_agents,
+      idle_timeout: config.sub_agent_idle_timeout
+    })
 
     system_prompt = Legion.AgentPrompt.system_prompt(agent_module, config)
 
@@ -255,6 +267,19 @@ defmodule Legion.AgentServer do
   @impl true
   def handle_call(:get_messages, _from, state) do
     {:reply, state.messages, state, idle_timeout(state)}
+  end
+
+  # `:max_running_agents` counts agents mid-turn, and a start is not one:
+  # checked here, it would mark the idle agent running.
+  @impl true
+  def handle_call(:enforce_start, _from, state) do
+    rate_limit =
+      Map.update!(state.config.rate_limit, :rules, fn rules ->
+        for rule <- rules, do: put_in(rule.policy.max_running_agents, nil)
+      end)
+
+    reply = enforce_rate_limit(put_in(state.config.rate_limit, rate_limit))
+    {:reply, reply, state, idle_timeout(state)}
   end
 
   @impl true
