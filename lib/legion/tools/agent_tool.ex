@@ -11,8 +11,18 @@ defmodule Legion.Tools.AgentTool do
   Left out when the agent is served over MCP; see `Legion.MCP.Server`.
 
   `call/2` with an agent module runs one task, `start_link/1` returns a
-  sub-agent id that `call/2` and `cast/2` take to hold a conversation, and
-  `parallel/2`, `pipeline/1` and `then/3` compose tasks.
+  sub-agent id that `call/2` and `cast/2` take to hold a conversation and
+  `stop/1` ends, and `parallel/2`, `pipeline/1` and `then/3` compose tasks.
+
+  Two settings of the starting agent's config bound its long-lived
+  sub-agents, set like any other in `Legion.Agent`: per agent in `config/0`,
+  for every agent in `config :legion, :config`, or per start in
+  `Legion.start_link/2`:
+
+    - `:max_sub_agents` - how many may run at once (default: `10`)
+    - `:sub_agent_idle_timeout` - how long one may go without a message
+      before it stops (default: thirty minutes); it overrides the
+      sub-agent's own `:idle_timeout`
 
   Blocking calls (`call/2`, `parallel/2`, `pipeline/1`, `then/3`) run inside
   the parent's evaluation, so the whole sub-agent run counts against the
@@ -91,32 +101,61 @@ defmodule Legion.Tools.AgentTool do
 
   @doc """
   Starts a sub-agent that keeps its conversation across messages, like
-  `Legion.start_link/2`. Returns `{:ok, agent_id}`: pass the id to `call/2`
-  and `cast/2`. Unlike a pid, it crosses the Lua bridge and persists in
-  bindings.
+  `Legion.start_link/2`. Returns `{:ok, agent_id}`: pass the id to `call/2`,
+  `cast/2` and `stop/1`. Unlike a pid, it crosses the Lua bridge and
+  persists in bindings.
 
-  Only the agent that started the sub-agent reaches it by its id, and the
-  sub-agent stops when that agent stops. Raises if the agent is not in the
-  allowed list.
+  Only the agent that started the sub-agent reaches it by its id. The
+  sub-agent stops when that agent stops, when `stop/1` stops it, or after
+  the starting agent's `:sub_agent_idle_timeout` without a message (default
+  thirty minutes), so one whose id was lost does not run on. Unless the
+  starting agent's `:binding_scope` is `:conversation`, it also stops when
+  the turn that started it ends, with the variables that could hold its id.
+
+  The start is checked against the `:max_agents` of the rate limit the
+  sub-agent inherits, so it counts from its start; a denied start returns
+  `{:cancel, {:rate_limited, violations}}` and leaves nothing running.
+  Raises if the agent is not in the allowed list, or if the starting agent
+  already runs its `:max_sub_agents` (default 10).
   """
   def start_link(agent_module) do
     check_allowed!(agent_module)
     owner_id = Vault.fetch!(:agent_id)
+    %{max: max, idle_timeout: idle_timeout} = Vault.fetch!(:sub_agents)
+    check_capacity!(owner_id, max)
     {:ok, owner} = Legion.lookup(owner_id)
-    {:ok, pid} = AgentServer.start_link(agent_module)
-    agent_id = AgentServer.get_agent_id(pid)
 
-    :yes = :global.register_name(owned_name(owner_id, agent_id), stop_with_owner(pid, owner))
-    {:ok, agent_id}
+    # Unlinked: the caller is the eval process, which the sandbox kills on a
+    # timeout. stop_with_owner/2 ties the sub-agent to its owner instead.
+    case AgentServer.start_monitor(agent_module, idle_timeout: idle_timeout) do
+      {:ok, {pid, _ref}} ->
+        agent_id = AgentServer.get_agent_id(pid)
+        :yes = :global.register_name(owned_name(owner_id, agent_id), stop_with_owner(pid, owner))
+        {:ok, agent_id}
+
+      {:error, {:rate_limited, violations}} ->
+        {:cancel, {:rate_limited, violations}}
+    end
   end
 
   @doc """
   Starts a sub-agent like `start_link/1` and casts `task` to it.
   """
   def start_link(agent_module, task) do
-    {:ok, agent_id} = start_link(agent_module)
-    cast(agent_id, task)
-    {:ok, agent_id}
+    with {:ok, agent_id} <- start_link(agent_module) do
+      cast(agent_id, task)
+      {:ok, agent_id}
+    end
+  end
+
+  @doc """
+  Stops a sub-agent from `start_link/1`, after the turn it is running, if
+  any. Returns `:ok`.
+
+  Raises if this agent has no running sub-agent with that id.
+  """
+  def stop(agent_id) do
+    agent_id |> owned!() |> GenServer.stop()
   end
 
   @doc """
@@ -226,6 +265,9 @@ defmodule Legion.Tools.AgentTool do
 
           AgentTool.cast(writer, "Also drop the marketing line.")
           return AgentTool.call(writer, "Tighten the second paragraph.")[2]
+
+      Only a few run at once: `AgentTool.stop(writer)` one you are done with.
+      One left without messages for a while stops on its own.
       """
     }
   end
@@ -277,6 +319,9 @@ defmodule Legion.Tools.AgentTool do
 
           AgentTool.cast(writer, "Also drop the marketing line.")
           {:ok, revised} = AgentTool.call(writer, "Tighten the second paragraph.")
+
+      Only a few run at once: `AgentTool.stop(writer)` one you are done with.
+      One left without messages for a while stops on its own.
       """
     }
   end
@@ -296,8 +341,39 @@ defmodule Legion.Tools.AgentTool do
   # agent id; the watcher lives exactly as long as the sub-agent.
   defp owned_name(owner_id, agent_id), do: {:legion_sub_agent, owner_id, agent_id}
 
-  # Anything that is not one of this agent's running sub-agents lands here:
-  # a stale id or a forged one.
+  # Counts this agent's names among every registered one: cheap at the
+  # handful a cap allows, though it walks the whole cluster's names. A name
+  # outlives its sub-agent for a moment, until the watcher notices, so only
+  # those whose sub-agent is alive count, and a stopped one frees its slot
+  # at once.
+  defp check_capacity!(owner_id, max) do
+    running = length(running(owner_id))
+
+    if running >= max do
+      raise ArgumentError,
+            "this agent already runs #{running} sub-agents, as many as it may " <>
+              "(:max_sub_agents); stop one with stop/1 first"
+    end
+  end
+
+  @doc false
+  def running(owner_id) do
+    for {:legion_sub_agent, ^owner_id, agent_id} <- :global.registered_names(),
+        Legion.lookup(agent_id) != :error,
+        do: agent_id
+  end
+
+  @doc false
+  # Stops `owner_id`'s sub-agents other than `kept` at once, mid-turn or not:
+  # their ids went with the bindings that held them, so nothing reaches them.
+  def stop_running(owner_id, kept) do
+    for agent_id <- running(owner_id) -- kept, {:ok, pid} <- [Legion.lookup(agent_id)] do
+      Process.exit(pid, :shutdown)
+    end
+
+    :ok
+  end
+
   defp owned!(agent_id) do
     with watcher when is_pid(watcher) <-
            :global.whereis_name(owned_name(Vault.fetch!(:agent_id), agent_id)),
@@ -307,7 +383,7 @@ defmodule Legion.Tools.AgentTool do
       _not_running ->
         raise ArgumentError,
               "#{inspect(agent_id)} is not a running sub-agent of this agent - it stopped, " <>
-                "or another agent started it. Start one with start_link/1, " <>
+                "was idle too long, or another agent started it. Start one with start_link/1, " <>
                 "or run a one-off task by calling an agent module"
     end
   end

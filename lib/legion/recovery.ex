@@ -34,6 +34,7 @@ defmodule Legion.Recovery do
   stops.
   """
 
+  alias Legion.AgentServer
   alias Legion.Store.Payload
 
   @default_concurrent_request_limit 3
@@ -69,19 +70,9 @@ defmodule Legion.Recovery do
   end
 
   defp running_root?(%Payload{status: :running, parent_agent_id: nil} = payload),
-    do: unfinished_turn?(payload.conversation_state)
+    do: AgentServer.unfinished_turn?(payload.conversation_state)
 
   defp running_root?(_payload), do: false
-
-  # A turn left behind a checkpoint, or its prompt with nothing after it. A
-  # `Legion.eval/3` step, an MCP call, leaves neither: its row is running
-  # only because the rate limiter marked it, and recovering it would run the
-  # agent's own model over a conversation an outside model drives.
-  defp unfinished_turn?(%{executor_state: executor_state}) when executor_state != :nonexistent,
-    do: true
-
-  defp unfinished_turn?(%{messages: messages}), do: match?(%{type: :user}, List.last(messages))
-  defp unfinished_turn?(_conversation_state), do: false
 
   @doc false
   def child_spec(config) do

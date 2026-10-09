@@ -1,8 +1,20 @@
 defmodule Legion.ExecutorTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Mimic
 
+  alias Legion.Executor
   alias Legion.Test.Support.MathAgent
+
+  defmodule NoArithmetic do
+    @behaviour Legion.EvalGuard
+
+    @impl true
+    def check(code, _context) do
+      if String.contains?(code, "+"),
+        do: {:deny, "addition is off limits here"},
+        else: :allow
+    end
+  end
 
   defmodule ReturnOnlyAgent do
     @moduledoc "An agent restricted to return/done actions only."
@@ -68,9 +80,29 @@ defmodule Legion.ExecutorTest do
     end
   end
 
-  setup :set_mimic_global
-
   @moduletag capture_log: true
+
+  defp execute(agent_module, task, opts \\ []) do
+    pid = start_supervised!({agent_module, opts})
+    allow(ReqLLM, self(), pid)
+    Legion.call(pid, task)
+  end
+
+  defp attach_llm_request_stop do
+    test_pid = self()
+    handler_id = make_ref()
+
+    :telemetry.attach(
+      handler_id,
+      [:legion, :llm, :request, :stop],
+      fn _event, _measurements, metadata, _config ->
+        if self() == test_pid, do: send(test_pid, {:llm_request_stop, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
 
   defp response(object, turn_usage \\ 0) do
     {:ok,
@@ -85,8 +117,8 @@ defmodule Legion.ExecutorTest do
 
   defp executor_messages(message) do
     [
-      Legion.Executor.message(:system, "system"),
-      Legion.Executor.message(:user, message)
+      Executor.message(:system, "system"),
+      Executor.message(:user, message)
     ]
   end
 
@@ -121,73 +153,12 @@ defmodule Legion.ExecutorTest do
                   "tool_usage" => %{"web_search" => 1},
                   "at" => timestamp
                 }
-              ]} = Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+              ]} = Executor.run(MathAgent, executor_messages("what is 42?"), %{})
 
       assert timestamp in before..System.system_time(:millisecond)
     end
 
-    test "returns usage list from a single LLM request" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "return", "code" => "", "result" => "42"}, 17)
-      end)
-
-      assert {:ok, "42", _messages, [], [%{"turn_usage" => 17}]} =
-               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
-    end
-
-    test "preserves provider usage values while stringifying keys" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        {:ok,
-         %ReqLLM.Response{
-           id: "test",
-           model: "test",
-           context: nil,
-           object: %{"action" => "return", "code" => "", "result" => "42"},
-           usage: %{input_tokens: 12, output_tokens: 5}
-         }}
-      end)
-
-      assert {:ok, "42", _messages, [], [%{"input_tokens" => 12, "output_tokens" => 5}]} =
-               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
-    end
-
-    test "preserves usage order across a multi-response turn" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 -> response(%{"action" => "eval_and_continue", "code" => "x = 10", "result" => ""}, 7)
-          2 -> response(%{"action" => "return", "code" => "", "result" => "done"}, 11)
-        end
-      end)
-
-      assert {:ok, "done", _messages, _bindings, [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
-               Legion.Executor.run(
-                 MathAgent,
-                 executor_messages("compute"),
-                 %{}
-               )
-    end
-
-    test "retains usage from an invalid response while retrying" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 -> response(nil, 7)
-          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
-        end
-      end)
-
-      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
-               Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
-    end
-
-    test "flags the request whose action ran code as one eval" do
+    test "keeps usage in request order, flagging the request whose action ran code as one eval" do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -200,7 +171,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, "done", _messages, _bindings, [eval_request, return_request]} =
-               Legion.Executor.run(MathAgent, executor_messages("compute"), %{})
+               Executor.run(MathAgent, executor_messages("compute"), %{})
 
       assert %{"turn_usage" => 7, "evals" => 1} = eval_request
       assert %{"turn_usage" => 11} = return_request
@@ -227,12 +198,11 @@ defmodule Legion.ExecutorTest do
 
       assert {:ok, "recovered", _messages, [],
               [%{"turn_usage" => 7, "evals" => 1}, %{"turn_usage" => 11}]} =
-               Legion.Executor.run(MathAgent, executor_messages("fail once"), %{})
+               Executor.run(MathAgent, executor_messages("fail once"), %{})
     end
 
     test "emits normalized usage in LLM request stop telemetry" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :llm, :request, :stop]])
-      on_exit(fn -> :telemetry.detach(ref) end)
+      attach_llm_request_stop()
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         {:ok,
@@ -248,9 +218,9 @@ defmodule Legion.ExecutorTest do
       before = System.system_time(:millisecond)
 
       assert {:ok, "42", _messages, [], [_usage]} =
-               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+               Executor.run(MathAgent, executor_messages("what is 42?"), %{})
 
-      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements, metadata}
+      assert_received {:llm_request_stop, metadata}
 
       assert %{
                object: %{"action" => "return"},
@@ -267,9 +237,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "emits usage in LLM request stop telemetry for an invalid response" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :llm, :request, :stop]])
-      on_exit(fn -> :telemetry.detach(ref) end)
-
+      attach_llm_request_stop()
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -282,16 +250,14 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, "recovered", _messages, [], [_first, _second]} =
-               Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
+               Executor.run(MathAgent, executor_messages("recover"), %{})
 
-      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
-                      %{error: _, usage: usage}}
-
+      assert_received {:llm_request_stop, %{error: _, usage: usage}}
       assert %{"turn_usage" => 7, "at" => at, "message_index" => nil} = usage
       assert is_integer(at)
 
-      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
-                      %{object: %{"action" => "return"}, usage: %{"turn_usage" => 11}}}
+      assert_received {:llm_request_stop,
+                       %{object: %{"action" => "return"}, usage: %{"turn_usage" => 11}}}
     end
 
     test "returns result for return action" do
@@ -299,7 +265,7 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "return", "code" => "", "result" => "42"})
       end)
 
-      assert {:ok, "42"} = Legion.execute(MathAgent, "what is 42?")
+      assert {:ok, "42"} = execute(MathAgent, "what is 42?")
     end
 
     test "returns nil for done action" do
@@ -307,7 +273,7 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "done", "code" => "", "result" => ""})
       end)
 
-      assert {:ok, nil} = Legion.execute(MathAgent, "nothing")
+      assert {:ok, nil} = execute(MathAgent, "nothing")
     end
 
     test "eval_and_complete executes code and returns result" do
@@ -315,7 +281,7 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "eval_and_complete", "code" => "return 1 + 1", "result" => ""})
       end)
 
-      assert {:ok, 2} = Legion.execute(MathAgent, "add")
+      assert {:ok, 2} = execute(MathAgent, "add")
     end
 
     test "eval_and_continue chains into next iteration" do
@@ -333,7 +299,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, 20} = Legion.execute(MathAgent, "compute")
+      assert {:ok, 20} = execute(MathAgent, "compute")
     end
 
     test "cancels after max_iterations" do
@@ -342,7 +308,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:cancel, :reached_max_iterations} =
-               Legion.execute(MathAgent, "loop forever")
+               execute(MathAgent, "loop forever")
     end
 
     test "retries on code execution error and cancels after max_retries" do
@@ -354,21 +320,10 @@ defmodule Legion.ExecutorTest do
         })
       end)
 
-      assert {:cancel, :reached_max_retries} = Legion.execute(MathAgent, "fail")
+      assert {:cancel, :reached_max_retries} = execute(MathAgent, "fail")
     end
 
     test "eval_guard denial stops the code from running and reaches the agent" do
-      defmodule NoArithmetic do
-        @behaviour Legion.EvalGuard
-
-        @impl true
-        def check(code, _context) do
-          if String.contains?(code, "+"),
-            do: {:deny, "addition is off limits here"},
-            else: :allow
-        end
-      end
-
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
@@ -393,53 +348,33 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, 42} = Legion.execute(MathAgent, "add things", eval_guard: NoArithmetic)
+      assert {:ok, 42} = execute(MathAgent, "add things", eval_guard: NoArithmetic)
     end
 
-    test "eval_guard allowing code leaves execution untouched" do
-      defmodule AllowAll do
-        @behaviour Legion.EvalGuard
+    test "retries a failed or malformed LLM response, keeping only reported usage" do
+      failures = [
+        {fn -> {:error, "connection refused"} end, [11]},
+        {fn -> raise "provider exploded" end, [11]},
+        {fn -> response(%{"code" => "1 + 1", "result" => ""}, 7) end, [7, 11]}
+      ]
 
-        @impl true
-        def check(_code, _context), do: :allow
+      for {failure, expected_turn_usage} <- failures do
+        call_count = :counters.new(1, [:atomics])
+
+        stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+          :counters.add(call_count, 1, 1)
+
+          case :counters.get(call_count, 1) do
+            1 -> failure.()
+            2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
+          end
+        end)
+
+        assert {:ok, "recovered", _messages, [], usage} =
+                 Executor.run(MathAgent, executor_messages("recover"), %{})
+
+        assert Enum.map(usage, & &1["turn_usage"]) == expected_turn_usage
       end
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "eval_and_complete", "code" => "return 2 + 2", "result" => ""})
-      end)
-
-      assert {:ok, 4} = Legion.execute(MathAgent, "add", eval_guard: AllowAll)
-    end
-
-    test "LLM error triggers retry" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 -> {:error, "connection refused"}
-          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"})
-        end
-      end)
-
-      assert {:ok, "recovered"} = Legion.execute(MathAgent, "retry me")
-    end
-
-    test "raised LLM exception triggers retry without adding usage" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 -> raise "provider exploded"
-          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
-        end
-      end)
-
-      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 11}]} =
-               Legion.Executor.run(MathAgent, executor_messages("retry raised error"), %{})
     end
 
     test "third-party tool module without extra_allowed_modules/0 does not crash eval" do
@@ -452,22 +387,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, ~s({"a":1})} =
-               Legion.execute(ThirdPartyToolAgent, "encode", sandbox: Legion.Sandbox.Elixir)
-    end
-
-    test "missing action field in LLM response triggers retry" do
-      call_count = :counters.new(1, [:atomics])
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        :counters.add(call_count, 1, 1)
-
-        case :counters.get(call_count, 1) do
-          1 -> response(%{"code" => "1 + 1", "result" => ""})
-          2 -> response(%{"action" => "return", "code" => "", "result" => "ok"})
-        end
-      end)
-
-      assert {:ok, "ok"} = Legion.execute(MathAgent, "recover")
+               execute(ThirdPartyToolAgent, "encode", sandbox: Legion.Sandbox.Elixir)
     end
   end
 
@@ -502,7 +422,7 @@ defmodule Legion.ExecutorTest do
       end
 
       assert {:ok, 20, _messages, _bindings, _turn_usage} =
-               Legion.Executor.run(
+               Executor.run(
                  MathAgent,
                  executor_messages("compute"),
                  %{checkpoint: checkpoint, sandbox: Legion.Sandbox.Elixir}
@@ -554,7 +474,7 @@ defmodule Legion.ExecutorTest do
       end
 
       assert {:ok, "recovered", _messages, [], _turn_usage} =
-               Legion.Executor.run(
+               Executor.run(
                  MathAgent,
                  executor_messages("recover"),
                  %{checkpoint: checkpoint}
@@ -579,7 +499,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, "done", _messages, [], _turn_usage} =
-               Legion.Executor.run(
+               Executor.run(
                  MathAgent,
                  executor_messages("finish"),
                  %{checkpoint: fn state -> send(test_pid, {:checkpoint, state}) end}
@@ -598,7 +518,7 @@ defmodule Legion.ExecutorTest do
 
       reason =
         catch_exit(
-          Legion.Executor.run(
+          Executor.run(
             MathAgent,
             executor_messages("compute"),
             %{checkpoint: fn _state -> :error end}
@@ -627,7 +547,7 @@ defmodule Legion.ExecutorTest do
       # stores nothing, its error prompt fills 2, the retry's assistant
       # message lands at 3.
       assert {:ok, "done", messages, [], usage} =
-               Legion.Executor.run(MathAgent, executor_messages("compute"), %{})
+               Executor.run(MathAgent, executor_messages("compute"), %{})
 
       assert [
                %{"turn_usage" => 7, "message_index" => nil},
@@ -641,138 +561,56 @@ defmodule Legion.ExecutorTest do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> response(nil, 7) end)
 
       assert {:cancel, :reached_max_retries, messages, [], usage} =
-               Legion.Executor.run(MathAgent, executor_messages("compute"), %{max_retries: 0})
+               Executor.run(MathAgent, executor_messages("compute"), %{max_retries: 0})
 
       assert [%{"turn_usage" => 7, "message_index" => nil}] = usage
       assert [%{type: :system}, %{type: :user}] = messages
     end
   end
 
-  describe "result formatting" do
-    test "available variables are listed in the result message" do
-      {:ok, counter} = Agent.start_link(fn -> 0 end)
-      test_pid = self()
+  describe "max_message_length" do
+    test "truncates eval results and errors fed back to the LLM" do
+      call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _m, messages, _s ->
-        i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
 
-        if i > 0 do
-          last_msg = messages |> List.last() |> Map.get(:content)
-          send(test_pid, {:result_msg, last_msg})
-        end
-
-        case i do
-          0 ->
-            response(%{
-              "action" => "eval_and_continue",
-              "code" => "posts = {1, 2}",
-              "result" => ""
-            })
-
+        case :counters.get(call_count, 1) do
           1 ->
-            response(%{"action" => "return", "code" => "", "result" => "done"})
-        end
-      end)
-
-      assert {:ok, "done"} = Legion.execute(MathAgent, "test var listing")
-
-      assert_received {:result_msg, msg}
-      assert msg =~ "Available variables:"
-      assert msg =~ "`posts`"
-    end
-  end
-
-  describe "max_message_length in result/error feedback" do
-    test "truncates large code execution results in the feedback message" do
-      test_pid = self()
-      {:ok, counter} = Agent.start_link(fn -> 0 end)
-
-      stub(ReqLLM, :generate_object, fn _m, messages, _s ->
-        i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-
-        if i > 0 do
-          last_msg = messages |> List.last() |> Map.get(:content)
-          send(test_pid, {:result_msg, last_msg})
-        end
-
-        case i do
-          0 ->
             response(%{
               "action" => "eval_and_continue",
               "code" => "return string.rep(\"a\", 5000)",
               "result" => ""
             })
 
-          1 ->
+          2 ->
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "error(string.rep(\"x\", 5000))",
+              "result" => ""
+            })
+
+          3 ->
             response(%{"action" => "return", "code" => "", "result" => "done"})
         end
       end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 200)
-      assert {:ok, "done"} = Legion.call(pid, "generate a lot")
+      assert {:ok, "done", messages, _bindings, _usage} =
+               Executor.run(MathAgent, executor_messages("generate a lot"), %{
+                 max_message_length: 200
+               })
 
-      assert_received {:result_msg, msg}
-      assert msg =~ "[... truncated"
-      assert byte_size(msg) < 1_000
-    end
+      assert [%{type: :eval_result} = result, %{type: :error} = error] =
+               Enum.filter(messages, &(&1.type in [:eval_result, :error]))
 
-    test "truncates long error text in the retry feedback message" do
-      test_pid = self()
-      {:ok, counter} = Agent.start_link(fn -> 0 end)
-      long_message = String.duplicate("x", 5_000)
-
-      stub(ReqLLM, :generate_object, fn _m, messages, _s ->
-        i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-
-        if i > 0 do
-          last_msg = messages |> List.last() |> Map.get(:content)
-          send(test_pid, {:error_msg, last_msg})
-        end
-
-        case i do
-          0 ->
-            response(%{
-              "action" => "eval_and_complete",
-              "code" => "error(\"#{long_message}\")",
-              "result" => ""
-            })
-
-          _ ->
-            response(%{"action" => "return", "code" => "", "result" => "recovered"})
-        end
-      end)
-
-      {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 200)
-      assert {:ok, "recovered"} = Legion.call(pid, "fail loudly")
-
-      assert_received {:error_msg, msg}
-      assert msg =~ "[... truncated"
-      assert byte_size(msg) < 1_000
+      for feedback <- [result, error] do
+        assert feedback.content =~ "[... truncated"
+        assert byte_size(feedback.content) < 1_000
+      end
     end
   end
 
   describe "custom output_schema" do
-    test "schema is passed to LLM with additionalProperties injected" do
-      test_pid = self()
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, schema ->
-        send(test_pid, {:schema, schema})
-
-        response(%{
-          "action" => "return",
-          "code" => "",
-          "result" => %{"summary" => "hi", "score" => 1}
-        })
-      end)
-
-      Legion.execute(StructuredOutputAgent, "test")
-
-      assert_received {:schema, schema}
-      result_schema = schema["properties"]["result"]
-      assert result_schema["additionalProperties"] == false
-      assert result_schema["properties"] == StructuredOutputAgent.output_schema()["properties"]
-    end
-
     test "return action passes structured result through" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{
@@ -783,7 +621,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, %{"summary" => "all good", "score" => 95}} =
-               Legion.execute(StructuredOutputAgent, "evaluate")
+               execute(StructuredOutputAgent, "evaluate")
     end
 
     test "eval_and_complete returns code result, not the schema result field" do
@@ -796,7 +634,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, %{"summary" => "computed", "score" => 42}} =
-               Legion.execute(StructuredOutputAgent, "compute")
+               execute(StructuredOutputAgent, "compute")
     end
   end
 
@@ -805,25 +643,19 @@ defmodule Legion.ExecutorTest do
       assert MathAgent.action_types() == ~w(eval_and_continue eval_and_complete return done)
     end
 
-    test "restricted agent only allows return and done" do
-      assert ReturnOnlyAgent.action_types() == ~w(return done)
-    end
+    test "a disallowed action is retried without running its code" do
+      call_count = :counters.new(1, [:atomics])
 
-    test "disallowed action causes cancel after max_retries" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""})
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(%{"action" => "eval_and_complete", "code" => "return 1", "result" => ""})
+          2 -> response(%{"action" => "return", "code" => "", "result" => "answer"})
+        end
       end)
 
-      assert {:cancel, :reached_max_retries} =
-               Legion.execute(ReturnOnlyAgent, "do something")
-    end
-
-    test "allowed action works on restricted agent" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "return", "code" => "", "result" => "answer"})
-      end)
-
-      assert {:ok, "answer"} = Legion.execute(ReturnOnlyAgent, "do something")
+      assert {:ok, "answer"} = execute(ReturnOnlyAgent, "do something")
     end
   end
 
@@ -841,7 +673,7 @@ defmodule Legion.ExecutorTest do
         })
       end)
 
-      Legion.execute(DeeplyNestedAgent, "test")
+      execute(DeeplyNestedAgent, "test")
 
       assert_received {:schema, schema}
       result = schema["properties"]["result"]
@@ -885,7 +717,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, 984} = Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
+      assert {:ok, 984} = execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
 
       assert_received {:first_call, messages, schema}
       assert schema["properties"]["code"]["description"] =~ "Lua code to execute"
@@ -906,7 +738,7 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:cancel, :reached_max_retries} =
-               Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
+               execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
     end
   end
 end

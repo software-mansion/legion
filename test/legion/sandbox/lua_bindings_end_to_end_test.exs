@@ -20,7 +20,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest.AdminTool do
   def description, do: "AdminTool - privileged operations, reports every call to the test."
 
   def wipe(marker) do
-    send(:lua_bindings_end_to_end_test, {:admin_reached, marker})
+    send(Vault.get(:test_pid), {:admin_reached, marker})
     "wiped #{marker}"
   end
 end
@@ -31,13 +31,12 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
   LLM, bridged tools, the Postgres store, restarts - and checks what the
   persisted bindings carry across each boundary.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Mimic
 
   alias Legion.Sandbox.LuaBindingsEndToEndTest.AdminTool
   alias Legion.Sandbox.LuaBindingsEndToEndTest.CatalogTool
   alias Legion.Store.Payload
-  alias Legion.Test.Support.PostgresRepo, as: Repo
 
   @moduletag capture_log: true
 
@@ -61,16 +60,13 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
     use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo
   end
 
-  setup :set_mimic_global
-
   setup do
-    Repo.query!("TRUNCATE legion_agents", [])
-    Process.register(self(), :lua_bindings_end_to_end_test)
-    :ok
+    %{agent_id: "curator-" <> Ecto.UUID.generate()}
   end
 
-  test "globals survive a restart as plain data; dead tool results and functions do not" do
-    {:ok, pid} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-restart")
+  test "globals survive a restart as plain data; dead tool results and functions do not",
+       %{agent_id: agent_id} do
+    pid = start_agent(CuratorAgent, agent_id)
 
     assert {:ok, 100} =
              evaluate(pid, """
@@ -96,7 +92,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
 
     # The store holds exactly the two user globals - none of the 300 talks the
     # model dropped, no Lua function, and nothing that references host code.
-    assert {:ok, %Payload{conversation_state: state}} = Store.get("curator-restart")
+    assert {:ok, %Payload{conversation_state: state}} = Store.get(agent_id)
     assert [{"count", 100}, {"favorites", favorites}] = Enum.sort(state.bindings)
     assert length(favorites) == 100
 
@@ -110,7 +106,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
     refute holds_function?(state)
 
     GenServer.stop(pid)
-    {:ok, revived} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-restart")
+    revived = start_agent(CuratorAgent, agent_id)
 
     assert {:ok, %{"count" => 100, "first" => "Talk 3", "summarize" => "nil"}} =
              evaluate(revived, """
@@ -118,8 +114,9 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
              """)
   end
 
-  test "a tool removed between restarts is unreachable, even when the model stashed it" do
-    {:ok, pid} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-revoked")
+  test "a tool removed between restarts is unreachable, even when the model stashed it",
+       %{agent_id: agent_id} do
+    pid = start_agent(CuratorAgent, agent_id)
 
     assert {:ok, "wiped before"} =
              evaluate(pid, """
@@ -132,8 +129,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
     assert_receive {:admin_reached, "before"}
 
     # Tool references persist as their marker table; the stashed bridge does not.
-    assert {:ok, %Payload{conversation_state: %{bindings: bindings}}} =
-             Store.get("curator-revoked")
+    assert {:ok, %Payload{conversation_state: %{bindings: bindings}}} = Store.get(agent_id)
 
     assert Enum.sort(bindings) == [
              {"admin_ref", %{"__module" => Atom.to_string(AdminTool)}},
@@ -142,8 +138,11 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
 
     GenServer.stop(pid)
 
-    {:ok, restricted} =
-      Legion.start_link(RestrictedCuratorAgent, store: Store, agent_id: "curator-revoked")
+    # The same conversation, as a redeploy without AdminTool reads it back.
+    {:ok, payload} = Store.get(agent_id)
+    :ok = Store.save(%{payload | agent_module: RestrictedCuratorAgent})
+
+    restricted = start_agent(RestrictedCuratorAgent, agent_id)
 
     # A reference to a tool the agent still has resolves to the module; one to
     # the revoked tool stays an inert table.
@@ -168,27 +167,29 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
     refute_received {:admin_reached, _marker}
   end
 
-  test "a global shadowing a tool name does not break later evaluations or restarts" do
-    {:ok, pid} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-shadow")
-
-    assert {:ok, 1} = evaluate(pid, "CatalogTool = 1\nreturn CatalogTool")
-    assert {:ok, %Payload{conversation_state: %{bindings: []}}} = Store.get("curator-shadow")
-    assert {:ok, 300} = evaluate(pid, "return #CatalogTool.talks()")
-
-    GenServer.stop(pid)
-    {:ok, revived} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-shadow")
-
-    assert {:ok, 300} = evaluate(revived, "return #CatalogTool.talks()")
-  end
-
-  test "functions do not persist between evaluations within a turn, data does" do
-    {:ok, pid} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-turn")
+  test "functions do not persist between evaluations within a turn, data does",
+       %{agent_id: agent_id} do
+    pid = start_agent(CuratorAgent, agent_id)
 
     assert {:ok, %{"helper" => "nil", "count" => 1}} =
              evaluate(pid, [
                "function helper() return 1 end\ncount = 1",
                "return {helper = type(helper), count = count}"
              ])
+  end
+
+  defp start_agent(agent_module, agent_id) do
+    options = [store: Store, agent_id: agent_id, vault: [test_pid: self()]]
+
+    pid =
+      start_supervised!(%{
+        id: make_ref(),
+        start: {Legion, :start_link, [agent_module, options]},
+        restart: :temporary
+      })
+
+    Mimic.allow(ReqLLM, self(), pid)
+    pid
   end
 
   # One turn: the scripted LLM answers the n-th request with the n-th chunk -

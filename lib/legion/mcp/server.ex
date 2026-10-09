@@ -18,7 +18,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         # over HTTP: start it after Legion and mount the plug in your router
         # (start: true also starts it outside `mix phx.server`, e.g. in tests)
         {MyApp.MCP, transport: {:streamable_http, start: true}}
-        forward "/mcp", to: Legion.MCP.Plug, server: MyApp.MCP
+        forward "/mcp", Legion.MCP.Plug, server: MyApp.MCP
 
         # or over stdio; stdout carries the protocol, so keep logs off it:
         # config :logger, :default_handler, config: [type: :standard_error]
@@ -29,10 +29,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     one-line summary. It reads a tool in full with `help` before the first
     call, and the sandbox language and rules from the `repl` tool's
     description. The model then writes code, and the server runs it with
-    `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
-    session's agent, so a lookup is a step of the conversation, saved, rate
-    limited and traced like a `repl` call. The agent makes no LLM request of
-    its own; what a call costs is one evaluation, plus whatever its tools do.
+    `Legion.eval/3`. `help` is answered from the agent's tool docs, the text
+    `Help.help/1` returns inside `repl`, without touching the agent: no step
+    of the conversation, nothing rate limited. The agent makes no LLM request
+    of its own; what a `repl` call costs is one evaluation, plus whatever its
+    tools do.
 
     Built on `:anubis_mcp`, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -54,7 +55,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     `help` do not list it and `repl` code cannot call it. Chat with the same
     agent keeps it. `Legion.Tools.AgentTool` is one: its sub-agents would run
     tasks the caller writes, on the application's model and in whatever
-    sandbox they use.
+    sandbox they use. `Legion.Tools.HumanTool` is another: the caller would
+    write what the application's human handler reads as the agent's question.
 
     ## Options
 
@@ -67,8 +69,8 @@ if Code.ensure_loaded?(Anubis.Server) do
         "Instruction size". Defaults to 2048, `:infinity` disables the check
 
     Every other option is passed to `use Anubis.Server`, `:authorization`
-    above all; see "Who is calling". The child spec takes what
-    `Anubis.Server.Supervisor.start_link/2` accepts.
+    above all; see "Who is calling". The child spec takes the options
+    Anubis's server supervisor accepts, `:transport` among them.
 
     ## Request timeout
 
@@ -90,10 +92,10 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     A `:sandbox_timeout` of `:infinity` has no default to derive; defining
     `request_timeout/0` is required then. Both transports use it: the child
-    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP. Note that
-    the transport only stops waiting; the eval keeps running, and its step is
-    saved and counted like any other. A retry from the host runs the code a
-    second time.
+    spec passes it to stdio, `Legion.MCP.Plug` to Streamable HTTP. A call
+    still waiting for a busy agent when it times out never runs. One already
+    running finishes, and its step is saved and counted like any other, so
+    a retry from the host runs the code a second time.
 
     ## Instruction size
 
@@ -127,14 +129,16 @@ if Code.ensure_loaded?(Anubis.Server) do
     rate limited or hand context to its tools works the same for a session:
 
       - With a store and a stable `:agent_id`, a session continues the stored
-        conversation, variables and history included. Every call is saved as
-        a step: the code as an `:assistant` message, then its `:eval_result`
-        or `:error`, and one `"evals" => 1` usage entry that `:max_evals` in
-        a `Legion.RateLimiter.Policy` counts.
-      - With rate limit rules, every call is checked before it runs. A denied
-        call runs nothing and comes back as a tool error the model can read.
+        conversation, variables and history included. Every `repl` call is
+        saved as a step: the code as an `:assistant` message, then its
+        `:eval_result` or `:error`, and one `"evals" => 1` usage entry that
+        `:max_evals` in a `Legion.RateLimiter.Policy` counts.
+      - With rate limit rules, every `repl` call is checked before it runs. A denied
+        call runs nothing and comes back as a tool error the model can read;
+        one that would have started the agent leaves no process and no row.
         A running call counts towards `:max_running_agents` like a turn does.
-        Rules need a limiter; see `Legion.RateLimiter`.
+        Rules need a limiter, and every limit but `:max_agents` a Postgres
+        store; see `Legion.RateLimiter.Postgres`.
       - Two sessions that resolve to one agent id share one process, so their
         calls are serialised and nothing is overwritten.
 
@@ -166,7 +170,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     `Legion.AgentSupervisor` and found again on every later call, whatever
     MCP session it comes from, so a user who comes back tomorrow, or from
     another host, continues the same conversation. `:agent_id` needs a store;
-    see `Legion.Store`.
+    see `Legion.Store`. Give each user an id of their own: an agent belongs
+    to one user, since its history, variables and sub-agents are shared by
+    every call that reaches it, and only `:vault` changes per call.
 
     `:vault` is put in the agent for one call and taken out after it, so it
     may change from request to request: a refreshed token, a tenant switch.
@@ -174,10 +180,15 @@ if Code.ensure_loaded?(Anubis.Server) do
     It is how tools learn who is calling.
 
     Every other option is read once, by whoever starts the agent, and holds
-    until it stops. An agent already running under that id, started by
+    until it stops. They are start options: the instructions and the `repl`
+    description are rendered from the agent's own config, so a
+    `:binding_scope` returned here changes the agent but not what the host
+    reads about it. An agent already running under that id, started by
     `Legion.start_link/2` before the MCP call arrived, keeps its own
-    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. Its
-    sandbox must still be Lua, or every call to it is refused.
+    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. It
+    must still be the server's agent module, on Lua, or every call to it is
+    refused, and a stopped one is not started from another module's stored
+    conversation.
 
     `:idle_timeout` stops the agent once nobody calls, after thirty minutes
     by default. The store then holds the conversation and the next call
@@ -235,8 +246,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     ## Telemetry
 
     Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
-    the MCP session id and the agent id it ran in; the agent's own events
-    fire inside it. See `Legion.Telemetry`.
+    the MCP session id and the agent id; the agent's own events fire inside
+    a `repl` span. See `Legion.Telemetry`.
     """
 
     require Logger
@@ -249,7 +260,7 @@ if Code.ensure_loaded?(Anubis.Server) do
     @default_budget 2048
 
     # Matches Anubis's default `:session_idle_timeout`. Anonymous agents are
-    # stopped with their session in `terminate/2`; this is their backstop,
+    # stopped with their session process; this is their backstop,
     # and the only idle limit a named agent has, since named agents outlive
     # any one session. Raise both if you raise one.
     @idle_timeout :timer.minutes(30)
@@ -305,7 +316,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         def init(_client_info, frame), do: Legion.MCP.Server.init_session(frame, __MODULE__)
 
         @impl Anubis.Server
-        def server_instructions, do: Legion.MCP.Server.instructions(unquote(agent))
+        def server_instructions, do: Legion.MCP.Server.instructions(__MODULE__)
 
         @impl Anubis.Server
         def terminate(_reason, frame), do: Legion.MCP.Server.stop_anonymous_agent(frame)
@@ -330,44 +341,81 @@ if Code.ensure_loaded?(Anubis.Server) do
       do: {:ok, Frame.assign(frame, :legion_mcp_server, server)}
 
     @doc false
-    # The agent a call runs in, with the vault to seed it with: the one
-    # `session/1` names, started if need be, or else the session's own
-    # anonymous agent, kept in the frame.
-    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame, opts) do
-      vault = Keyword.get(opts, :vault, [])
+    # The vault is never a start option: the agent would keep the first
+    # caller's for good.
+    def resolve_agent(%Frame{assigns: %{legion_mcp_server: server}} = frame, opts) do
+      {vault, opts} = Keyword.pop(opts, :vault, [])
 
       cond do
         agent_id = opts[:agent_id] ->
-          pid =
-            case Legion.lookup(agent_id) do
-              {:ok, pid} -> pid
-              :error -> agent(server.__legion_agent__(), opts)
-            end
+          with :error <- Legion.lookup(agent_id),
+               {:error, message} <- agent(server.__legion_agent__(), opts) do
+            {:error, message}
+          else
+            {:ok, pid} -> {pid, agent_id, vault}
+          end
 
-          {pid, agent_id, vault, frame}
-
-        (pid = assigns[:legion_mcp_agent]) && Process.alive?(pid) ->
-          {pid, assigns.legion_mcp_agent_id, vault, frame}
+        anonymous = anonymous_agent(frame) ->
+          {pid, agent_id} = anonymous
+          {pid, agent_id, vault}
 
         true ->
-          pid = agent(server.__legion_agent__(), opts)
-          agent_id = Legion.get_agent_id(pid)
-
-          frame =
-            frame
-            |> Frame.assign(:legion_mcp_agent, pid)
-            |> Frame.assign(:legion_mcp_agent_id, agent_id)
-
-          {pid, agent_id, vault, frame}
+          with {:ok, pid} <- agent(server.__legion_agent__(), opts) do
+            agent_id = Legion.get_agent_id(pid)
+            watch_session(session_key(frame), pid, agent_id)
+            {pid, agent_id, vault}
+          end
       end
     end
 
     @doc false
-    def stop_anonymous_agent(%Frame{assigns: %{legion_mcp_agent: pid}}) do
-      DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+    def stop_anonymous_agent(%Frame{} = frame) do
+      for {_watcher, {pid, _agent_id}} <- Registry.lookup(Legion.MCP.Sessions, session_key(frame)),
+          do: DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+
+      :ok
     end
 
-    def stop_anonymous_agent(_frame), do: :ok
+    @doc false
+    # A watcher outlives its stopped agent for a moment, so the registry can
+    # hold a dead one.
+    def anonymous_agent(%Frame{} = frame) do
+      Enum.find_value(Registry.lookup(Legion.MCP.Sessions, session_key(frame)), fn
+        {_watcher, {pid, agent_id}} -> if Process.alive?(pid), do: {pid, agent_id}
+      end)
+    end
+
+    # Anubis runs each request in a task the session process starts, and a
+    # cancelled request kills that task along with the frame it would have
+    # returned, while the agent finishes the eval. So the session process,
+    # not the frame, owns the anonymous agent: a watcher registers it under
+    # the session and stops it when the session process ends.
+    defp session_key(%Frame{context: context}),
+      do: {List.first(Process.get(:"$callers", []), self()), context.session_id}
+
+    defp watch_session({session, _session_id} = key, pid, agent_id) do
+      caller = self()
+      ref = make_ref()
+
+      spawn(fn ->
+        {:ok, _watcher} = Registry.register(Legion.MCP.Sessions, key, {pid, agent_id})
+        session_ref = Process.monitor(session)
+        agent_ref = Process.monitor(pid)
+        send(caller, ref)
+
+        receive do
+          {:DOWN, ^session_ref, :process, _pid, _reason} ->
+            DynamicSupervisor.terminate_child(Legion.AgentSupervisor, pid)
+
+          {:DOWN, ^agent_ref, :process, _pid, _reason} ->
+            :ok
+        end
+      end)
+
+      receive do
+        ^ref -> :ok
+      end
+    end
 
     @doc false
     # One `Legion.eval/3` on the session's agent, answered as a tool result:
@@ -387,9 +435,14 @@ if Code.ensure_loaded?(Anubis.Server) do
       if Keyword.has_key?(opts, :sandbox), do: check_sandbox(agent_module, opts), else: :ok
     end
 
-    defp run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code, opts) do
-      {agent, agent_id, vault, frame} = resolve_agent(frame, opts)
+    defp run(frame, code, opts) do
+      case resolve_agent(frame, opts) do
+        {:error, message} -> {:reply, Response.error(Response.tool(), message), frame}
+        {agent, agent_id, vault} -> eval(frame, code, agent, agent_id, vault)
+      end
+    end
 
+    defp eval(%Frame{assigns: %{legion_mcp_server: server}} = frame, code, agent, agent_id, vault) do
       metadata = %{
         agent: server.__legion_agent__(),
         agent_id: agent_id,
@@ -397,12 +450,15 @@ if Code.ensure_loaded?(Anubis.Server) do
         code: code
       }
 
+      opts = [
+        vault: vault,
+        require_agent: server.__legion_agent__(),
+        require_sandbox: Legion.Sandbox.Lua,
+        exclude_tools: &excluded_tool?/1
+      ]
+
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-        case Legion.eval(agent, code,
-               vault: vault,
-               require_sandbox: Legion.Sandbox.Lua,
-               exclude_tools: &excluded_tool?/1
-             ) do
+        case timed_eval(agent, code, opts, server.request_timeout()) do
           {:ok, text} ->
             {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 
@@ -411,8 +467,7 @@ if Code.ensure_loaded?(Anubis.Server) do
              %{success: false, error: error}}
 
           {:cancel, {:rate_limited, violations}} ->
-            limits = Enum.join(violations, ", ")
-            error = "Rate limit exceeded (#{limits}). Try again later."
+            error = rate_limited(violations)
 
             {{:reply, Response.error(Response.tool(), error), frame},
              %{success: false, error: error}}
@@ -420,9 +475,20 @@ if Code.ensure_loaded?(Anubis.Server) do
       end)
     end
 
+    # Waits as long as the transport does. The request process then finishes
+    # and exits, so a call still queued behind a busy agent is skipped
+    # instead of running for a host that gave up and may retry; one already
+    # running finishes.
+    defp timed_eval(agent, code, opts, timeout) do
+      Legion.eval(agent, code, [timeout: timeout] ++ opts)
+    catch
+      :exit, {:timeout, _call} ->
+        {:error,
+         "The call timed out after #{timeout} ms. It may still finish and its step be " <>
+           "saved, so check the variables before running it again."}
+    end
+
     @doc false
-    # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
-    # returns the live process that already owns the agent id.
     def agent(agent_module, opts) do
       opts = Keyword.put_new(opts, :idle_timeout, @idle_timeout)
 
@@ -433,11 +499,27 @@ if Code.ensure_loaded?(Anubis.Server) do
       }
 
       case DynamicSupervisor.start_child(Legion.AgentSupervisor, child) do
-        {:ok, pid} -> pid
-        {:error, {:already_started, pid}} -> pid
-        {:error, reason} -> raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
+        {:ok, pid} ->
+          {:ok, pid}
+
+        {:error, {:already_started, pid}} ->
+          {:ok, pid}
+
+        {:error, {:agent_module_mismatch, stored}} ->
+          {:error,
+           "This session's agent id holds a conversation of #{inspect(stored)}, " <>
+             "not #{inspect(agent_module)}"}
+
+        {:error, {:rate_limited, violations}} ->
+          {:error, rate_limited(violations)}
+
+        {:error, reason} ->
+          raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
       end
     end
+
+    defp rate_limited(violations),
+      do: "Rate limit exceeded (#{Enum.join(violations, ", ")}). Try again later."
 
     @doc false
     def check_sandbox(agent_module, config) do
@@ -518,18 +600,36 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    def instructions(agent_module) do
+    def instructions(server) do
+      agent_module = server.__legion_agent__()
+
       AgentPrompt.system_prompt(agent_module, Agent.resolve_config(agent_module),
         mode: :mcp,
-        exclude_tools: excluded_tools(agent_module)
+        exclude_tools: excluded_tools(server)
       )
     end
 
     @doc false
-    def tool_index(agent_module),
-      do: AgentPrompt.tool_index(agent_module, excluded_tools(agent_module))
+    def session_agent_id(%Frame{assigns: %{legion_mcp_server: server}} = frame) do
+      server.session(frame)[:agent_id] ||
+        with({_pid, agent_id} <- anonymous_agent(frame), do: agent_id)
+    end
 
-    defp excluded_tools(agent_module), do: Enum.filter(agent_module.tools(), &excluded_tool?/1)
+    @doc false
+    def tool_help(server, nil),
+      do: AgentPrompt.tool_index(server.__legion_agent__(), excluded_tools(server))
+
+    def tool_help(server, name) do
+      AgentPrompt.tool_help(
+        server.__legion_agent__(),
+        Legion.Sandbox.Lua,
+        name,
+        excluded_tools(server)
+      )
+    end
+
+    defp excluded_tools(server),
+      do: Enum.filter(server.__legion_agent__().tools(), &excluded_tool?/1)
 
     # Loaded first, so a tool not yet loaded is not served for lack of `mcp?/0`.
     defp excluded_tool?(tool),

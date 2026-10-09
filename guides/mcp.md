@@ -117,7 +117,7 @@ run code in your sandbox; signing users in fixes that.
   mount the discovery plug, as in [Anubis's sign-in guide](https://hexdocs.pm/anubis_mcp/authorization.html);
   `session/1` then gives each user [their own agent and vault](https://hexdocs.pm/legion/Legion.MCP.Server.html#module-sessions-are-agents).
 - **Rate limits** - return `rate_limit:` rules from `session/1`; every `repl`
-  and `help` call counts towards `:max_evals`
+  call counts towards `:max_evals`, `help` is free
   ([set up a limiter and rules](https://hexdocs.pm/legion/Legion.html#module-7-rate-limiting-baked-in)).
 - **Your own MCP tools** - `component` in the server module adds them
   ([writing one](https://hexdocs.pm/anubis_mcp/building-a-server.html)). They

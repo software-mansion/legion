@@ -34,10 +34,6 @@ defmodule Legion.Tools.HumanToolTest do
     :ok
   end
 
-  test "ask/1 sends request to handler and returns the response" do
-    assert HumanTool.ask("What is your name?") == "fake answer"
-  end
-
   test "ask/1 works under eval_and_continue" do
     Vault.unsafe_merge(%{current_action: "eval_and_continue"})
 
@@ -52,7 +48,7 @@ defmodule Legion.Tools.HumanToolTest do
     end
   end
 
-  test "ask/1 passes question and agent_id metadata to handler" do
+  test "ask/1 sends the question and agent_id to the handler and returns its answer" do
     agent_id = "human-tool-test"
     test_pid = self()
 

@@ -7,8 +7,8 @@ defmodule Legion.Tools.Help do
   summary and the model calls `Help.help(Name)` to read a tool's
   functions, arguments and return shapes before using it; under `:inline` the
   prompt embeds the tools and does not mention it. Over MCP the server's
-  `help` tool is this module run for the host. Not a tool to list in
-  `tools/0`.
+  `help` tool returns the same text, without an evaluation. Not a tool to
+  list in `tools/0`.
   """
   use Legion.Tool
 

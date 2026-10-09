@@ -37,6 +37,7 @@ defmodule Legion.MCP.PostgresDbTest do
   setup do
     Repo.query!("TRUNCATE legion_agents", [])
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+    start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
     :ok
   end
 

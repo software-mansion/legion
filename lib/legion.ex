@@ -49,10 +49,11 @@ defmodule Legion do
   def init(_opts) do
     children = [
       {Legion.Recovery, Application.fetch_env(:legion, :recovery)},
+      {Registry, keys: :duplicate, name: Legion.MCP.Sessions},
       {DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one, name: Legion.Supervisor)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 
   @doc """
@@ -82,6 +83,9 @@ defmodule Legion do
       {:error, {:already_started, pid}} ->
         AgentServer.call(pid, task)
 
+      {:error, {:rate_limited, violations}} ->
+        {:cancel, {:rate_limited, violations}}
+
       {:error, reason} ->
         raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
     end
@@ -104,15 +108,19 @@ defmodule Legion do
       A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
-      An agent ID can belong to at most one live process across connected nodes.
+      An agent ID can belong to at most one live process across connected nodes,
+      and to one agent module: starting another module under an ID the store
+      holds a conversation for returns `{:error, {:agent_module_mismatch, stored}}`.
     - `:rate_limit` - a keyword list with `:limiter` and `:rules`, a list of
       `Legion.RateLimiter.Rule`s pairing an identity (for example,
       `%{"ip" => "203.0.113.42"}`) with a policy, checked for every turn by a
-      `Legion.RateLimiter`. The limiter and a default policy can be set
-      globally; rules are given here. Rules without a limiter raise, and a
-      limiter without rules runs the agent without rate limiting and logs a
-      warning unless `rules: []` opts out on purpose. A denied turn returns
-      `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
+      `Legion.RateLimiter`, and for `:max_agents` when the agent starts. The
+      limiter and a default policy can be set globally; rules are given here. Rules without a
+      limiter raise, and a limiter without rules runs the agent without rate
+      limiting and logs a warning unless `rules: []` opts out on purpose. A
+      denied start returns `{:error, {:rate_limited, violations}}` and leaves
+      no process and nothing saved; a denied turn returns
+      `{:cancel, {:rate_limited, violations}}`. See `Legion.RateLimiter`.
     - `:vault` - a keyword list put in the agent process's `Vault`, where its
       tools and sandbox read it with `Vault.get/1`. The way to hand an agent
       something request-specific, a current user say, when it is not started
@@ -181,7 +189,9 @@ defmodule Legion do
 
   An agent whose `action_types/0` allow neither `"eval_and_continue"` nor
   `"eval_and_complete"` runs no code, so it refuses every call with
-  `{:error, text}`, before the rate limit and without saving a step.
+  `{:error, text}`, before the rate limit and without saving a step. So is
+  code that is not valid UTF-8 or longer than the agent's
+  `:max_message_length`, since it would be kept in the conversation.
 
   ## Options
 
@@ -189,10 +199,13 @@ defmodule Legion do
       call only, for tools to read; the per-call form of the `:vault` option
       of `start_link/2`. The agent's vault is restored after the call, and
       the keys Legion sets itself (`:agent_id`, `:parent_agent_id`,
-      `:agent_module`, `:sandbox`, `:store`, `:rate_limit`) are ignored
-    - `:require_sandbox` - a sandbox module; the call is refused like the
-      above unless the agent runs it. For a caller that reaches an agent by
+      `:agent_module`, `:sandbox`, `:store`, `:rate_limit`, `:sub_agents`)
+      are ignored
+    - `:require_agent` - an agent module; the call is refused like the
+      above unless the agent is one. For a caller that reaches an agent by
       id and cannot know how it was started
+    - `:require_sandbox` - a sandbox module; the call is refused like the
+      above unless the agent runs it, for the same caller
     - `:exclude_tools` - tool modules left out for this call only, or a
       function given each of the agent's tools that returns `true` for those
       to leave out: the code cannot call them and `Help` does not list them
@@ -315,9 +328,9 @@ defmodule Legion do
   determine its agent module,
   then atomically starts it under the same `agent_id`. If a live process already
   owns that ID, returns the existing pid instead. A new process restores the
-  conversation and continues execution in the background. It resumes from a
-  saved checkpoint when one exists; otherwise it starts a new executor loop
-  with the restored history.
+  conversation and, when it stopped mid-turn, finishes that turn in the
+  background: from a saved checkpoint when one exists, or from a prompt with
+  nothing after it. Otherwise it waits for the next message.
 
   `opts` are passed through to `start_link/2`. Rate-limit rules are not
   persisted, so the resumed agent is checked on its later turns only when
@@ -407,32 +420,32 @@ defmodule Legion do
 
     store = store!(opts, :recover)
 
-    case store.get(agent_id) do
-      {:ok, %Payload{agent_module: agent_module, status: :running, parent_agent_id: nil}}
-      when not is_nil(agent_module) ->
-        # The recovered turn is never checked, so opt out of rate limiting to
-        # keep a globally configured limiter from warning once per recovery.
-        opts =
-          opts
-          |> Keyword.put_new(:rate_limit, rules: [])
-          |> Keyword.merge(agent_id: agent_id, store: store, start_mode: :recover)
+    with {:ok,
+          %Payload{agent_module: agent_module, status: :running, parent_agent_id: nil} = payload}
+         when not is_nil(agent_module) <- store.get(agent_id),
+         true <- AgentServer.unfinished_turn?(payload.conversation_state) do
+      # The recovered turn is never checked, so opt out of rate limiting to
+      # keep a globally configured limiter from warning once per recovery.
+      opts =
+        opts
+        |> Keyword.put_new(:rate_limit, rules: [])
+        |> Keyword.merge(agent_id: agent_id, store: store, start_mode: :recover)
 
-        case AgentServer.start_monitor(agent_module, opts) do
-          {:ok, {pid, ref}} ->
-            receive do
-              {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
-              {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
-            end
+      case AgentServer.start_monitor(agent_module, opts) do
+        {:ok, {pid, ref}} ->
+          receive do
+            {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
+            {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
+          end
 
-          {:error, {:already_started, _pid}} ->
-            {:error, :already_running}
+        {:error, {:already_started, _pid}} ->
+          {:error, :already_running}
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      _ ->
-        {:error, :not_recoverable}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      _ -> {:error, :not_recoverable}
     end
   end
 

@@ -148,24 +148,30 @@ defmodule Legion.Sandbox.Lua do
     |> register_tools(tools)
   end
 
+  # Checks names as `export` does: rows saved before it did may hold others.
   defp restore(lua, bindings, baseline) do
-    for {name, value} <- bindings, name not in baseline, reduce: lua do
+    for {name, value} <- bindings, valid_name?(name), name not in baseline, reduce: lua do
       lua -> Lua.set!(lua, [name], elixir_to_lua(value))
     end
   end
 
   # Copies the user's globals out of the VM as plain data - functions,
-  # userdata, and cycles are dropped. `__module` tables are kept as tables (no
+  # userdata, cycles, and keys that are not UTF-8 strings, like `_G[7]`
+  # (which `restore` can't set back) or `_G["\255"]` (which no reply can
+  # name), are dropped. `__module` tables are kept as tables (no
   # `module_refs`), so a stored tool reference resolves against the tools of
   # whichever run reads it back.
   defp export(lua, baseline) do
     globals =
       for {name, value} <- State.globals(lua.state),
+          valid_name?(name),
           name not in baseline,
           do: {name, Lua.decode!(lua, value)}
 
     for {name, value} <- plain(globals), do: {name, lua_to_elixir(value, %{})}
   end
+
+  defp valid_name?(name), do: is_binary(name) and String.valid?(name)
 
   # A bare table reference is what `Lua.decode!` leaves where a table contains
   # itself.

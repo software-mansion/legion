@@ -41,56 +41,37 @@ defmodule Legion.AgentTest do
   end
 
   describe "compile-time @moduledoc validation" do
-    test "raises at compile time when @moduledoc is missing" do
-      assert_raise CompileError, ~r/must define a @moduledoc/, fn ->
-        Code.compile_string("""
-        defmodule NoDocAgent do
-          use Legion.Agent
+    for {case_name, moduledoc} <- [
+          {"missing", ""},
+          {"false", "@moduledoc false"},
+          {"empty", ~s(@moduledoc "")}
+        ] do
+      test "raises at compile time when @moduledoc is #{case_name}" do
+        assert_raise CompileError, ~r/must define a @moduledoc/, fn ->
+          Code.compile_string("""
+          defmodule UndocumentedAgent do
+            #{unquote(moduledoc)}
+            use Legion.Agent
+          end
+          """)
         end
-        """)
-      end
-    end
-
-    test "raises at compile time when @moduledoc is false" do
-      assert_raise CompileError, ~r/must define a @moduledoc/, fn ->
-        Code.compile_string("""
-        defmodule FalseDocAgent do
-          @moduledoc false
-          use Legion.Agent
-        end
-        """)
-      end
-    end
-
-    test "raises at compile time when @moduledoc is empty" do
-      assert_raise CompileError, ~r/must define a @moduledoc/, fn ->
-        Code.compile_string("""
-        defmodule EmptyDocAgent do
-          @moduledoc ""
-          use Legion.Agent
-        end
-        """)
       end
     end
   end
 
   describe "child_spec/1" do
-    test "returns valid child spec with transient restart" do
-      spec = MinimalAgent.child_spec([])
-      assert spec.id == MinimalAgent
-      assert spec.start == {Legion, :start_link, [MinimalAgent, []]}
-      assert spec.restart == :transient
-    end
-
-    test "passes opts through to start args" do
+    test "starts the agent through Legion.start_link/2 with the opts, restarting it only on a crash" do
       spec = MinimalAgent.child_spec(model: "openai:gpt-4o", max_iterations: 5)
+
+      assert spec.id == MinimalAgent
+      assert spec.restart == :transient
 
       assert spec.start ==
                {Legion, :start_link, [MinimalAgent, [model: "openai:gpt-4o", max_iterations: 5]]}
     end
 
     test "starts under a DynamicSupervisor, unlinked from the caller" do
-      {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      supervisor = start_supervised!(DynamicSupervisor)
       agent_id = "supervised:#{System.unique_integer([:positive])}"
 
       {:ok, pid} =
@@ -115,28 +96,29 @@ defmodule Legion.AgentTest do
   end
 
   describe "resolve_config/2" do
-    setup do
-      on_exit(fn -> Application.delete_env(:legion, :config) end)
-    end
-
     test "starts from the executor defaults" do
       assert Legion.Agent.resolve_config(MinimalAgent) == Legion.Executor.default_config()
     end
 
-    test "layers app env, then agent config, then opts on top of the defaults" do
-      Application.put_env(:legion, :config, %{model: "app-model", max_retries: 9})
-
+    test "layers agent config, then opts on top of the defaults" do
       config = Legion.Agent.resolve_config(ConfiguredAgent, max_iterations: 1)
 
       assert config.model == "agent-model"
-      assert config.max_retries == 9
       assert config.max_iterations == 1
+      assert config.max_retries == Legion.Executor.default_config().max_retries
     end
 
-    test "warns about unknown keys but keeps them" do
+    test "keeps unknown keys, and warns about them only from warn_unknown_keys/1" do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           assert %{bogus: true} = Legion.Agent.resolve_config(MinimalAgent, bogus: true)
+        end)
+
+      refute log =~ "Unknown Legion config keys"
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Legion.Agent.warn_unknown_keys(%{bogus: true})
         end)
 
       assert log =~ "Unknown Legion config keys: [:bogus]"
@@ -153,6 +135,15 @@ defmodule Legion.AgentTest do
     test "rejects other max_message_length values" do
       assert_raise ArgumentError, ~r/expected :max_message_length/, fn ->
         Legion.Agent.resolve_config(MinimalAgent, max_message_length: 0)
+      end
+    end
+
+    test "rejects tool_docs other than :inline and :on_demand" do
+      assert %{tool_docs: :on_demand} =
+               Legion.Agent.resolve_config(MinimalAgent, tool_docs: :on_demand)
+
+      assert_raise ArgumentError, ~r/expected :tool_docs to be :inline or :on_demand/, fn ->
+        Legion.Agent.resolve_config(MinimalAgent, tool_docs: :ondemand)
       end
     end
   end
@@ -181,36 +172,61 @@ defmodule Legion.AgentTest do
   end
 
   describe "tool short names" do
-    import ExUnit.CaptureIO
-
     test "warns when two tools share a short name" do
-      warning =
-        capture_io(:stderr, fn ->
-          Code.compile_string("""
-          defmodule Legion.ShadowAgent do
-            @moduledoc "Test."
-            use Legion.Agent
-            def tools, do: [Legion.Test.Support.MathTool, Legion.Other.MathTool]
-          end
-          """)
-        end)
+      assert compile_warnings("""
+             defmodule Legion.ShadowAgent do
+               @moduledoc "Test."
+               use Legion.Agent
+               def tools, do: [Legion.Test.Support.MathTool, Legion.Other.MathTool]
+             end
+             """) =~ "Legion.ShadowAgent lists tools with the same short name MathTool"
+    end
 
-      assert warning =~ "same short name MathTool"
+    test "skips the check when tools/0 exits at compile time" do
+      assert compile_warnings("""
+             defmodule Legion.ExitingToolsAgent do
+               @moduledoc "Test."
+               use Legion.Agent
+               def tools, do: GenServer.call(:no_such_registry, :tools)
+             end
+             """) == ""
     end
 
     test "warns when a tool is named Help" do
-      warning =
-        capture_io(:stderr, fn ->
-          Code.compile_string("""
-          defmodule Legion.HelpAgent do
-            @moduledoc "Test."
-            use Legion.Agent
-            def tools, do: [Legion.Mine.Help]
-          end
-          """)
-        end)
-
-      assert warning =~ "same short name Help"
+      assert compile_warnings("""
+             defmodule Legion.HelpAgent do
+               @moduledoc "Test."
+               use Legion.Agent
+               def tools, do: [Legion.Mine.Help]
+             end
+             """) =~ "Legion.HelpAgent lists tools with the same short name Help"
     end
+  end
+
+  # Diagnostics are collected in the calling process, so concurrent tests
+  # writing to stderr cannot leak into the assertion.
+  defp compile_warnings(code) do
+    {_modules, diagnostics} = Code.with_diagnostics(fn -> Code.compile_string(code) end)
+    Enum.map_join(diagnostics, "\n", & &1.message)
+  end
+end
+
+defmodule Legion.AgentAppConfigTest do
+  # Sets the global `:legion, :config` app env.
+  use ExUnit.Case, async: false
+
+  alias Legion.AgentTest.ConfiguredAgent
+
+  setup do
+    on_exit(fn -> Application.delete_env(:legion, :config) end)
+  end
+
+  test "resolve_config/2 layers the app env between the defaults and the agent config" do
+    Application.put_env(:legion, :config, %{model: "app-model", max_retries: 9})
+
+    config = Legion.Agent.resolve_config(ConfiguredAgent)
+
+    assert config.model == "agent-model"
+    assert config.max_retries == 9
   end
 end
