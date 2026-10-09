@@ -29,10 +29,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     one-line summary. It reads a tool in full with `help` before the first
     call, and the sandbox language and rules from the `repl` tool's
     description. The model then writes code, and the server runs it with
-    `Legion.eval/3`. `help` is itself an evaluation, of `Help.help/1` on the
-    session's agent, so a lookup is a step of the conversation, saved, rate
-    limited and traced like a `repl` call. The agent makes no LLM request of
-    its own; what a call costs is one evaluation, plus whatever its tools do.
+    `Legion.eval/3`. `help` is answered from the agent's tool docs, the text
+    `Help.help/1` returns inside `repl`, without touching the agent: no step
+    of the conversation, nothing rate limited. The agent makes no LLM request
+    of its own; what a `repl` call costs is one evaluation, plus whatever its
+    tools do.
 
     Built on `:anubis_mcp`, which speaks the protocol,
     runs the transports and, when configured, checks OAuth 2.1 bearer tokens.
@@ -132,11 +133,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     rate limited or hand context to its tools works the same for a session:
 
       - With a store and a stable `:agent_id`, a session continues the stored
-        conversation, variables and history included. Every call is saved as
-        a step: the code as an `:assistant` message, then its `:eval_result`
-        or `:error`, and one `"evals" => 1` usage entry that `:max_evals` in
-        a `Legion.RateLimiter.Policy` counts.
-      - With rate limit rules, every call is checked before it runs. A denied
+        conversation, variables and history included. Every `repl` call is
+        saved as a step: the code as an `:assistant` message, then its
+        `:eval_result` or `:error`, and one `"evals" => 1` usage entry that
+        `:max_evals` in a `Legion.RateLimiter.Policy` counts.
+      - With rate limit rules, every `repl` call is checked before it runs. A denied
         call runs nothing and comes back as a tool error the model can read;
         one that would have started the agent leaves no process and no row.
         A running call counts towards `:max_running_agents` like a turn does.
@@ -183,7 +184,10 @@ if Code.ensure_loaded?(Anubis.Server) do
     It is how tools learn who is calling.
 
     Every other option is read once, by whoever starts the agent, and holds
-    until it stops. An agent already running under that id, started by
+    until it stops. They are start options: the instructions and the `repl`
+    description are rendered from the agent's own config, so a
+    `:binding_scope` returned here changes the agent but not what the host
+    reads about it. An agent already running under that id, started by
     `Legion.start_link/2` before the MCP call arrived, keeps its own
     `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. It
     must still be the server's agent module, on Lua, or every call to it is
@@ -245,9 +249,9 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     ## Telemetry
 
-    Every `repl` and `help` call is a `[:legion, :mcp, :call]` span carrying
-    the MCP session id and the agent id it ran in; the agent's own events
-    fire inside it. See `Legion.Telemetry`.
+    Every `repl` call is a `[:legion, :mcp, :call]` span carrying the MCP
+    session id and the agent id it ran in; the agent's own events fire
+    inside it. See `Legion.Telemetry`.
     """
 
     require Logger
@@ -585,8 +589,19 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    def tool_index(server),
+    # What `help` answers: the index, or one tool's reference as `Help.help/1`
+    # returns it inside `repl`, on Lua since that is the only sandbox served.
+    def tool_help(server, nil),
       do: AgentPrompt.tool_index(server.__legion_agent__(), excluded_tools(server))
+
+    def tool_help(server, name) do
+      AgentPrompt.tool_help(
+        server.__legion_agent__(),
+        Legion.Sandbox.Lua,
+        name,
+        excluded_tools(server)
+      )
+    end
 
     defp excluded_tools(server),
       do: Enum.filter(server.__legion_agent__().tools(), &excluded_tool?(server, &1))
