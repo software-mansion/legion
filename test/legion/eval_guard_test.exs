@@ -10,13 +10,6 @@ defmodule Legion.EvalGuardTest do
     def check(_code, _context), do: {:deny, "the shop is closed for renovations"}
   end
 
-  defmodule AllowEverything do
-    @behaviour Legion.EvalGuard
-
-    @impl true
-    def check(_code, _context), do: :allow
-  end
-
   defmodule RecordContext do
     @behaviour Legion.EvalGuard
 
@@ -31,10 +24,6 @@ defmodule Legion.EvalGuardTest do
 
   test "no guard configured allows everything" do
     assert Legion.EvalGuard.check(nil, "System.halt()", @context) == :allow
-  end
-
-  test "an allowing guard passes the code through" do
-    assert Legion.EvalGuard.check(AllowEverything, "1 + 1", @context) == :allow
   end
 
   test "a denying guard returns its reason" do
@@ -80,24 +69,17 @@ defmodule Legion.EvalGuardTest do
   end
 
   @tag capture_log: true
-  test "a guard that throws or exits denies" do
-    assert {:deny, thrown} = Legion.EvalGuard.check(Broken, "throw", @context)
-    assert thrown =~ ":nope"
-
-    assert {:deny, exited} = Legion.EvalGuard.check(Broken, "exit", @context)
-    assert exited =~ ":shutdown"
+  test "a guard that throws, exits, or returns something that is not a verdict denies" do
+    for {code, failure} <- [{"throw", ":nope"}, {"exit", ":shutdown"}, {"garbage", ":maybe"}] do
+      assert {:deny, reason} = Legion.EvalGuard.check(Broken, code, @context)
+      assert reason =~ failure
+    end
   end
 
-  @tag capture_log: true
-  test "a guard returning something that is not a verdict denies" do
-    assert {:deny, reason} = Legion.EvalGuard.check(Broken, "garbage", @context)
-    assert reason =~ ":maybe"
-  end
+  test "an allowing guard receives the code and the agent context" do
+    assert Legion.EvalGuard.check(RecordContext, "Shop.list_records()", @context) == :allow
 
-  test "the guard receives the code and the agent context" do
-    Legion.EvalGuard.check(RecordContext, "Shop.list_records()", @context)
-
-    assert_receive {:checked, "Shop.list_records()", context}
+    assert_received {:checked, "Shop.list_records()", context}
     assert context.agent == SomeAgent
     assert context.agent_id == "conversation-1"
     assert context.tools == [SomeTool]

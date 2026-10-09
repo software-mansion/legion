@@ -20,20 +20,12 @@ defmodule Legion.Tools.HelpTest do
   end
 
   describe "AgentPrompt.tool_index/2" do
-    test "one line per tool, name and summary" do
+    test "one line per tool, Help included, with no signatures or source" do
       index = AgentPrompt.tool_index(ToolsAgent, [])
 
       assert index =~ "- `MathTool` - This is math tool moduledoc."
       assert index =~ "- `SummaryTool` - Custom summary."
-    end
-
-    test "lists Help itself" do
-      assert AgentPrompt.tool_index(ToolsAgent, []) =~ "- `Help` - Lists the tools available"
-    end
-
-    test "carries no signatures or source" do
-      index = AgentPrompt.tool_index(ToolsAgent, [])
-
+      assert index =~ "- `Help` - Lists the tools available"
       refute index =~ "random_add"
       refute index =~ "defmodule"
     end
@@ -73,12 +65,22 @@ defmodule Legion.Tools.HelpTest do
       end
     end
 
-    test "help/1 returns a tool's reference under tool_docs: :on_demand" do
-      {:ok, pid} = Legion.start_link(MathAgent, tool_docs: :on_demand)
+    for {sandbox, code} <- [
+          {Legion.Sandbox.Lua, "return Help.help(MathTool)"},
+          {Legion.Sandbox.Elixir, "Help.help(MathTool)"}
+        ],
+        tool_docs <- [:inline, :on_demand] do
+      test "help/1 returns a tool's reference in #{inspect(sandbox)} under tool_docs: #{inspect(tool_docs)}" do
+        {:ok, pid} =
+          Legion.start_link(MathAgent,
+            sandbox: unquote(sandbox),
+            tool_docs: unquote(tool_docs)
+          )
 
-      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(MathTool)")
-      assert text =~ "### MathTool"
-      assert text =~ "performs math operations"
+        assert {:ok, text} = AgentServer.eval(pid, unquote(code))
+        assert text =~ "### MathTool"
+        assert text =~ "performs math operations"
+      end
     end
 
     test "help/0 lists the tools under :on_demand" do
@@ -117,22 +119,6 @@ defmodule Legion.Tools.HelpTest do
       assert text =~ "No tool named"
     end
 
-    test "Help is in the sandbox under the default :inline too" do
-      {:ok, pid} = Legion.start_link(MathAgent)
-
-      assert {:ok, text} = AgentServer.eval(pid, "return Help.help(MathTool)")
-      assert text =~ "### MathTool"
-    end
-
-    test "help/1 works in the Elixir sandbox under :on_demand" do
-      {:ok, pid} =
-        Legion.start_link(MathAgent, tool_docs: :on_demand, sandbox: Legion.Sandbox.Elixir)
-
-      assert {:ok, text} = AgentServer.eval(pid, "Help.help(MathTool)")
-      assert text =~ "### MathTool"
-      assert text =~ "performs math operations"
-    end
-
     test "help/1 renders the reference for the sandbox the agent was started with" do
       {:ok, pid} =
         Legion.start_link(AgentToolAgent, tool_docs: :on_demand, sandbox: Legion.Sandbox.Elixir)
@@ -148,13 +134,6 @@ defmodule Legion.Tools.HelpTest do
       assert {:ok, text} = AgentServer.eval(pid, "return Help.help(AgentTool)")
       assert text =~ "return response[2]"
       refute text =~ "{:ok, result} ="
-    end
-
-    test "Help is in the Elixir sandbox under :inline too" do
-      {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
-
-      assert {:ok, text} = AgentServer.eval(pid, "Help.help(MathTool)")
-      assert text =~ "### MathTool"
     end
   end
 end

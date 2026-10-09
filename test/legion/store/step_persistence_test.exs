@@ -1,11 +1,9 @@
-defmodule Legion.Integration.StepPersistenceTest do
-  use ExUnit.Case, async: false
+defmodule Legion.Store.StepPersistenceTest do
+  use ExUnit.Case, async: true
   use Mimic
 
   alias Legion.Store.Payload
-  alias Legion.Test.Support.{MathAgent, PostgresRepo}
-
-  @moduletag :integration
+  alias Legion.Test.Support.MathAgent
 
   defmodule StepStore do
     use Legion.Store.Postgres,
@@ -13,15 +11,8 @@ defmodule Legion.Integration.StepPersistenceTest do
       persistence_frequency: :step
   end
 
-  setup :set_mimic_global
-
-  setup do
-    PostgresRepo.query!("TRUNCATE legion_agents")
-    :ok
-  end
-
   test "persists the recoverable turn state before executor_state advances" do
-    agent_id = "step-persistence-integration"
+    agent_id = "step-persistence-#{System.unique_integer([:positive])}"
     test_pid = self()
     request_count = :counters.new(1, [:atomics])
 
@@ -46,6 +37,7 @@ defmodule Legion.Integration.StepPersistenceTest do
         sandbox: Legion.Sandbox.Elixir
       )
 
+    allow(ReqLLM, test_pid, pid)
     assert {:ok, "done"} = Legion.call(pid, "compute")
 
     assert_received {:before_first_request,

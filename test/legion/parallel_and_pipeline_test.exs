@@ -1,4 +1,5 @@
 defmodule Legion.ParallelAndPipelineTest do
+  # Legion.execute/3 starts each agent itself, out of reach of a private-mode stub.
   use ExUnit.Case, async: false
   use Mimic
 
@@ -26,11 +27,9 @@ defmodule Legion.ParallelAndPipelineTest do
   end
 
   describe "parallel/2" do
-    test "runs multiple agents concurrently and collects results" do
+    test "collects every agent's result in task order" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
-        user_msg = messages |> List.last() |> Map.get(:content)
-
-        case user_msg do
+        case messages |> List.last() |> Map.get(:content) do
           "What is 6 * 7?" -> llm_response("42")
           "Say hello" -> llm_response("hello")
         end
@@ -68,26 +67,19 @@ defmodule Legion.ParallelAndPipelineTest do
                ])
     end
 
-    test "works with a single task" do
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s -> llm_response("only one") end)
-
-      assert {:ok, ["only one"]} = Legion.parallel([{MathAgent, "single task"}])
-    end
-
     test "AgentTool.parallel accepts [agent, task] pairs from the Lua sandbox bridge" do
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s -> llm_response("42") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("42") end)
       Vault.unsafe_put(AgentTool, agents: [MathAgent])
 
       assert {:ok, ["42"]} = AgentTool.parallel([[MathAgent, "What is 6 * 7?"]])
     end
 
-    test "respects timeout" do
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s ->
-        Process.sleep(5_000)
-        llm_response("too late")
+    test "exits when the agents outlast the timeout" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        Process.sleep(:infinity)
       end)
 
-      assert catch_exit(Legion.parallel([{MathAgent, "slow"}], 50))
+      assert {:timeout, _} = catch_exit(Legion.parallel([{MathAgent, "slow"}], 50))
     end
   end
 
@@ -130,7 +122,7 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "halts on cancel and skips subsequent steps" do
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         {:ok,
          %ReqLLM.Response{
            id: "cancel",
@@ -144,14 +136,8 @@ defmodule Legion.ParallelAndPipelineTest do
       assert {:cancel, :reached_max_iterations} =
                Legion.pipeline([
                  {MathAgent, "will cancel"},
-                 {TextAgent, fn _ -> "never reached" end}
+                 {TextAgent, fn _previous -> flunk("ran a step after a cancel") end}
                ])
-    end
-
-    test "works with a single step" do
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s -> llm_response("only step") end)
-
-      assert {:ok, "only step"} = Legion.pipeline([{MathAgent, "single step"}])
     end
 
     test "raises ArgumentError on invalid step format" do

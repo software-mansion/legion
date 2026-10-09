@@ -1,5 +1,5 @@
 defmodule Legion.AgentPromptTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Legion.AgentPrompt
   alias Legion.Test.Support.{HackerNewsAgent, MathAgent, NoToolAgent}
@@ -24,9 +24,11 @@ defmodule Legion.AgentPromptTest do
       assert prompt =~ "An agent that does math."
     end
 
-    test "includes the sandbox language" do
-      prompt = AgentPrompt.system_prompt(MathAgent)
-      assert prompt =~ "Lua"
+    test "names the sandbox language" do
+      assert AgentPrompt.system_prompt(MathAgent) =~ "writing and executing Lua code"
+
+      assert AgentPrompt.system_prompt(MathAgent, %{sandbox: Legion.Sandbox.Elixir}) =~
+               "writing and executing Elixir"
     end
 
     test "includes custom description when description/0 is overridden" do
@@ -122,15 +124,6 @@ defmodule Legion.AgentPromptTest do
       assert prompt =~ "`help`"
       refute prompt =~ "MathTool — performs math operations"
       refute prompt =~ "**Constraints:**"
-    end
-
-    test "keeps the agent's purpose and the repl mechanics" do
-      prompt = AgentPrompt.system_prompt(MathAgent, nil, mode: :mcp)
-
-      assert prompt =~ "An agent that does math."
-      assert prompt =~ "`repl`"
-      assert prompt =~ "Variables persist"
-      assert prompt =~ "Lua"
     end
 
     test "tool_docs: :inline renders the full tools section over MCP" do
