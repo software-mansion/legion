@@ -44,7 +44,7 @@ defmodule Legion.RateLimiter.Postgres do
   rules in the order given. The first violated rule raises and rolls the whole
   call back, leaving metadata only for allowed calls.
 
-  Limits are evaluated when a turn starts; a turn that is already running is
+  Limits are evaluated when an agent or a turn starts; a turn that is already running is
   never interrupted, so one turn can carry the recorded total past
   `:max_tokens` before the next call is denied. A `:step` store records usage
   at each step checkpoint, so calls made while that turn runs see its spend.

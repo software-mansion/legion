@@ -34,6 +34,14 @@ defmodule Legion.AgentServerTest.Fixtures do
   def allowing_identity(test_pid), do: %{"report_to" => test_pid}
   def rejecting_identity(test_pid), do: %{"report_to" => test_pid, "verdict" => :reject}
 
+  # Allows the agent's start and rejects every check after it.
+  def turn_rejecting_identity(test_pid),
+    do: %{"report_to" => test_pid, "verdict" => :reject_after_start}
+
+  # Rejects every check whose policy limits tokens, as when they are spent.
+  def tokens_spent_identity(test_pid),
+    do: %{"report_to" => test_pid, "verdict" => :reject_token_limit}
+
   def limit_policy, do: %Policy{window_ms: 60_000, max_agents: 2}
 
   def rule(identity, policy \\ limit_policy()), do: %Rule{identity: identity, policy: policy}
@@ -69,7 +77,16 @@ defmodule Legion.AgentServerTest do
       Enum.each(rules, fn %Rule{identity: identity, policy: policy} ->
         if pid = identity["report_to"], do: send(pid, {:enforced, agent_id, identity, policy})
 
-        if identity["verdict"] == :reject do
+        # A start and the turns after it are checked in the agent's own process.
+        reject? =
+          case identity["verdict"] do
+            :reject -> true
+            :reject_after_start -> Process.put({__MODULE__, :started}, true) == true
+            :reject_token_limit -> policy.max_tokens != nil
+            _allow -> false
+          end
+
+        if reject? do
           raise ExceededError,
             agent_id: agent_id,
             identity: identity,
@@ -1252,7 +1269,7 @@ defmodule Legion.AgentServerTest do
     end
 
     test "a rejected call runs nothing and saves nothing", %{agent_id: agent_id} do
-      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+      opts = limited(rate_limit: [rules: [rule(turn_rejecting_identity(self()))]])
 
       {:ok, pid} =
         Legion.start_link(MathAgent, [store: MemoryStore, agent_id: agent_id] ++ opts)
@@ -1264,11 +1281,12 @@ defmodule Legion.AgentServerTest do
 
     test "an agent whose action_types allow no evaluation refuses, before the rate limit",
          %{agent_id: agent_id} do
-      opts = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+      opts = limited(rate_limit: [rules: [rule(turn_rejecting_identity(self()))]])
 
       {:ok, pid} =
         Legion.start_link(ReadOnlyAgent, [store: MemoryStore, agent_id: agent_id] ++ opts)
 
+      assert_received {:enforced, ^agent_id, _identity, _policy}
       assert {:error, text} = AgentServer.eval(pid, "return 1")
       assert text =~ "ReadOnlyAgent runs no code"
       refute_received {:enforced, _agent_id, _identity, _policy}
@@ -1359,6 +1377,13 @@ defmodule Legion.AgentServerTest do
       assert_receive {:DOWN, ^reference, :process, ^pid, :normal}, 1_000
       assert System.monotonic_time(:millisecond) - called_at >= 100
     end
+
+    test "a stray :timeout message does not stop an agent without one" do
+      pid = start_agent(MathAgent)
+      send(pid, :timeout)
+
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+    end
   end
 
   describe "rate limiting" do
@@ -1380,7 +1405,7 @@ defmodule Legion.AgentServerTest do
         start_agent(
           MathAgent,
           limited(
-            rate_limit: [rules: [rule(rejecting_identity(self()))]],
+            rate_limit: [rules: [rule(turn_rejecting_identity(self()))]],
             store: MemoryStore,
             agent_id: agent_id
           )
@@ -1396,7 +1421,7 @@ defmodule Legion.AgentServerTest do
     test "hands the limiter every rule in order and cancels when one rejects" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
       allowing = allowing_identity(self())
-      rejecting = rejecting_identity(self())
+      rejecting = turn_rejecting_identity(self())
 
       pid =
         start_agent(
@@ -1409,6 +1434,92 @@ defmodule Legion.AgentServerTest do
       assert_received {:enforced, _, first, _}
       assert_received {:enforced, _, second, _}
       assert [first, second] == [allowing, rejecting]
+    end
+
+    test "a rejected start leaves no process and no row, and emits telemetry",
+         %{agent_id: agent_id} do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :rate_limit, :exceeded]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      opts =
+        limited(
+          rate_limit: [rules: [rule(rejecting_identity(self()))]],
+          store: MemoryStore,
+          agent_id: agent_id
+        )
+
+      assert {:error, {:rate_limited, [:max_agents]}} = Legion.start_link(MathAgent, opts)
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.execute(MathAgent, "hi", opts)
+
+      assert Legion.lookup(agent_id) == :error
+      assert MemoryStore.get(agent_id) == :error
+
+      assert_received {[:legion, :rate_limit, :exceeded], ^ref, _measurements,
+                       %{agent_id: ^agent_id, violations: [:max_agents]}}
+    end
+
+    test "a start is checked against max_agents only, and a resumed run not at all" do
+      policy = %Policy{
+        window_ms: 60_000,
+        max_agents: 2,
+        max_running_agents: 1,
+        max_tokens: 100,
+        max_evals: 1
+      }
+
+      {:ok, pid} =
+        Legion.start_link(
+          MathAgent,
+          limited(rate_limit: [rules: [rule(allowing_identity(self()), policy)]])
+        )
+
+      agent_id = Legion.get_agent_id(pid)
+
+      assert_received {:enforced, ^agent_id, _identity,
+                       %Policy{window_ms: 60_000, max_agents: 2} = checked}
+
+      assert %{max_running_agents: nil, max_tokens: nil, max_evals: nil} = checked
+
+      without_agent_limit = %{policy | max_agents: nil}
+
+      {:ok, pid} =
+        Legion.start_link(
+          MathAgent,
+          limited(rate_limit: [rules: [rule(allowing_identity(self()), without_agent_limit)]])
+        )
+
+      agent_id = Legion.get_agent_id(pid)
+      refute_received {:enforced, ^agent_id, _identity, _policy}
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resumed-unchecked")
+      GenServer.stop(pid)
+      rejecting = limited(rate_limit: [rules: [rule(rejecting_identity(self()))]])
+
+      assert {:ok, _pid} = Legion.resume("resumed-unchecked", [store: MemoryStore] ++ rejecting)
+      refute_received {:enforced, "resumed-unchecked", _identity, _policy}
+    end
+
+    test "a supervisor restarts an agent whose tokens are spent, and its siblings live on",
+         %{agent_id: agent_id} do
+      supervisor = start_supervised!(DynamicSupervisor)
+      policy = %Policy{window_ms: 60_000, max_agents: 2, max_tokens: 100}
+
+      opts =
+        limited(
+          rate_limit: [rules: [rule(tokens_spent_identity(self()), policy)]],
+          store: MemoryStore,
+          agent_id: agent_id
+        )
+
+      {:ok, spent} = DynamicSupervisor.start_child(supervisor, {MathAgent, opts})
+      {:ok, sibling} = DynamicSupervisor.start_child(supervisor, {MathAgent, []})
+
+      Process.exit(spent, :kill)
+      wait_until(fn -> match?({:ok, pid} when pid != spent, Legion.lookup(agent_id)) end)
+      {:ok, restarted} = Legion.lookup(agent_id)
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(restarted, "hi")
+      assert Process.alive?(supervisor) and Process.alive?(sibling)
     end
 
     test "start_link validates the rate-limit options" do
@@ -1442,7 +1553,7 @@ defmodule Legion.AgentServerTest do
       on_exit(fn -> :telemetry.detach(ref) end)
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-      rejecting = rejecting_identity(self())
+      rejecting = turn_rejecting_identity(self())
 
       pid =
         start_agent(
@@ -1720,6 +1831,10 @@ defmodule Legion.AgentServerGlobalTest do
 
       parent_id = Legion.get_agent_id(pid)
       policy = limit_policy()
+
+      # Its start was checked too.
+      assert_received {:enforced, ^parent_id, ^ip_identity, ^policy}
+      assert_received {:enforced, ^parent_id, ^tenant_identity, ^tenant_policy}
 
       {:ok, _} = Legion.call(pid, "delegate")
 

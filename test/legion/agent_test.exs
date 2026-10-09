@@ -130,6 +130,15 @@ defmodule Legion.AgentTest do
         Legion.Agent.resolve_config(MinimalAgent, max_message_length: 0)
       end
     end
+
+    test "rejects tool_docs other than :inline and :on_demand" do
+      assert %{tool_docs: :on_demand} =
+               Legion.Agent.resolve_config(MinimalAgent, tool_docs: :on_demand)
+
+      assert_raise ArgumentError, ~r/expected :tool_docs to be :inline or :on_demand/, fn ->
+        Legion.Agent.resolve_config(MinimalAgent, tool_docs: :ondemand)
+      end
+    end
   end
 
   describe "seed_tool_configs/1" do
@@ -164,6 +173,16 @@ defmodule Legion.AgentTest do
                def tools, do: [Legion.Test.Support.MathTool, Legion.Other.MathTool]
              end
              """) =~ "Legion.ShadowAgent lists tools with the same short name MathTool"
+    end
+
+    test "skips the check when tools/0 exits at compile time" do
+      assert compile_warnings("""
+             defmodule Legion.ExitingToolsAgent do
+               @moduledoc "Test."
+               use Legion.Agent
+               def tools, do: GenServer.call(:no_such_registry, :tools)
+             end
+             """) == ""
     end
 
     test "warns when a tool is named Help" do

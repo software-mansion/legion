@@ -82,6 +82,9 @@ defmodule Legion do
       {:error, {:already_started, pid}} ->
         AgentServer.call(pid, task)
 
+      {:error, {:rate_limited, violations}} ->
+        {:cancel, {:rate_limited, violations}}
+
       {:error, reason} ->
         raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
     end
@@ -110,11 +113,13 @@ defmodule Legion do
     - `:rate_limit` - a keyword list with `:limiter` and `:rules`, a list of
       `Legion.RateLimiter.Rule`s pairing an identity (for example,
       `%{"ip" => "203.0.113.42"}`) with a policy, checked for every turn by a
-      `Legion.RateLimiter`. The limiter and a default policy can be set
-      globally; rules are given here. Rules without a limiter raise, and a
-      limiter without rules runs the agent without rate limiting and logs a
-      warning unless `rules: []` opts out on purpose. A denied turn returns
-      `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
+      `Legion.RateLimiter`, and for `:max_agents` when the agent starts. The
+      limiter and a default policy can be set globally; rules are given here. Rules without a
+      limiter raise, and a limiter without rules runs the agent without rate
+      limiting and logs a warning unless `rules: []` opts out on purpose. A
+      denied start returns `{:error, {:rate_limited, violations}}` and leaves
+      no process and nothing saved; a denied turn returns
+      `{:cancel, {:rate_limited, violations}}`. See `Legion.RateLimiter`.
     - `:vault` - a keyword list put in the agent process's `Vault`, where its
       tools and sandbox read it with `Vault.get/1`. The way to hand an agent
       something request-specific, a current user say, when it is not started

@@ -60,8 +60,8 @@ defmodule Legion.Telemetry do
 
   ## Rate Limit Events
 
-  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn, or a
-    `Legion.eval/3` call, before it started; metadata carries the identity and policy of the rule that
+  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied an agent's
+    start, a turn, or a `Legion.eval/3` call, before it ran; metadata carries the identity and policy of the rule that
     denied it, the usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:

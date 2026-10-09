@@ -72,8 +72,8 @@ if Code.ensure_loaded?(Anubis.Server) do
         `[Legion.Tools.HumanTool]`; `[]` serves it
 
     Every other option is passed to `use Anubis.Server`, `:authorization`
-    above all; see "Who is calling". The child spec takes what
-    `Anubis.Server.Supervisor.start_link/2` accepts.
+    above all; see "Who is calling". The child spec takes the options
+    Anubis's server supervisor accepts, `:transport` among them.
 
     ## Request timeout
 
@@ -137,7 +137,8 @@ if Code.ensure_loaded?(Anubis.Server) do
         or `:error`, and one `"evals" => 1` usage entry that `:max_evals` in
         a `Legion.RateLimiter.Policy` counts.
       - With rate limit rules, every call is checked before it runs. A denied
-        call runs nothing and comes back as a tool error the model can read.
+        call runs nothing and comes back as a tool error the model can read;
+        one that would have started the agent leaves no process and no row.
         A running call counts towards `:max_running_agents` like a turn does.
         Rules need a limiter, and every limit but `:max_agents` a Postgres
         store; see `Legion.RateLimiter.Postgres`.
@@ -368,15 +369,16 @@ if Code.ensure_loaded?(Anubis.Server) do
           {pid, assigns.legion_mcp_agent_id, vault, frame}
 
         true ->
-          {:ok, pid} = agent(server.__legion_agent__(), opts)
-          agent_id = Legion.get_agent_id(pid)
+          with {:ok, pid} <- agent(server.__legion_agent__(), opts) do
+            agent_id = Legion.get_agent_id(pid)
 
-          frame =
-            frame
-            |> Frame.assign(:legion_mcp_agent, pid)
-            |> Frame.assign(:legion_mcp_agent_id, agent_id)
+            frame =
+              frame
+              |> Frame.assign(:legion_mcp_agent, pid)
+              |> Frame.assign(:legion_mcp_agent_id, agent_id)
 
-          {pid, agent_id, vault, frame}
+            {pid, agent_id, vault, frame}
+          end
       end
     end
 
@@ -435,8 +437,7 @@ if Code.ensure_loaded?(Anubis.Server) do
              %{success: false, error: error}}
 
           {:cancel, {:rate_limited, violations}} ->
-            limits = Enum.join(violations, ", ")
-            error = "Rate limit exceeded (#{limits}). Try again later."
+            error = rate_limited(violations)
 
             {{:reply, Response.error(Response.tool(), error), frame},
              %{success: false, error: error}}
@@ -469,10 +470,16 @@ if Code.ensure_loaded?(Anubis.Server) do
            "This session's agent id holds a conversation of #{inspect(stored)}, " <>
              "not #{inspect(agent_module)}"}
 
+        {:error, {:rate_limited, violations}} ->
+          {:error, rate_limited(violations)}
+
         {:error, reason} ->
           raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
       end
     end
+
+    defp rate_limited(violations),
+      do: "Rate limit exceeded (#{Enum.join(violations, ", ")}). Try again later."
 
     @doc false
     def check_sandbox(agent_module, config) do
