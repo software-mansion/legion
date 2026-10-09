@@ -18,7 +18,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         # over HTTP: start it after Legion and mount the plug in your router
         # (start: true also starts it outside `mix phx.server`, e.g. in tests)
         {MyApp.MCP, transport: {:streamable_http, start: true}}
-        forward "/mcp", to: Legion.MCP.Plug, server: MyApp.MCP
+        forward "/mcp", Legion.MCP.Plug, server: MyApp.MCP
 
         # or over stdio; stdout carries the protocol, so keep logs off it:
         # config :logger, :default_handler, config: [type: :standard_error]
