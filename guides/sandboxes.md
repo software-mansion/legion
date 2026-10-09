@@ -1,142 +1,138 @@
 # Sandboxes
 
-Legion evaluates LLM-generated code through a pluggable sandbox, selected with
-the `sandbox` config key:
+Legion runs model-written code in `Legion.Sandbox.Lua` by default - no
+configuration needed. `Legion.Sandbox.Elixir` also ships as an opt-in, and
+custom sandboxes implement the `Legion.Sandbox` behaviour. To opt in, set the
+`sandbox` config key:
 
 ```elixir
 # globally
-config :legion, :config, %{sandbox: Legion.Sandbox.Lua}
+config :legion, :config, %{sandbox: Legion.Sandbox.Elixir}
 
-# or per agent, which wins over the global setting
-def config, do: %{sandbox: Legion.Sandbox.Lua}
+# or per agent, overriding the global setting
+def config, do: %{sandbox: Legion.Sandbox.Elixir}
 ```
 
-Two implementations ship with Legion: `Legion.Sandbox.Lua` (the default)
-and `Legion.Sandbox.Elixir`. Custom sandboxes implement the `Legion.Sandbox`
-behaviour. Both built-ins run under `Legion.Sandbox.Runner`, so the
-operational limits (`sandbox_timeout`, `sandbox_max_heap`,
-`sandbox_max_reductions`, `sandbox_priority`) behave identically.
+## Security boundary
 
-## The core difference: where the security boundary sits
+With `Legion.Sandbox.Lua`, generated code runs inside
+[lua](https://hexdocs.pm/lua), a Lua 5.3 VM written in pure Elixir. Lua code
+cannot refer to anything on the host: it cannot name a module the agent
+doesn't list, touch a process or force-load anything. The only way out of
+the VM is through the tool functions Legion bridges in, so the attack
+surface is your tools plus bugs in the VM. Identifiers and strings stay
+binaries inside the VM, so Lua never creates atoms and the atom-table
+exhaustion the Elixir sandbox leaves open doesn't apply.
 
-**`Legion.Sandbox.Elixir`** - generated code *is* host code. `Code.eval_string/3`
-runs it on the BEAM with full language power, and safety comes from the AST
-checker rejecting dangerous forms before evaluation. The boundary is a
-deny-by-default allowlist over the entire Elixir surface - every module,
-function, arity, struct literal, and sigil the stdlib offers is a potential
-escape hatch that has to be reasoned about. The checker is hardened against
-the known RCE classes, but it is structurally a cat-and-mouse game.
+With `Legion.Sandbox.Elixir`, generated code is host code.
+`Code.eval_string/3` runs it on the BEAM with the full language, and an AST
+checker rejects dangerous forms before evaluation. The checker is an
+allowlist, and every module, function, arity, struct literal and sigil in
+the stdlib is a potential escape that has to be reviewed. It covers the
+known RCE classes but cannot rule out new ones.
 
-**`Legion.Sandbox.Lua`** - generated code runs inside
-[lua](https://hexdocs.pm/lua), a Lua 5.3 VM implemented in pure Elixir. Lua code has no representation for anything on the host: it cannot
-name a module, build an atom, touch a process, or force-load anything. The
-only doors out of the VM are the tool functions Legion explicitly bridges in.
-The residual attack surface is your tools plus bugs in the VM. This makes it the safer choice for less trusted code.
-
-A useful side effect: Lua code cannot create atoms at all (identifiers and
-strings stay binaries inside the VM), so the atom-table-growth DoS vector the
-Elixir sandbox documents as unsolved does not exist there.
-
-## What the model can do inside
+## Language and stdlib
 
 | | `Legion.Sandbox.Elixir` | `Legion.Sandbox.Lua` |
 |---|---|---|
-| Language | Elixir minus denied forms | Lua 5.3 semantics |
-| Stdlib | Allowlisted `Enum`, `String`, `Map`, `Date`/`DateTime`, `Regex`, `JSON`, `URI`, `:math`, ... | Lua's `string`, `table`, `math`; `os.time`/`os.date` (`io`, `file`, `os.getenv`/`os.execute`, `require`, `load`, `print` are blocked) |
-| Regex | Full `Regex` / PCRE | Lua patterns only (`string.match`) - weaker |
-| JSON | Built-in `JSON` module | None - expose a tool if agents need it |
-| Dates | Rich calendar modules | `os.date` / `os.time` only |
-| State between executions | All bindings persist | Only **globals** persist; `local`s vanish per chunk |
-| Result | Last expression | Explicit `return` required |
+| Language | Elixir minus denied forms | Lua 5.3 |
+| Stdlib | Allowlisted `Enum`, `String`, `Map`, `JSON`, `URI`, `:math`, ... | `string`, `table`, `math`, `utf8` |
+| Blocked | - | `io`, `file`, `os.getenv`, `os.execute`, `require`, `load`, `print` |
+| Regex | `Regex` (PCRE) | Lua patterns (`string.match`) |
+| JSON | `JSON` | None; expose a tool |
+| Dates | `Date`, `DateTime` and the rest of the calendar modules | `os.date`, `os.time`, `os.difftime`, `os.clock` |
+| State between runs | All bindings persist | Global data persists; locals, functions and metatables don't |
+| Result | Last expression | Explicit `return` |
 
-## The bridge, and what gets lost crossing it
+Each run restores Lua globals into a fresh VM as plain data (strings,
+numbers, booleans and tables), so a helper function has to be redefined in
+every chunk that uses it.
 
-Tools are Elixir; in the Lua sandbox the model calls them from Lua. Every call
-crosses an encode/decode boundary, and that boundary is lossy in both
-directions:
+## Calling tools from Lua
+
+Every tool call encodes its arguments from Lua to Elixir and its result
+back. Both directions lose information:
 
 - **Tools receive string-keyed maps.** `{date = "..."}` arrives as
-  `%{"date" => ...}`, never `%{date: ...}`. A tool that pattern-matches atom
-  keys works in the Elixir sandbox and breaks in Lua. This is the single most
-  likely thing to bite when reusing existing tools.
-- **Tuples do not exist in Lua.** Results like `{:ok, 42}` arrive as the
-  array `["ok", 42]`; tuple-taking APIs receive 2-element lists.
-  `Legion.Tools.AgentTool.parallel/2` and `pipeline/1` normalise
-  `[agent, task]` pairs, but any other tuple-shaped tool API needs the same
-  treatment or a Lua-friendly facade.
-- **Atoms become strings, structs become plain field tables** (module
-  identity dropped - and the flattening is `Map.from_struct/1`, so internal
-  fields like a `Date`'s `calendar` cross too; project the fields the model
-  needs in the tool if that matters). Function values are silently dropped -
-  they encode as `nil` rather than crossing into Lua as callables - and
-  anything else the VM cannot encode, such as pids and refs, is a runtime
-  error fed back to the model.
-- **The empty table is ambiguous**: it decodes as `[]`, so a tool cannot
-  tell "empty list" from "empty map".
-- **Module references** work only for bridged tools: passing a tool's global
-  table where an Elixir module is expected
-  (`AgentTool.call(PlannerAgent, task)`) resolves to the module atom. There
-  is no general way to name an arbitrary Elixir module - which is a feature.
-- **Only `use Legion.Tool` modules expose functions.** Anything else in the
-  list (sub-agent modules, extra allowed modules) is bridged reference-only:
-  a table carrying just the module marker, with no callable functions.
-- **Tool docs are Elixir source** while the model writes Lua, so it must
-  translate signatures. Models handle this well, but hand-written
-  `description/0` overrides with Lua examples help for complex tools.
+  `%{"date" => ...}`, never `%{date: ...}`. A tool that pattern-matches on
+  atom keys works in the Elixir sandbox and breaks in Lua. This is the most
+  common breakage when reusing existing tools.
+- **Tuples become arrays.** `{:ok, 42}` arrives as `["ok", 42]`, and an API
+  that takes tuples receives two-element lists. `Legion.Tools.AgentTool`'s
+  `parallel` and `pipeline` accept `[agent, task]` pairs; any other
+  tuple-shaped tool needs the same treatment or a Lua-friendly wrapper.
+- **Atoms become strings and structs become plain tables.** Structs are
+  flattened with `Map.from_struct/1`, so the module is lost and internal
+  fields such as a `Date`'s `calendar` cross too. Return only the fields the
+  model needs.
+- **Functions become `nil`.** Other values the VM can't encode, such as pids
+  and refs, raise a runtime error that goes back to the model.
+- **The empty table is ambiguous.** It decodes as `[]`, so a tool can't tell
+  an empty list from an empty map.
+- **Only `use Legion.Tool` modules expose functions.** Other modules the
+  agent lists, such as sub-agents and extra allowed modules, appear as tables
+  with no functions. Any listed module can still be passed where Elixir
+  expects one: `AgentTool.call(PlannerAgent, task)` hands the tool the
+  `PlannerAgent` atom. Modules the agent doesn't list can't be named.
+- **Tool docs are Elixir source.** The model has to translate signatures to
+  Lua. For complex tools, define `description/1`, which receives the active
+  sandbox, and return Lua examples when it is `Legion.Sandbox.Lua`.
 
 ## Chaining tools
 
-A struct one tool returns crosses into Lua as a string-keyed field table and
-can only come back as a plain map - `def associate(%Post{} = post, _)` never
-matches again, and no model retry can fix it, because Lua cannot construct a
-struct. Chains that pass rich values between tools need one of these shapes:
+Lua can't construct structs, so a struct returned by one tool reaches the
+next as a plain map, and `def associate(%Post{} = post, _)` will never
+match. Chains that pass rich values between tools use one of these
+patterns:
 
-- **Plain maps chain as-is.** Tools that accept the string-keyed maps they
-  emit compose freely; the model can filter and reshape between calls.
-- **Pass ids** (the default): tools exchange identifiers and refetch
+- **Pass ids** (recommended). Tools exchange identifiers and refetch
   internally, so Lua only ever holds scalars.
-- **Rehydrate at the boundary**: the tool accepts the map and rebuilds its
-  struct inside - a few lines that double as input validation - for when the
-  model must inspect or transform payload fields in Lua.
-- **Opaque handles**: park the value host-side (an ETS table scoped per
-  conversation, or the store) and return a token plus the fields the model
-  may read; later tools resolve the token back to the exact original term.
-  The only option for values the bridge cannot encode at all - pids, refs,
-  connections. Handles outlive a single eval, so give them a lifecycle:
-  scope by conversation, clean up when it ends, and answer a stale token
-  with an error message the model can react to.
+- **Plain maps.** Tools that accept the string-keyed maps they return
+  compose freely, and the model can filter and reshape between calls.
+- **Rehydrate at the boundary.** The tool accepts the map and rebuilds its
+  struct, which also validates the input. Use this when the model needs to
+  read or transform the fields.
+- **Opaque handles.** Keep the value on the host, in an ETS table scoped to
+  the conversation or in the store, and return a token plus the fields the
+  model may read. Later tools resolve the token back to the original term.
+  This is the only option for values the bridge can't encode, such as pids,
+  refs and connections. Handles outlive a single run, so scope them to the
+  conversation, clean them up when it ends, and answer a stale token with an
+  error the model can act on.
 
 ## Performance and limits
 
-Both sandboxes run under the same `Legion.Sandbox.Runner` (timeout,
-`max_heap` plus off-heap binary polling, `max_reductions`, priority), so
-operational limits are identical. But the Lua VM interprets on the BEAM -
-the same computation costs roughly one to two orders of magnitude more time
-and reductions than native Elixir. Budgets tuned for the Elixir sandbox
-(especially `sandbox_max_reductions`) may need raising, and heavy in-sandbox
-data crunching is better pushed into tools.
+Both sandboxes run under `Legion.Sandbox.Runner` with the same limits:
+`sandbox_timeout`, `sandbox_max_heap` (off-heap binaries included),
+`sandbox_max_reductions` and `sandbox_priority`.
 
-The Lua sandbox adds one deterministic guard of its own: the VM refuses to
-build any single string larger than half the `max_heap` budget, so a string
-bomb comes back as a catchable "resulting string too large" error instead of
-racing the heap kill mid-allocation.
+Both sandboxes interpret the model's code, but in the Elixir sandbox a call
+like `Enum.sum/1` hands the bulk of the work to compiled stdlib code. In
+Lua, a loop over data runs entirely in the interpreter and costs far more.
+Budgets tuned for the Elixir sandbox, especially `sandbox_max_reductions`,
+may need raising. Tools run in the same process and count towards the same
+budget, but as compiled code they spend far fewer reductions on the same
+work, so heavy data processing belongs in them.
 
-Bindings are the user's globals exported as plain data - strings, numbers,
-booleans, and tables as maps or lists. Each evaluation starts a fresh VM and
-restores them, so functions and metatables do not survive between
-executions: a helper must be redefined in every chunk that uses it.
+The Lua VM also caps string building: concatenation and `string.rep` reject
+results larger than half of `sandbox_max_heap` (256 MiB at most) and raise a
+catchable "resulting string too large" error instead of hitting the heap
+kill. Other string functions are bounded only by the runner.
 
 ## What neither sandbox gives you
 
-Both still execute inside your application's VM: tool code runs with full
-host privileges, scheduler time is shared, and memory is consumed until
-limits kill the eval. The Lua sandbox removes the *language-level* escape
-routes, not the blast radius of a badly designed tool - `AgentTool`, HTTP
-tools, and DB tools are exactly as dangerous as what you expose through them.
-Full isolation still means a separate BEAM instance, but this undermines the concept
-of Legion's shared resources and easily accessible (and thus powerful) tools.
+Both run inside your application's VM. Tool code runs with full host
+privileges, scheduler time is shared, and memory use is bounded only by the
+runner limits. The Lua sandbox closes language-level escapes; it doesn't
+limit what your tools can do. `AgentTool`, HTTP tools and database tools are
+as dangerous as what they expose.
 
-**Rule of thumb:** use `Legion.Sandbox.Elixir` for trusted generators that
-need rich data manipulation; use `Legion.Sandbox.Lua` when the code is less
-trusted or the tool surface is small and well-defined - and design tools for
-Lua consumption (string keys in, no tuples out).
+Full isolation requires a separate BEAM node, which gives up the direct
+access to your application that makes Legion tools useful.
+
+## Choosing a sandbox
+
+Use `Legion.Sandbox.Elixir` when you trust the model and need rich data
+manipulation. Use `Legion.Sandbox.Lua` when the code is less trusted or the
+tool surface is small and well-defined, and write its tools to accept string
+keys and return no tuples.
