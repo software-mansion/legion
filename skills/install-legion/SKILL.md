@@ -186,7 +186,11 @@ warning and runs unlimited. Identity keys are strings:
 rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"user_id" => to_string(user.id)}}]]
 ```
 
-A denied turn returns `{:cancel, {:rate_limited, violations}}`.
+A denied turn returns `{:cancel, {:rate_limited, violations}}`. A start is
+checked against `max_agents` too: past it, `Legion.start_link/2` returns
+`{:error, {:rate_limited, violations}}` with no agent started, and
+`Legion.execute/3` returns `{:cancel, {:rate_limited, violations}}`.
+`Legion.resume/2` is not checked.
 
 Done when: the limiter module and `:rate_limit` config exist and the
 `start_link/2` call in step 9 names its group.
@@ -344,7 +348,9 @@ instead (below):
 `start_link/2` links the agent to the caller, so in a LiveView it dies with
 the socket. The gates from step 0 add to that call:
 
-- Rate limiter = yes: pass `rate_limit: [rules: ...]` from step 5.
+- Rate limiter = yes: pass `rate_limit: [rules: ...]` from step 5, and
+  handle `{:error, {:rate_limited, violations}}` from `start_link/2` where the
+  handler shows errors today, so a refused start does not crash the caller.
 - Store = yes: give the agent a stable `agent_id`, or every start writes a
   fresh conversation under a random id and nothing can be resumed.
   `Legion.resume/2` brings a stored one back:
@@ -354,7 +360,8 @@ the socket. The gates from step 0 add to that call:
   # the rate_limit option when rate limiter = yes, else []
   opts = []
 
-  {:ok, pid} =
+  # {:ok, pid}, or {:error, {:rate_limited, violations}} past max_agents
+  started =
     case Legion.resume(agent_id, opts) do
       {:ok, pid} -> {:ok, pid}
       {:error, :not_resumable} -> Legion.start_link(MyApp.SupportAgent, [agent_id: agent_id] ++ opts)
@@ -407,7 +414,8 @@ mix run -e 'IO.inspect(Legion.execute(MyApp.SupportAgent, "Return the sum of 2 a
 
 Any `{:ok, _}` proves it; the reply's wording is the model's (`"4"`, `4`,
 `"The sum is 4"`). A missing or wrong key comes back as
-`{:error, "LLM request failed: ..."}`. Leave the diff for review, uncommitted.
+`{:cancel, :reached_max_retries}`: every request fails until the retries run
+out. Leave the diff for review, uncommitted.
 
 Done when: an `{:ok, _}` was seen, or the exact variable the user must set
 has been reported and work stopped there.
