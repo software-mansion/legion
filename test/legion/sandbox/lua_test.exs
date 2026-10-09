@@ -66,6 +66,22 @@ defmodule Legion.Sandbox.LuaTest do
     assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
   end
 
+  test "non-string global keys are not carried as bindings" do
+    {:ok, {nil, bindings}} = Lua.execute("_G[7] = 1\n_G[2.5] = 1\n_G[true] = 1\nb = 2", 15_000)
+    assert bindings == [{"b", 2}]
+    assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
+  end
+
+  test "global names that are not UTF-8 are not carried as bindings" do
+    {:ok, {nil, bindings}} = Lua.execute("_G[\"\\255\"] = 1\nb = 2", 15_000)
+    assert bindings == [{"b", 2}]
+  end
+
+  test "stored bindings with names restore cannot set are skipped" do
+    bindings = [{7, 1}, {<<255>>, 1}, {"b", 2}]
+    assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
+  end
+
   test "bindings survive the term round-trip a store does" do
     {:ok, {nil, bindings}} = Lua.execute("count = EchoTool.add(1, 2)", 15_000, [EchoTool])
 
