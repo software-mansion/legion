@@ -468,6 +468,17 @@ defmodule Legion.AgentServerTest do
         GenServer.stop(pid)
       end
     end
+
+    test "start_link warns about unknown config keys and keeps them" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pid = start_agent(MathAgent, bogus: true)
+          assert %{bogus: true} = :sys.get_state(pid).config
+          GenServer.stop(pid)
+        end)
+
+      assert log =~ "Unknown Legion config keys: [:bogus]"
+    end
   end
 
   describe "cast/2" do
@@ -1398,6 +1409,14 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, _text} = AgentServer.eval(pid, "return 1")
     end
+
+    test "a stray :timeout or idle message does not stop an agent with one" do
+      pid = start_agent(MathAgent, idle_timeout: 10_000)
+      send(pid, :timeout)
+      send(pid, {:idle_timeout, make_ref()})
+
+      assert {:ok, _text} = AgentServer.eval(pid, "return 1")
+    end
   end
 
   describe "rate limiting" do
@@ -1798,6 +1817,43 @@ defmodule Legion.AgentServerGlobalTest do
       {:ok, %Payload{conversation_state: final}} = StepMemoryStore.get(agent_id)
       results = Enum.map(final.messages, &inspect(&1.content))
       assert Enum.any?(results, &(&1 =~ "42")), "recovered eval lost x: #{inspect(results)}"
+    end
+
+    test "recover/2 under :turn keeps what eval/2 made and drops what the turn made" do
+      agent_id = "recover-base-#{System.unique_integer([:positive])}"
+      test_pid = self()
+      request_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(request_count, 1, 1)
+
+        case :counters.get(request_count, 1) do
+          1 ->
+            llm_eval_continue_response("y = x + 1")
+
+          2 ->
+            send(test_pid, :checkpointed)
+            Process.exit(self(), :kill)
+            llm_response("unreachable")
+
+          _ ->
+            llm_eval_response("return y")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: agent_id)
+      Process.unlink(pid)
+      reference = Process.monitor(pid)
+      {:ok, _text} = AgentServer.eval(pid, "x = 1")
+      Legion.cast(pid, "compute")
+
+      assert_receive :checkpointed, 5_000
+      assert_receive {:DOWN, ^reference, :process, ^pid, _reason}, 5_000
+
+      assert :ok = Legion.recover(agent_id, store: StepMemoryStore)
+
+      {:ok, %Payload{conversation_state: final}} = StepMemoryStore.get(agent_id)
+      assert final.bindings == [{"x", 1}]
     end
   end
 

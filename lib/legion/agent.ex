@@ -20,92 +20,90 @@ defmodule Legion.Agent do
 
   All callbacks are optional.
 
-    - `tools/0` — list of tool modules available to the agent. Each tool's
+    - `tools/0` - list of tool modules available to the agent. Each tool's
       `tool_config/1` result is stored in the Vault under the tool's module key.
       Code in the sandbox reaches a tool by its short name (`MyApp.SearchTool`
       is `SearchTool`), so `use Legion.Agent` warns at compile time when two
       tools, or a tool and the built-in `Legion.Tools.Help`, share one.
       Defaults to `[]`.
 
-    - `tool_config/1` — per-tool configuration. Receives a tool module, returns a
+    - `tool_config/1` - per-tool configuration. Receives a tool module, returns a
       keyword list. The returned options are accessible to the tool at runtime via
       `Vault.get(__MODULE__)`. Defaults to `[]` for all tools.
 
-    - `system_prompt/0` — override to return a fully custom system prompt. When
+    - `system_prompt/0` - override to return a fully custom system prompt. When
       not defined, the prompt is auto-generated from `@moduledoc`, tool source
       code, and the resolved `binding_scope`. Used by the executor only; over
       MCP the instructions are always generated, override `server_instructions/0`
       in the `Legion.MCP.Server` instead.
 
-    - `output_schema/0` — JSON Schema map describing the agent's structured output.
+    - `output_schema/0` - JSON Schema map describing the agent's structured output.
       Used by the LLM for the `result` field. Defaults to `%{"type" => "string"}`.
 
-    - `config/0` — agent-level configuration merged with application config and
+    - `config/0` - agent-level configuration merged with application config and
       call-time opts. Defaults to `%{}`. Available keys:
-      - `model` — LLM model identifier (default: `"openai:gpt-5.6-luna"`)
-      - `sandbox` — a `Legion.Sandbox` module that validates and evaluates the
+      - `model` - LLM model identifier (default: `"openai:gpt-5.6-luna"`)
+      - `sandbox` - a `Legion.Sandbox` module that validates and evaluates the
         code the agent writes. `Legion.Sandbox.Lua` (the default) evaluates Lua
         in a pure-Elixir VM where only bridged tool functions can reach the
         host; `Legion.Sandbox.Elixir` evaluates Elixir behind an AST allowlist
         (default: `Legion.Sandbox.Lua`)
-      - `max_iterations` — max successful execution steps per turn (default: `10`)
-      - `max_retries` — max consecutive failures before giving up (default: `3`)
-      - `sandbox_timeout` — timeout in ms for code execution. Set `:infinity` to
+      - `max_iterations` - max successful execution steps per turn (default: `10`)
+      - `max_retries` - max consecutive failures before giving up (default: `3`)
+      - `sandbox_timeout` - timeout in ms for code execution. Set `:infinity` to
         disable it, leaving `sandbox_max_reductions` as the only limit that stops
         an eval that never returns (default: `60_000`)
-      - `sandbox_max_heap` — memory budget in bytes for the process evaluating
+      - `sandbox_max_heap` - memory budget in bytes for the process evaluating
         generated code. The VM kills the eval when its heap and stack exceed the
         budget; the binaries it references are polled separately (~50ms granularity)
         because they live off-heap, so an eval can briefly hold up to twice the
         budget. Also covers tool code called inline from the eval. Set `:infinity`
         to disable (default: `256_000_000`)
-      - `eval_guard` — a `Legion.EvalGuard` module that vets generated code before
+      - `eval_guard` - a `Legion.EvalGuard` module that vets generated code before
         it runs, for policy the sandbox cannot express. Runs on the critical path;
         a denial reaches the agent as an execution error (default: `nil`, no guard)
-      - `sandbox_max_reductions` — CPU budget in reductions for the eval process,
+      - `sandbox_max_reductions` - CPU budget in reductions for the eval process,
         enforced by polling (~50ms granularity), so an eval that computes hard gets
         killed even while the wall clock is fine with it. Counts tool code called
         inline from the eval too. Set `:infinity` to disable (default: `:infinity`)
-      - `sandbox_priority` — scheduler priority of the eval process, and so of any
+      - `sandbox_priority` - scheduler priority of the eval process, and so of any
         tool code it calls inline. The default keeps generated code from crowding
         out the rest of the node, at the cost of it taking longer under load -
         raise it to `:normal` if evals are hitting `sandbox_timeout` on a busy
         system (default: `:low`)
-      - `binding_scope` — how long variable bindings from code execution live
+      - `binding_scope` - how long variable bindings from code execution live
         (default: `:turn`):
-        - `:iteration` — bindings reset between every code execution
-        - `:turn` — bindings persist across iterations within one turn and are dropped
+        - `:iteration` - bindings reset between every code execution
+        - `:turn` - bindings persist across iterations within one turn and are dropped
           when it ends; bindings made outside a turn, by `Legion.eval/3`, are in
-          scope during the turn and outlive it, unless the turn crashed after a
-          `:step` checkpoint, which saves them mixed with its own, so both get
-          dropped when the agent resumes or starts again
-        - `:conversation` — bindings persist for the entire conversation (across turns)
-      - `max_message_length` — max byte size of a single message added to the
+          scope during turns and outlive them
+        - `:conversation` - bindings persist for the entire conversation (across turns)
+      - `max_message_length` - max byte size of a single message added to the
         conversation (user input, code execution result, or error text). Longer
         content is truncated with a `[... truncated N bytes ...]` marker.
         Applies to text content only: each text part of a multipart message is
         truncated individually, while image data and URLs pass through untouched.
         Code sent with `Legion.eval/3` is held to it too, and refused rather
         than truncated. Defaults to `40_000`. Set to `:infinity` to disable.
-      - `max_bindings_bytes` — max size, as `:erlang.external_size/1` measures
+      - `max_bindings_bytes` - max size, as `:erlang.external_size/1` measures
         it, of the variables a code execution leaves behind. An execution that
         would exceed it fails with an error the agent reads, and the previous
         variables stand. Bounds what a conversation holds in memory and, with
         a store, on disk. Set to `:infinity` to disable (default: `10_000_000`)
-      - `idle_timeout` — milliseconds without a call after which the agent
+      - `idle_timeout` - milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
-      - `max_sub_agents` — how many sub-agents from `Legion.Tools.AgentTool.start_link/1`
+      - `max_sub_agents` - how many sub-agents from `Legion.Tools.AgentTool.start_link/1`
         the agent may run at once (default: `10`)
-      - `sub_agent_idle_timeout` — milliseconds without a message after which
+      - `sub_agent_idle_timeout` - milliseconds without a message after which
         such a sub-agent stops, overriding its own `idle_timeout`
         (default: thirty minutes)
-      - `tool_docs` — how the system prompt documents the agent's tools:
+      - `tool_docs` - how the system prompt documents the agent's tools:
         `:inline` embeds every tool's description, `:on_demand` lists them by
         `summary/0` and names the built-in `Legion.Tools.Help` tool, which is
         in the sandbox either way; see `Legion.Tools.Help` and
         `Legion.MCP.Server` (default: `:inline`, or `:on_demand` over MCP)
 
-    - `action_types/0` — list of action strings the LLM is allowed to respond with.
+    - `action_types/0` - list of action strings the LLM is allowed to respond with.
       Defaults to all four: `~w(eval_and_continue eval_and_complete return done)`.
       Override to restrict the agent - for example, a read-only agent that should
       never execute code can use `~w(return done)`. Such an agent also refuses
@@ -165,9 +163,10 @@ defmodule Legion.Agent do
 
   @doc false
   # Resolves the effective config for `agent_module`: Executor defaults, then the
-  # `:legion, :config` app env, then `agent_module.config/0`, then `opts`. Warns
-  # about unknown keys and validates the limits and `:tool_docs`. Shared by every
-  # driver that runs the agent (AgentServer, Legion.MCP.Server).
+  # `:legion, :config` app env, then `agent_module.config/0`, then `opts`, and
+  # validates the limits and `:tool_docs`. Shared by every driver that runs the
+  # agent (AgentServer, Legion.MCP.Server), so it stays quiet about unknown
+  # keys: `warn_unknown_keys/1` is for the one that starts it.
   def resolve_config(agent_module, opts \\ []) do
     app_config = Application.get_env(:legion, :config, %{})
     call_config = Map.new(opts)
@@ -178,16 +177,21 @@ defmodule Legion.Agent do
       |> Map.merge(agent_module.config())
       |> Map.merge(call_config)
 
-    unknown = Map.keys(merged) -- @known_config_keys
+    validate_limits(merged)
+    validate_tool_docs(merged)
+
+    merged
+  end
+
+  @doc false
+  def warn_unknown_keys(config) do
+    unknown = Map.keys(config) -- @known_config_keys
 
     if unknown != [] do
       Logger.warning("Unknown Legion config keys: #{inspect(unknown)}")
     end
 
-    validate_limits(merged)
-    validate_tool_docs(merged)
-
-    merged
+    :ok
   end
 
   @doc false
