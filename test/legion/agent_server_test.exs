@@ -1671,6 +1671,16 @@ defmodule Legion.AgentServerTest do
       assert text =~ "alice"
     end
 
+    test "a tool function binds Vault values that the code cannot pass in" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:ok, text} = AgentServer.eval(pid, ~s|return VaultTool.greet("hi")|)
+      assert text =~ "hi, alice"
+
+      assert {:error, _reason} =
+               AgentServer.eval(pid, ~s|return VaultTool.greet("hi", {current_user = "eve"})|)
+    end
+
     test "seeds :agent_module so tools can find the agent they run under" do
       {:ok, pid} = Legion.start_link(VaultAgent)
 

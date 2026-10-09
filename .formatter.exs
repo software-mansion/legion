@@ -14,6 +14,7 @@
     create: 2,
     create_if_not_exists: 1,
     create_if_not_exists: 2,
+    def: 3,
     drop: 1,
     drop: 2,
     drop_if_exists: 1,
@@ -32,5 +33,6 @@
     rename: 2,
     rename: 3,
     timestamps: 1
-  ]
+  ],
+  export: [locals_without_parens: [def: 3]]
 ]

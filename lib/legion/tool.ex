@@ -45,6 +45,18 @@ defmodule Legion.Tool do
         end
       end
 
+  ## Reading from Vault
+
+  A map after a function head binds values from `Vault`, keyed as they were
+  stored, before the body runs. The function keeps its arity, so the LLM
+  cannot pass the values in:
+
+      def orders(status), %{current_user: user} do
+        MyApp.Orders.list(user, status)
+      end
+
+  A key missing from Vault raises a `MatchError`.
+
   ## External modules as tools
 
   A module that does not `use Legion.Tool` (e.g. `Req`) can still be listed as
@@ -81,10 +93,30 @@ defmodule Legion.Tool do
       @behaviour Legion.Tool
       @before_compile Legion.Tool
 
+      import Legion.Tool, only: [def: 3]
+
       def description, do: unquote(source)
       def extra_allowed_modules, do: []
 
       defoverridable description: 0, extra_allowed_modules: 0
+    end
+  end
+
+  @doc """
+  Defines a function whose body sees the Vault values named in `pattern`.
+  See "Reading from Vault" above.
+  """
+  defmacro def(head, {:%{}, _meta, pairs} = pattern, blocks) do
+    keys = for {key, _binding} <- pairs, do: key
+
+    body =
+      quote do
+        unquote(pattern) = Vault.take(unquote(keys))
+        unquote(blocks[:do])
+      end
+
+    quote do
+      Kernel.def(unquote(head), unquote(Keyword.put(blocks, :do, body)))
     end
   end
 
