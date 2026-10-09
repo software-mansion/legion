@@ -82,7 +82,6 @@ defmodule Legion.ExecutorTest do
 
   @moduletag capture_log: true
 
-  # Legion.execute/3, with the agent process allowed to use this test's stubs.
   defp execute(agent_module, task, opts \\ []) do
     pid = start_supervised!({agent_module, opts})
     allow(ReqLLM, self(), pid)

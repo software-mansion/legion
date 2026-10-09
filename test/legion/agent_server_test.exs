@@ -34,11 +34,9 @@ defmodule Legion.AgentServerTest.Fixtures do
   def allowing_identity(test_pid), do: %{"report_to" => test_pid}
   def rejecting_identity(test_pid), do: %{"report_to" => test_pid, "verdict" => :reject}
 
-  # Allows the agent's start and rejects every check after it.
   def turn_rejecting_identity(test_pid),
     do: %{"report_to" => test_pid, "verdict" => :reject_after_start}
 
-  # Rejects every check whose policy limits tokens, as when they are spent.
   def tokens_spent_identity(test_pid),
     do: %{"report_to" => test_pid, "verdict" => :reject_token_limit}
 
@@ -77,7 +75,6 @@ defmodule Legion.AgentServerTest do
       Enum.each(rules, fn %Rule{identity: identity, policy: policy} ->
         if pid = identity["report_to"], do: send(pid, {:enforced, agent_id, identity, policy})
 
-        # A start and the turns after it are checked in the agent's own process.
         reject? =
           case identity["verdict"] do
             :reject -> true
@@ -289,7 +286,6 @@ defmodule Legion.AgentServerTest do
     pid
   end
 
-  # The content of the user message the LLM receives for `message`.
   defp sent_user_content(message, opts \\ []) do
     test_pid = self()
 
@@ -1012,7 +1008,6 @@ defmodule Legion.AgentServerTest do
              ] = Legion.get_messages(revived)
     end
 
-    # A request would add messages before get_messages/1 could answer.
     test "a conversation an outside model drove resumes and recovers without a request",
          %{agent_id: agent_id} do
       {:ok, pid} = Legion.start_link(MathAgent, agent_id: agent_id, store: MemoryStore)
@@ -1026,7 +1021,6 @@ defmodule Legion.AgentServerTest do
 
       GenServer.stop(resumed)
 
-      # As the rate limiter leaves a row it marked running.
       {:ok, payload} = MemoryStore.get(agent_id)
       :ok = MemoryStore.save(%{payload | status: :running})
 
@@ -1261,7 +1255,6 @@ defmodule Legion.AgentServerTest do
     end
 
     test "runs as eval_and_continue, whatever action the last turn left behind" do
-      # As the executor leaves it after a turn that ended in eval_and_complete.
       {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_action: "eval_and_complete"])
 
       assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.current_action()")
@@ -1321,7 +1314,6 @@ defmodule Legion.AgentServerTest do
     test "a call whose caller died while it waited is skipped", %{agent_id: agent_id} do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
 
-      # Busy, as with another call or a chat turn.
       :ok = :sys.suspend(pid)
       caller = spawn(fn -> AgentServer.eval(pid, "abandoned = 1") end)
       wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
@@ -1902,7 +1894,6 @@ defmodule Legion.AgentServerGlobalTest do
       parent_id = Legion.get_agent_id(pid)
       policy = limit_policy()
 
-      # Its start was checked too.
       assert_received {:enforced, ^parent_id, ^ip_identity, ^policy}
       assert_received {:enforced, ^parent_id, ^tenant_identity, ^tenant_policy}
 

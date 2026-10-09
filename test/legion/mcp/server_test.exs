@@ -110,7 +110,6 @@ defmodule Legion.MCP.ServerTest do
   defmodule TeamMCP do
     use Legion.MCP.Server, agent: VaultAgent, name: "team", version: "0.1.0"
 
-    # One agent for the whole team; only some members carry a token.
     def session(frame) do
       auth = frame.context.auth
       token = if auth[:token], do: [token: auth.token], else: []
@@ -282,7 +281,6 @@ defmodule Legion.MCP.ServerTest do
     {error?, text, frame}
   end
 
-  # Until the agent is in the middle of a call.
   defp wait_until_busy(agent_id) do
     with {:ok, pid} <- Legion.lookup(agent_id),
          {:current_stacktrace, stacktrace} <- Process.info(pid, :current_stacktrace),

@@ -22,8 +22,6 @@ defmodule Legion.AgentServer do
   alias Legion.Tools.AgentTool
   alias ReqLLM.Message.ContentPart
 
-  # What `init/1` puts in the Vault for Legion and its tools; a per-call
-  # vault cannot replace them.
   @legion_vault_keys ~w(agent_id parent_agent_id agent_module sandbox store rate_limit sub_agents)a
 
   defstruct [
@@ -97,7 +95,6 @@ defmodule Legion.AgentServer do
     {{agent_module, config, store, agent_id, persistence_frequency, track_usage, vault}, gen_opts}
   end
 
-  # A limiter that counts what the store writes checks it has one to count.
   defp check_store!(%{limiter: limiter, rules: rules}, store, track_usage)
        when not is_nil(limiter) and rules != [] do
     if Code.ensure_loaded?(limiter) and function_exported?(limiter, :check_store!, 3),
@@ -133,9 +130,6 @@ defmodule Legion.AgentServer do
 
   # Server callbacks
 
-  # A conversation saved by another agent module is not this one's: its
-  # history, variables and usage were made with other tools and prompt. A
-  # start the rate limit denies leaves nothing behind, no process and no row.
   @impl true
   def init({agent_module, config, store, agent_id, _frequency, _track_usage, _vault} = init_arg) do
     stored = store && store.get(agent_id)
@@ -196,7 +190,6 @@ defmodule Legion.AgentServer do
     Legion.Agent.seed_tool_configs(agent_module)
     Vault.unsafe_put(:rate_limit, config.rate_limit)
 
-    # What `Legion.Tools.AgentTool` holds this agent's sub-agents to.
     Vault.unsafe_put(:sub_agents, %{
       max: config.max_sub_agents,
       idle_timeout: config.sub_agent_idle_timeout
@@ -344,17 +337,15 @@ defmodule Legion.AgentServer do
     {:noreply, reset_idle(state)}
   end
 
-  # Nobody has called for `:idle_timeout` milliseconds. A tag no longer in
-  # the state is a timer a later call replaced.
+  # A tag no longer in the state is a timer a later call replaced.
   @impl true
   def handle_info({:idle_timeout, tag}, %{idle_timer: {tag, _timer}} = state),
     do: {:stop, :normal, state}
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  # Starts the idle wait over. A tagged timer rather than a GenServer timeout:
-  # that one is reset by any message, not only calls, and fired by a plain
-  # `:timeout` from anyone.
+  # A tagged timer rather than a GenServer timeout: that one is reset by any
+  # message, not only calls, and fired by a plain `:timeout` from anyone.
   defp reset_idle(state) do
     case Map.get(state.config, :idle_timeout, :infinity) do
       :infinity ->
@@ -480,12 +471,9 @@ defmodule Legion.AgentServer do
     end
   end
 
-  # Checked before the rate limiter, so a refused call runs, saves and counts
-  # nothing. An agent whose `action_types/0` allow no evaluation never runs
-  # code, whoever sends it. `:require_agent` and `:require_sandbox` are the
-  # caller's conditions on the agent it reached: `Legion.MCP.Server` finds
-  # named agents with `Legion.lookup/1`, and one started elsewhere may be any
-  # agent, on any sandbox.
+  # `:require_agent` and `:require_sandbox` are the caller's conditions on the
+  # agent it reached: `Legion.MCP.Server` finds named agents with
+  # `Legion.lookup/1`, and one started elsewhere may be any agent, on any sandbox.
   defp eval_refusal(code, opts, %{agent_module: agent_module, config: config}) do
     required_agent = Keyword.get(opts, :require_agent, agent_module)
     required = Keyword.get(opts, :require_sandbox, config.sandbox)
@@ -524,12 +512,7 @@ defmodule Legion.AgentServer do
     end
   end
 
-  # The per-call vault holds for that call only: merged over the agent's
-  # vault, minus the keys `init/1` sets for Legion, plus the tools the call
-  # leaves out (`Legion.Eval` and `Help` read them there) and the action it
-  # runs as, which the step is saved as too and whose result goes back to the
-  # caller (`HumanTool` reads it), and the vault as it was put back after. A
-  # key one caller passed never reaches the next call or a later turn, and no
+  # A key one caller passed never reaches the next call or a later turn, and no
   # caller replaces the agent's store or identity.
   defp with_call_vault(opts, agent_module, fun) do
     saved = Vault.vault(propagate_vault: :none)
@@ -550,8 +533,6 @@ defmodule Legion.AgentServer do
     end
   end
 
-  # A function is applied to this agent's tools, for a caller that reaches an
-  # agent by id and cannot know which tools it has.
   defp excluded_tools(opts, agent_module) do
     case Keyword.get(opts, :exclude_tools, []) do
       excluded? when is_function(excluded?, 1) -> Enum.filter(agent_module.tools(), excluded?)

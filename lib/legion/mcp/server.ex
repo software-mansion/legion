@@ -353,10 +353,8 @@ if Code.ensure_loaded?(Anubis.Server) do
       do: {:ok, Frame.assign(frame, :legion_mcp_server, server)}
 
     @doc false
-    # The agent a call runs in, with the vault to seed it with: the one
-    # `session/1` names, started if need be, or else the session's own
-    # anonymous agent, kept in the frame. The vault is never a start option:
-    # the agent would keep the first caller's for good.
+    # The vault is never a start option: the agent would keep the first
+    # caller's for good.
     def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame, opts) do
       {vault, opts} = Keyword.pop(opts, :vault, [])
 
@@ -465,9 +463,6 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
-    # finds the live process that already owns the agent id. An id whose
-    # stored conversation is another agent's is an error the caller reads.
     def agent(agent_module, opts) do
       opts = Keyword.put_new(opts, :idle_timeout, @idle_timeout)
 
@@ -589,15 +584,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    # The id of the agent a call from `frame` would run in: the one `session/1`
-    # names, or the session's own once it is started. Nil before that.
     def session_agent_id(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame) do
       server.session(frame)[:agent_id] || assigns[:legion_mcp_agent_id]
     end
 
     @doc false
-    # What `help` answers: the index, or one tool's reference as `Help.help/1`
-    # returns it inside `repl`, on Lua since that is the only sandbox served.
     def tool_help(server, nil),
       do: AgentPrompt.tool_index(server.__legion_agent__(), excluded_tools(server))
 
@@ -613,7 +604,6 @@ if Code.ensure_loaded?(Anubis.Server) do
     defp excluded_tools(server),
       do: Enum.filter(server.__legion_agent__().tools(), &excluded_tool?(server, &1))
 
-    # The server's `:exclude_tools`, and any tool whose `mcp?/0` is false.
     # Loaded first, so a tool not yet loaded is not served for lack of `mcp?/0`.
     defp excluded_tool?(server, tool) do
       tool in server.__legion_excluded_tools__() or

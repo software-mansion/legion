@@ -355,7 +355,6 @@ defmodule Legion.Tools.AgentTool do
   end
 
   @doc false
-  # The ids of the sub-agents `owner_id` runs.
   def running(owner_id) do
     for {:legion_sub_agent, ^owner_id, agent_id} <- :global.registered_names(),
         Legion.lookup(agent_id) != :error,
@@ -373,8 +372,6 @@ defmodule Legion.Tools.AgentTool do
     :ok
   end
 
-  # Anything that is not one of this agent's running sub-agents lands here:
-  # a stale id or a forged one.
   defp owned!(agent_id) do
     with watcher when is_pid(watcher) <-
            :global.whereis_name(owned_name(Vault.fetch!(:agent_id), agent_id)),

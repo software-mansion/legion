@@ -56,7 +56,6 @@ defmodule Legion.Integration.EvalGuardTest do
     assert {:ok, result} =
              Legion.execute(GuardedMathAgent, "What is 21 + 21? Compute it and return it.")
 
-    # A turn that ends in eval_and_complete returns the value as the code made it.
     assert to_string(result) =~ "42"
 
     refute_received {[:legion, :eval_guard, :denied], ^ref, _measurements,
