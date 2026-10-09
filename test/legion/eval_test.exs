@@ -75,6 +75,12 @@ defmodule Legion.EvalTest do
       assert error =~ "over the 30 byte limit"
     end
 
+    test "skips the max_bindings_bytes check under :iteration, which drops the variables" do
+      config = config(%{max_bindings_bytes: 30, binding_scope: :iteration})
+
+      assert {:ok, _} = Eval.run(ExtraAgent, String.duplicate("y", 100), config, [])
+    end
+
     test "checks and executes the code with the agent's tools and their extra modules allowed" do
       assert {:ok, _} = Eval.run(ExtraAgent, "x = 1", config(), [])
 
@@ -171,6 +177,15 @@ defmodule Legion.EvalTest do
 
       assert text =~ "[... truncated"
       refute text =~ String.duplicate("a", 100)
+    end
+
+    test "truncates the variables line to max_message_length" do
+      bindings = for index <- 1..1_000, do: {:"variable_#{index}", index}
+      text = Eval.format_result(1, bindings, config(%{max_message_length: 200}))
+
+      assert text =~ "Available variables: `variable_1`"
+      assert text =~ "[... truncated"
+      assert byte_size(text) < 600
     end
 
     test "a cut through a multibyte character leaves valid UTF-8" do
