@@ -383,8 +383,6 @@ if Code.ensure_loaded?(Anubis.Server) do
       end
     end
 
-    # A session that names a sandbox must name Lua; one that names none keeps
-    # the agent's, checked at start.
     defp session_sandbox(agent_module, opts) do
       if Keyword.has_key?(opts, :sandbox), do: check_sandbox(agent_module, opts), else: :ok
     end
@@ -442,8 +440,6 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    # Lua only: see the moduledoc. `config` is the agent's resolved config or
-    # the options `session/1` returned, whichever names the sandbox.
     def check_sandbox(agent_module, config) do
       case config[:sandbox] do
         Legion.Sandbox.Lua ->
@@ -530,7 +526,6 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     @doc false
-    # The tool list `help` answers a malformed name with, as a call sees it.
     def tool_index(agent_module),
       do: AgentPrompt.tool_index(agent_module, excluded_tools(agent_module))
 

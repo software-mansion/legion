@@ -232,7 +232,6 @@ defmodule Legion.RecoveryTest do
         }
     }
 
-    # A `:turn` store's crash: the prompt saved, nothing after it.
     unstarted_turn = %{
       interrupted_payload("unstarted-turn")
       | conversation_state: %{

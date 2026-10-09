@@ -30,8 +30,6 @@ defmodule Legion.AgentPrompt do
     binding_scope = Map.get(config, :binding_scope, :turn)
     prompt_info = sandbox.prompt_info()
 
-    # `:inline` embeds every tool's reference; `:on_demand` lists name and
-    # summary and leaves the reference to `Help`.
     {tool_references, tool_index} =
       case tool_docs do
         :inline -> {Enum.map(agent.tools() -- excluded, &tool_reference(&1, sandbox)), nil}
@@ -65,9 +63,6 @@ defmodule Legion.AgentPrompt do
   defp render(assigns), do: elem(Code.eval_quoted(@template, assigns), 0)
 
   @doc false
-  # One tool's block as the `:inline` prompt renders it: a `### Name` heading
-  # and the description in a code fence. `Legion.Tools.Help` serves the same
-  # block on demand, so the two never drift.
   def tool_reference(module, sandbox) do
     {name, content} = tool_description(module, sandbox)
     lang = if String.starts_with?(content, "defmodule"), do: "elixir", else: ""
@@ -75,10 +70,8 @@ defmodule Legion.AgentPrompt do
   end
 
   @doc false
-  # The index the `:on_demand` prompt shows and `Help.help/0` returns: one
-  # `- \`Name\` - summary` line per tool, `Help` last. Here and not in `Help`,
-  # whose public functions sandbox code can call: these take any agent.
-  # `excluded` are tools the sandbox left out, as over MCP.
+  # Here and not in `Help`, whose public functions sandbox code can call:
+  # these take any agent.
   def tool_index(agent, excluded) do
     agent
     |> listed_tools(excluded)
@@ -86,10 +79,6 @@ defmodule Legion.AgentPrompt do
   end
 
   @doc false
-  # What `Help.help/1` returns for `tool`, a module or its short name: the
-  # block the `:inline` prompt would render for it on `sandbox` (the one the
-  # agent runs, so a tool's `description/1` picks the right language), or
-  # the index when the agent has no such tool.
   def tool_help(agent, sandbox, tool, excluded) do
     name = short_name(tool)
 
@@ -110,7 +99,6 @@ defmodule Legion.AgentPrompt do
       else: Legion.Tool.default_summary(module)
   end
 
-  # A string is the name itself; kept for code that types it, not documented.
   defp short_name(name) when is_binary(name), do: name
   defp short_name(module), do: module |> Module.split() |> List.last()
 

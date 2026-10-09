@@ -116,10 +116,6 @@ defmodule Legion.Tool do
   end
 
   @doc false
-  # A tool's own `summary/0` replaces the generated one, so a function that
-  # was there first and means something else is taken over without a word:
-  # listed as the summary and hidden from Lua code. `@impl` says the
-  # override is meant.
   def __on_definition__(env, :def, :summary, [], _guards, _body) do
     unless Module.get_attribute(env.module, :impl) ||
              Module.get_attribute(env.module, :legion_generated_summary) do
