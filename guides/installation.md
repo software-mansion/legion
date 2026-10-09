@@ -7,10 +7,13 @@ Legion needs Elixir 1.18 and Erlang/OTP 26 or later.
 ```elixir
 def deps do
   [
-    {:legion, "~> 0.5"}
+    {:legion, "~> 0.6"}
   ]
 end
 ```
+
+   To serve agents over MCP, add `{:anubis_mcp, "~> 2.0"}` too; see the
+   [MCP guide](mcp.md).
 
 2. Legion instances are isolated supervision trees and should be included in
    your application's supervisor to run:
@@ -23,7 +26,7 @@ children = [
 ]
 ```
 
-3. Configure an LLM provider. The default model is `"openai:gpt-5.4"`, so an
+3. Configure an LLM provider. The default model is `"openai:gpt-5.6-luna"`, so an
    OpenAI key is enough to start ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
 
 ```elixir

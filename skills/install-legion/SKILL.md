@@ -39,11 +39,11 @@ this order. Offer a question only when its condition holds; otherwise say in
 one line why it is not offered.
 
 - **Provider and model.** Recommend the provider already configured, else
-  OpenAI (default model `openai:gpt-5.4`, no model line needed). Any other
+  OpenAI (default model `openai:gpt-5.6-luna`, no model line needed). Any other
   provider needs a model in ReqLLM's `provider:model` form.
 - **Store** - Postgres Ecto repo present. Conversations survive deploys and
   resume by id; costs one migration.
-- **Rate limiter** - store = yes. Caps agents and tokens per user or IP on
+- **Rate limiter** - store = yes. Caps agents, tokens and code evaluations per user or IP on
   the same table; meant for agents driven by untrusted users.
 - **Dashboard** - `:phoenix` present. `legion_web` shows every user's
   prompts, generated snippets and results, so only admins may reach it - a
@@ -333,8 +333,9 @@ Wire the entry point chosen in step 0 to the agent, or the chat LiveView
 agreed there. Its look and every other behaviour stay; only what happens to
 the message changes.
 
-Start the agent in the process that owns the entry point, under the identity
-of step 7 when identity = yes:
+A LiveView starts the agent in its own process, under the identity of step 7
+when identity = yes; a controller or a job runs it with `Legion.execute/3`
+instead (below):
 
 ```elixir
 {:ok, pid} = Legion.start_link(MyApp.SupportAgent)
@@ -377,11 +378,16 @@ Then the call, by entry point:
   ```
 
   The reply goes where the pane shows messages today.
-- Controller action or webhook: `Legion.call(pid, message)` directly, one
-  turn per request.
-- Worker, scheduled job or mix task: `start_link` in the job, then
-  `Legion.call(pid, message)`; the result goes where the job's output went
-  before.
+- Controller action or webhook: no `start_link`. `Legion.execute/3` starts
+  the agent, runs one turn and stops it, so nothing outlives the request: a
+  linked agent would, since a request process exits normally. It takes the
+  same options; with a store, the same `agent_id` continues the conversation:
+
+  ```elixir
+  {:ok, reply} = Legion.execute(MyApp.SupportAgent, message, [agent_id: agent_id] ++ opts)
+  ```
+- Worker, scheduled job or mix task: `Legion.execute/3` the same way; the
+  result goes where the job's output went before.
 
 Done when: the entry point's handler calls the agent and the reply lands
 where that handler's output landed before.
@@ -408,7 +414,7 @@ has been reported and work stopped there.
 
 ## Further reading
 
-- Guides in the repo: https://github.com/software-mansion-labs/legion/tree/main/guides
-  (`installation.md`, `integrating.md`, `sandboxes.md`, `ash.md`)
+- Guides in the repo: https://github.com/software-mansion/legion/tree/main/guides
+  (`installation.md`, `integrating.md`, `sandboxes.md`, `ash.md`, `mcp.md`)
 - API docs: https://hexdocs.pm/legion
 - Dashboard: https://github.com/software-mansion-labs/legion_web
