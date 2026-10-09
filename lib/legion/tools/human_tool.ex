@@ -28,6 +28,11 @@ defmodule Legion.Tools.HumanTool do
 
   use Legion.Tool
 
+  # Over MCP, the caller would write what the application's human handler
+  # reads as the agent's question.
+  @impl Legion.Tool
+  def mcp?, do: false
+
   @doc """
   Asks a human a question and blocks until they respond.
 

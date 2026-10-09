@@ -55,9 +55,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     `help` do not list it and `repl` code cannot call it. Chat with the same
     agent keeps it. `Legion.Tools.AgentTool` is one: its sub-agents would run
     tasks the caller writes, on the application's model and in whatever
-    sandbox they use. `Legion.Tools.HumanTool` is left out too unless
-    `:exclude_tools` says otherwise: the caller would write what the
-    application's human handler reads as the agent's question.
+    sandbox they use. `Legion.Tools.HumanTool` is another: the caller would
+    write what the application's human handler reads as the agent's question.
 
     ## Options
 
@@ -68,9 +67,6 @@ if Code.ensure_loaded?(Anubis.Server) do
       - `:instructions_budget` - how many characters of `server_instructions/0`
         and of the `repl` tool description the hosts you target read; see
         "Instruction size". Defaults to 2048, `:infinity` disables the check
-      - `:exclude_tools` - tools of the agent left out over MCP, on top of
-        those whose `c:Legion.Tool.mcp?/0` is `false`. Defaults to
-        `[Legion.Tools.HumanTool]`; `[]` serves it
 
     Every other option is passed to `use Anubis.Server`, `:authorization`
     above all; see "Who is calling". The child spec takes the options
@@ -273,14 +269,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     # guard, store save.
     @request_slack :timer.seconds(30)
 
-    # Left out unless the server says otherwise: the caller would put its own
-    # text in front of the application's human handler.
-    @default_excluded [Legion.Tools.HumanTool]
-
     defmacro __using__(opts) do
       {agent, anubis_opts} = Keyword.pop!(opts, :agent)
       {budget, anubis_opts} = Keyword.pop(anubis_opts, :instructions_budget, @default_budget)
-      {excluded, anubis_opts} = Keyword.pop(anubis_opts, :exclude_tools, @default_excluded)
       anubis_opts = Keyword.update(anubis_opts, :capabilities, [:tools], &with_tools/1)
 
       quote do
@@ -296,9 +287,6 @@ if Code.ensure_loaded?(Anubis.Server) do
 
         @doc false
         def __legion_agent__, do: unquote(agent)
-
-        @doc false
-        def __legion_excluded_tools__, do: unquote(excluded)
 
         @doc """
         How long the transport waits for one `repl` call, in milliseconds.
@@ -428,7 +416,7 @@ if Code.ensure_loaded?(Anubis.Server) do
         vault: vault,
         require_agent: server.__legion_agent__(),
         require_sandbox: Legion.Sandbox.Lua,
-        exclude_tools: &excluded_tool?(server, &1)
+        exclude_tools: &excluded_tool?/1
       ]
 
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
@@ -602,13 +590,11 @@ if Code.ensure_loaded?(Anubis.Server) do
     end
 
     defp excluded_tools(server),
-      do: Enum.filter(server.__legion_agent__().tools(), &excluded_tool?(server, &1))
+      do: Enum.filter(server.__legion_agent__().tools(), &excluded_tool?/1)
 
     # Loaded first, so a tool not yet loaded is not served for lack of `mcp?/0`.
-    defp excluded_tool?(server, tool) do
-      tool in server.__legion_excluded_tools__() or
-        (Code.ensure_loaded?(tool) and function_exported?(tool, :mcp?, 0) and not tool.mcp?())
-    end
+    defp excluded_tool?(tool),
+      do: Code.ensure_loaded?(tool) and function_exported?(tool, :mcp?, 0) and not tool.mcp?()
 
     @doc false
     # Anubis's transport calls the session with this timeout; it must outlast
