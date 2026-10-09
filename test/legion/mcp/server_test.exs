@@ -474,33 +474,20 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "- `MathTool` -"
     end
 
-    test "rejects a name that is not a bare word without running anything" do
+    test "answers from the agent's docs without starting the session's agent" do
       frame = initialized(MathMCP, frame())
 
-      assert {true, text, frame} = help(MathMCP, frame, %{"tool" => ~s|x") os.exit(|})
-      assert text =~ "Tools:"
+      assert {false, text, frame} = help(MathMCP, frame, %{"tool" => ~s|x") os.exit(|})
+      assert text =~ "No tool named"
       assert text =~ "- `MathTool` -"
       refute Map.has_key?(frame.assigns, :legion_mcp_agent)
     end
 
-    test "is a step of the session's conversation" do
-      frame = initialized(MathMCP, frame())
-
-      assert {false, _text, %Frame{assigns: %{legion_mcp_agent: pid}}} =
-               help(MathMCP, frame, %{"tool" => "MathTool"})
-
-      [%{type: :assistant, content: code}, %{type: :eval_result, content: result}] =
-        pid |> Legion.get_messages() |> Enum.take(-2)
-
-      assert Jason.decode!(code)["code"] == ~s|return Help.help("MathTool")|
-      assert result =~ "### MathTool"
-    end
-
-    test "is rate limited like repl" do
+    test "is no evaluation: a rate-limited session still reads it" do
       frame = initialized(UserMCP, frame("host", %{sub: "denied"}))
 
-      assert {true, "Rate limit exceeded (max_evals)." <> _, _frame} =
-               help(UserMCP, frame, %{})
+      assert {false, text, _frame} = help(UserMCP, frame, %{})
+      assert text =~ "- `Help` -"
     end
 
     test "refuses before the session is initialized" do
@@ -655,7 +642,7 @@ defmodule Legion.MCP.ServerTest do
       assert {false, text, frame} = repl(NoMathMCP, frame, "return MathTool == nil")
       assert text =~ "true"
 
-      assert {true, text, _frame} = help(NoMathMCP, frame, %{"tool" => "Math Tool"})
+      assert {false, text, _frame} = help(NoMathMCP, frame, %{"tool" => "Math Tool"})
       refute text =~ "MathTool"
     end
   end

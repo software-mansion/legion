@@ -19,32 +19,17 @@ if Code.ensure_loaded?(Anubis.Server) do
         description: "Tool name as listed in the server instructions; omit to list all tools"
     end
 
+    # Answered from the agent's tool docs, not by the agent: a lookup is no
+    # step of the conversation and no evaluation to rate limit.
     @impl true
     def execute(params, %Frame{assigns: %{legion_mcp_server: server}} = frame) do
-      case code(Map.get(params, :tool)) do
-        {:ok, code} ->
-          Server.run(frame, code)
-
-        :error ->
-          message =
-            "Tool names are single words, as listed. Tools:\n" <>
-              Server.tool_index(server)
-
-          {:reply, Response.error(Response.tool(), message), frame}
-      end
+      text = Server.tool_help(server, Map.get(params, :tool))
+      {:reply, Response.text(Response.tool(), text), frame}
     end
 
     def execute(_params, %Frame{} = frame) do
       message = "Session is not initialized: send notifications/initialized before calling tools."
       {:reply, Response.error(Response.tool(), message), frame}
-    end
-
-    defp code(nil), do: {:ok, "return Help.help()"}
-
-    defp code(name) do
-      if name =~ ~r/\A\w+\z/,
-        do: {:ok, ~s|return Help.help("#{name}")|},
-        else: :error
     end
   end
 end
