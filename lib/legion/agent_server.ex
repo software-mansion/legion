@@ -123,8 +123,26 @@ defmodule Legion.AgentServer do
 
   # Server callbacks
 
+  # A conversation saved by another agent module is not this one's: its
+  # history, variables and usage were made with other tools and prompt.
   @impl true
-  def init({agent_module, config, store, agent_id, persistence_frequency, track_usage, vault}) do
+  def init({agent_module, _config, store, agent_id, _frequency, _track_usage, _vault} = init_arg) do
+    stored = store && store.get(agent_id)
+
+    case stored do
+      {:ok, %Payload{agent_module: stored_module}}
+      when not is_nil(stored_module) and stored_module != agent_module ->
+        {:error, {:agent_module_mismatch, stored_module}}
+
+      _stored ->
+        start(init_arg, stored)
+    end
+  end
+
+  defp start(
+         {agent_module, config, store, agent_id, persistence_frequency, track_usage, vault},
+         stored
+       ) do
     parent_agent_id = Vault.get(:agent_id)
     mode = Map.get(config, :start_mode, :normal)
 
@@ -147,7 +165,7 @@ defmodule Legion.AgentServer do
     )
 
     {saved_messages, saved_bindings, saved_executor_state, saved_usage} =
-      case store && store.get(agent_id) do
+      case stored do
         {:ok,
          %Payload{
            conversation_state: %{
@@ -250,10 +268,17 @@ defmodule Legion.AgentServer do
     {:reply, reply, state, idle_timeout(state)}
   end
 
+  # A call waits while the agent is busy. One whose caller gave up and died
+  # meanwhile, as an MCP request does when it times out, is skipped: run now,
+  # it would act for nobody, and the caller's retry would run it again.
   @impl true
-  def handle_call({:eval, code, opts}, _from, state) do
-    {reply, state} = handle_eval(code, opts, state)
-    {:reply, reply, state, idle_timeout(state)}
+  def handle_call({:eval, code, opts}, {caller, _tag}, state) do
+    if node(caller) == node() and not Process.alive?(caller) do
+      {:noreply, state, idle_timeout(state)}
+    else
+      {reply, state} = handle_eval(code, opts, state)
+      {:reply, reply, state, idle_timeout(state)}
+    end
   end
 
   @impl true
@@ -337,7 +362,7 @@ defmodule Legion.AgentServer do
   # on unless the scope is `:iteration`. Usage records the evaluation, not
   # tokens: that is what `:max_evals` counts. A step that cannot be saved is
   # answered as an error and forgotten, so the conversation on record and the
-  # one in memory stay the same.
+  # one in memory stay the same; only its usage entry is kept.
   defp handle_eval(code, opts, state) do
     case eval_refusal(code, opts, state) || enforce_rate_limit(state) do
       :ok ->
@@ -361,10 +386,14 @@ defmodule Legion.AgentServer do
           :ok ->
             {reply, new_state}
 
+          # The evaluation still counts: its entry, pointing at no message,
+          # is kept for the next save that succeeds.
           :error ->
+            usage = if state.track_usage, do: state.usage ++ [%{entry | "message_index" => nil}]
+
             {{:error,
               "The code ran, but the step could not be saved. Its effects stand; its variables were discarded and do not exist."},
-             state}
+             %{state | usage: usage}}
         end
 
       {:rate_limited, violations} ->
@@ -377,10 +406,12 @@ defmodule Legion.AgentServer do
 
   # Checked before the rate limiter, so a refused call runs, saves and counts
   # nothing. An agent whose `action_types/0` allow no evaluation never runs
-  # code, whoever sends it. `:require_sandbox` is the caller's condition on
-  # the agent it reached: `Legion.MCP.Server` finds named agents with
-  # `Legion.lookup/1`, and one started elsewhere may run any sandbox.
+  # code, whoever sends it. `:require_agent` and `:require_sandbox` are the
+  # caller's conditions on the agent it reached: `Legion.MCP.Server` finds
+  # named agents with `Legion.lookup/1`, and one started elsewhere may be any
+  # agent, on any sandbox.
   defp eval_refusal(code, opts, %{agent_module: agent_module, config: config}) do
+    required_agent = Keyword.get(opts, :require_agent, agent_module)
     required = Keyword.get(opts, :require_sandbox, config.sandbox)
     max_length = config.max_message_length
 
@@ -391,6 +422,11 @@ defmodule Legion.AgentServer do
       not evaluates? ->
         {:refused,
          "#{inspect(agent_module)} runs no code: its action_types/0 allow no evaluation"}
+
+      required_agent != agent_module ->
+        {:refused,
+         "This call requires #{inspect(required_agent)}; " <>
+           "the agent it reached is #{inspect(agent_module)}"}
 
       required != config.sandbox ->
         {:refused,

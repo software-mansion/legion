@@ -77,7 +77,8 @@ defmodule Legion.Store do
 
   `"at"` is when the call finished. `"message_index"` is the position of the
   call's code among the stored messages, counting from zero, so an entry can
-  be matched to its message. These are the evaluations `:max_evals` in a
+  be matched to its message, or `nil` for a call whose step could not be
+  saved: its code ran, so it still counts. These are the evaluations `:max_evals` in a
   `Legion.RateLimiter.Policy` limits.
 
   ## Identifying a conversation

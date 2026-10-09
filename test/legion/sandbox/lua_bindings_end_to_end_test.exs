@@ -142,6 +142,10 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
 
     GenServer.stop(pid)
 
+    # The same conversation, as a redeploy without AdminTool reads it back.
+    {:ok, payload} = Store.get("curator-revoked")
+    :ok = Store.save(%{payload | agent_module: RestrictedCuratorAgent})
+
     {:ok, restricted} =
       Legion.start_link(RestrictedCuratorAgent, store: Store, agent_id: "curator-revoked")
 
