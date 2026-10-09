@@ -99,11 +99,15 @@ defmodule Legion.Eval do
   end
 
   @doc false
-  # Renders any `{:error, reason}` from `run/4` as one line of text.
-  def format_error(message) when is_binary(message), do: message
-  def format_error(%{message: message}) when is_binary(message), do: message
-  def format_error(error) when is_exception(error), do: Exception.message(error)
-  def format_error(error), do: inspect(error, pretty: true, limit: 50)
+  # Renders any `{:error, reason}` from `run/4` as one line of text. Code can
+  # raise any bytes, and the text goes to an LLM or an MCP host as JSON, so
+  # whatever is not UTF-8 is replaced.
+  def format_error(error), do: error |> error_text() |> String.replace_invalid()
+
+  defp error_text(message) when is_binary(message), do: message
+  defp error_text(%{message: message}) when is_binary(message), do: message
+  defp error_text(error) when is_exception(error), do: Exception.message(error)
+  defp error_text(error), do: inspect(error, pretty: true, limit: 50)
 
   defp check_bindings_size(bindings, %{max_bindings_bytes: max}) when is_integer(max) do
     size = :erlang.external_size(bindings)

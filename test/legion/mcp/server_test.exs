@@ -94,6 +94,18 @@ defmodule Legion.MCP.ServerTest do
     end
   end
 
+  defmodule TeamMCP do
+    use Legion.MCP.Server, agent: VaultAgent, name: "team", version: "0.1.0"
+
+    # One agent for the whole team; only some members carry a token.
+    def session(frame) do
+      auth = frame.context.auth
+      token = if auth[:token], do: [token: auth.token], else: []
+
+      [store: MemoryStore, agent_id: "mcp:team:1", vault: [current_user: auth.sub] ++ token]
+    end
+  end
+
   defmodule ShortLivedMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "short", version: "0.1.0"
 
@@ -650,6 +662,16 @@ defmodule Legion.MCP.ServerTest do
       assert text =~ "morning"
       assert {false, text, _frame} = repl(UserMCP, second, "return VaultTool.token()")
       assert text =~ "evening"
+    end
+
+    test "the call that starts a shared agent leaves no vault behind" do
+      admin = initialized(TeamMCP, frame("admin", %{sub: "admin", token: "secret"}))
+      guest = initialized(TeamMCP, frame("guest", %{sub: "guest"}))
+
+      assert {false, text, _frame} = repl(TeamMCP, admin, "return VaultTool.token()")
+      assert text =~ "secret"
+      assert {false, text, _frame} = repl(TeamMCP, guest, "return VaultTool.token()")
+      refute text =~ "secret"
     end
 
     test "concurrent sessions on one agent serialise, and every step is kept" do

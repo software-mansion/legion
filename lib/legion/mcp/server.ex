@@ -332,9 +332,10 @@ if Code.ensure_loaded?(Anubis.Server) do
     @doc false
     # The agent a call runs in, with the vault to seed it with: the one
     # `session/1` names, started if need be, or else the session's own
-    # anonymous agent, kept in the frame.
+    # anonymous agent, kept in the frame. The vault is never a start option:
+    # the agent would keep the first caller's for good.
     def resolve_agent(%Frame{assigns: %{legion_mcp_server: server} = assigns} = frame, opts) do
-      vault = Keyword.get(opts, :vault, [])
+      {vault, opts} = Keyword.pop(opts, :vault, [])
 
       cond do
         agent_id = opts[:agent_id] ->

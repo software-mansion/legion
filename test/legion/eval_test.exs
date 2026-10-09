@@ -218,5 +218,9 @@ defmodule Legion.EvalTest do
     test "inspects anything else" do
       assert Eval.format_error({:exit, :killed}) == "{:exit, :killed}"
     end
+
+    test "replaces bytes that are not UTF-8" do
+      assert Eval.format_error("bad \xFF byte") == "bad \uFFFD byte"
+    end
   end
 end
