@@ -70,7 +70,7 @@ defmodule Legion.Eval do
 
   @doc false
   # Renders a successful eval as the text the model reads back: the inspected
-  # value (truncated to `max_message_length`) plus the variables now in scope.
+  # value plus the variables now in scope, each truncated to `max_message_length`.
   # `inspect` has its own cap on strings, 4096 characters by default, so it is
   # raised to the configured one; the byte-level truncation below still rules.
   def format_result(result, bindings, config) do
@@ -92,7 +92,8 @@ defmodule Legion.Eval do
     if variable_names == [] do
       base
     else
-      base <> "\nAvailable variables: #{Enum.join(variable_names, ", ")}"
+      variables = variable_names |> Enum.join(", ") |> Executor.truncate_content(max_length)
+      base <> "\nAvailable variables: #{variables}"
     end
   end
 
@@ -106,6 +107,10 @@ defmodule Legion.Eval do
   defp error_text(%{message: message}) when is_binary(message), do: message
   defp error_text(error) when is_exception(error), do: Exception.message(error)
   defp error_text(error), do: inspect(error, pretty: true, limit: 50)
+
+  # `:iteration` drops the variables after every execution, so their size
+  # never matters.
+  defp check_bindings_size(_bindings, %{binding_scope: :iteration}), do: :ok
 
   defp check_bindings_size(bindings, %{max_bindings_bytes: max}) when is_integer(max) do
     size = :erlang.external_size(bindings)
