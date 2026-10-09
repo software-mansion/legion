@@ -52,7 +52,7 @@ defmodule Legion do
       {DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one, name: Legion.Supervisor)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 
   @doc """
@@ -104,7 +104,9 @@ defmodule Legion do
       A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
-      An agent ID can belong to at most one live process across connected nodes.
+      An agent ID can belong to at most one live process across connected nodes,
+      and to one agent module: starting another module under an ID the store
+      holds a conversation for returns `{:error, {:agent_module_mismatch, stored}}`.
     - `:rate_limit` - a keyword list with `:limiter` and `:rules`, a list of
       `Legion.RateLimiter.Rule`s pairing an identity (for example,
       `%{"ip" => "203.0.113.42"}`) with a policy, checked for every turn by a
@@ -192,9 +194,11 @@ defmodule Legion do
       of `start_link/2`. The agent's vault is restored after the call, and
       the keys Legion sets itself (`:agent_id`, `:parent_agent_id`,
       `:agent_module`, `:sandbox`, `:store`, `:rate_limit`) are ignored
-    - `:require_sandbox` - a sandbox module; the call is refused like the
-      above unless the agent runs it. For a caller that reaches an agent by
+    - `:require_agent` - an agent module; the call is refused like the
+      above unless the agent is one. For a caller that reaches an agent by
       id and cannot know how it was started
+    - `:require_sandbox` - a sandbox module; the call is refused like the
+      above unless the agent runs it, for the same caller
     - `:exclude_tools` - tool modules left out for this call only, or a
       function given each of the agent's tools that returns `true` for those
       to leave out: the code cannot call them and `Help` does not list them

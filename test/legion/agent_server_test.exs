@@ -213,6 +213,15 @@ defmodule Legion.AgentServerTest do
     end)
   end
 
+  defp wait_until(condition) do
+    if condition.() do
+      :ok
+    else
+      Process.sleep(1)
+      wait_until(condition)
+    end
+  end
+
   describe "multipart messages" do
     test "passes a text + image part list through to the LLM unchanged" do
       capture_user_content(self())
@@ -1323,6 +1332,16 @@ defmodule Legion.AgentServerTest do
       refute_received :llm_requested
     end
 
+    test "another agent module cannot start under an id with a stored conversation" do
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "owned-by-math", store: MemoryStore)
+      GenServer.stop(pid)
+
+      assert {:error, {:agent_module_mismatch, MathAgent}} =
+               Legion.start_link(VaultAgent, agent_id: "owned-by-math", store: MemoryStore)
+
+      assert {:ok, %Payload{agent_module: MathAgent}} = MemoryStore.get("owned-by-math")
+    end
+
     test "resume/2 returns not_resumable for an agent_id the store has no run for" do
       assert {:error, :not_resumable} = Legion.resume("ghost", store: MemoryStore)
     end
@@ -1785,6 +1804,23 @@ defmodule Legion.AgentServerTest do
       assert text =~ "ReadOnlyAgent runs no code"
       refute_received {:enforced, _agent_id, _identity, _policy}
       assert MemoryStore.load("eval-read-only") == :error
+    end
+
+    test "a call whose caller died while it waited is skipped" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "eval-abandoned")
+
+      # Busy, as with another call or a chat turn.
+      :ok = :sys.suspend(pid)
+      caller = spawn(fn -> AgentServer.eval(pid, "abandoned = 1") end)
+      wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
+      Process.exit(caller, :kill)
+      :ok = :sys.resume(pid)
+
+      assert {:ok, text} = AgentServer.eval(pid, "return abandoned")
+      assert text =~ "nil"
+
+      assert [%{type: :system}, %{type: :assistant}, %{type: :eval_result}] =
+               Legion.get_messages(pid)
     end
 
     test "code over max_message_length or not UTF-8 is refused and not kept" do

@@ -147,6 +147,12 @@ defmodule Legion.MCP.ServerTest do
     use Legion.MCP.Server, agent: AgentToolAgent, name: "agent-tool", version: "0.1.0"
   end
 
+  defmodule PresetAgentToolMCP do
+    use Legion.MCP.Server, agent: AgentToolAgent, name: "preset-agent-tool", version: "0.1.0"
+
+    def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:preset"]
+  end
+
   defmodule HumanToolAgent do
     @moduledoc "Agent that asks a human and does math."
     use Legion.Agent
@@ -516,15 +522,42 @@ defmodule Legion.MCP.ServerTest do
       {:ok, pid} =
         Legion.start_link(AgentToolAgent, store: MemoryStore, agent_id: "mcp:user:preset")
 
-      frame = initialized(PresetMCP, frame())
+      frame = initialized(PresetAgentToolMCP, frame())
 
       assert {false, text, _frame} =
-               repl(PresetMCP, frame, "return AgentTool == nil and LocalTool == nil")
+               repl(PresetAgentToolMCP, frame, "return AgentTool == nil and LocalTool == nil")
 
       assert text =~ "true"
 
       assert {:ok, text} = Legion.eval(pid, "return AgentTool == nil or LocalTool == nil")
       assert text =~ "false"
+    end
+  end
+
+  describe "a named agent of another module" do
+    test "refuses calls while it runs" do
+      {:ok, _pid} =
+        Legion.start_link(VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {true, text, _frame} = repl(PresetMCP, frame, "return 1")
+      assert text =~ "requires Legion.Test.Support.MathAgent"
+      assert text =~ "VaultAgent"
+    end
+
+    test "is not taken over from the store once it stopped" do
+      {:ok, pid} =
+        Legion.start_link(VaultAgent, store: MemoryStore, agent_id: "mcp:user:preset")
+
+      {:ok, _text} = Legion.eval(pid, "secret = 42")
+      GenServer.stop(pid)
+
+      frame = initialized(PresetMCP, frame())
+
+      assert {true, text, _frame} = repl(PresetMCP, frame, "return secret")
+      assert text =~ "holds a conversation of #{inspect(VaultAgent)}"
+      assert {:ok, %Payload{agent_module: VaultAgent}} = MemoryStore.get("mcp:user:preset")
     end
   end
 
@@ -772,6 +805,12 @@ defmodule Legion.MCP.ServerTest do
       MemoryStore.fail_saves(false)
       assert {false, text, _frame} = repl(UserMCP, frame, "return x")
       assert text =~ "1"
+
+      # The forgotten step still counts towards :max_evals.
+      assert {:ok, %Payload{usage: usage}} = MemoryStore.get("mcp:user:heidi")
+
+      assert [%{"message_index" => 0}, %{"message_index" => nil}, %{"message_index" => 2}] =
+               usage
     end
 
     test "nothing is left in the frame to stop with the session" do
@@ -802,9 +841,9 @@ defmodule Legion.MCP.ServerTest do
   describe "agent/2" do
     test "starts the agent under Legion.AgentSupervisor and finds it again by its id" do
       opts = [store: MemoryStore, agent_id: "mcp-shared"]
-      pid = Server.agent(MathAgent, opts)
+      {:ok, pid} = Server.agent(MathAgent, opts)
 
-      assert Server.agent(MathAgent, opts) == pid
+      assert Server.agent(MathAgent, opts) == {:ok, pid}
       assert {:ok, ^pid} = Legion.lookup("mcp-shared")
 
       children = DynamicSupervisor.which_children(Legion.AgentSupervisor)

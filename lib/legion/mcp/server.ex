@@ -172,7 +172,9 @@ if Code.ensure_loaded?(Anubis.Server) do
     `Legion.AgentSupervisor` and found again on every later call, whatever
     MCP session it comes from, so a user who comes back tomorrow, or from
     another host, continues the same conversation. `:agent_id` needs a store;
-    see `Legion.Store`.
+    see `Legion.Store`. Give each user an id of their own: an agent belongs
+    to one user, since its history, variables and sub-agents are shared by
+    every call that reaches it, and only `:vault` changes per call.
 
     `:vault` is put in the agent for one call and taken out after it, so it
     may change from request to request: a refreshed token, a tenant switch.
@@ -182,8 +184,10 @@ if Code.ensure_loaded?(Anubis.Server) do
     Every other option is read once, by whoever starts the agent, and holds
     until it stops. An agent already running under that id, started by
     `Legion.start_link/2` before the MCP call arrived, keeps its own
-    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. Its
-    sandbox must still be Lua, or every call to it is refused.
+    `:idle_timeout`, `:rate_limit` and config; `session/1`'s go unused. It
+    must still be the server's agent module, on Lua, or every call to it is
+    refused, and a stopped one is not started from another module's stored
+    conversation.
 
     `:idle_timeout` stops the agent once nobody calls, after thirty minutes
     by default. The store then holds the conversation and the next call
@@ -353,19 +357,18 @@ if Code.ensure_loaded?(Anubis.Server) do
 
       cond do
         agent_id = opts[:agent_id] ->
-          pid =
-            case Legion.lookup(agent_id) do
-              {:ok, pid} -> pid
-              :error -> agent(server.__legion_agent__(), opts)
-            end
-
-          {pid, agent_id, vault, frame}
+          with :error <- Legion.lookup(agent_id),
+               {:error, message} <- agent(server.__legion_agent__(), opts) do
+            {:error, message}
+          else
+            {:ok, pid} -> {pid, agent_id, vault, frame}
+          end
 
         (pid = assigns[:legion_mcp_agent]) && Process.alive?(pid) ->
           {pid, assigns.legion_mcp_agent_id, vault, frame}
 
         true ->
-          pid = agent(server.__legion_agent__(), opts)
+          {:ok, pid} = agent(server.__legion_agent__(), opts)
           agent_id = Legion.get_agent_id(pid)
 
           frame =
@@ -402,9 +405,14 @@ if Code.ensure_loaded?(Anubis.Server) do
       if Keyword.has_key?(opts, :sandbox), do: check_sandbox(agent_module, opts), else: :ok
     end
 
-    defp run(%Frame{assigns: %{legion_mcp_server: server}} = frame, code, opts) do
-      {agent, agent_id, vault, frame} = resolve_agent(frame, opts)
+    defp run(frame, code, opts) do
+      case resolve_agent(frame, opts) do
+        {:error, message} -> {:reply, Response.error(Response.tool(), message), frame}
+        {agent, agent_id, vault, frame} -> eval(frame, code, agent, agent_id, vault)
+      end
+    end
 
+    defp eval(%Frame{assigns: %{legion_mcp_server: server}} = frame, code, agent, agent_id, vault) do
       metadata = %{
         agent: server.__legion_agent__(),
         agent_id: agent_id,
@@ -415,6 +423,7 @@ if Code.ensure_loaded?(Anubis.Server) do
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
         case Legion.eval(agent, code,
                vault: vault,
+               require_agent: server.__legion_agent__(),
                require_sandbox: Legion.Sandbox.Lua,
                exclude_tools: &excluded_tool?(server, &1)
              ) do
@@ -437,7 +446,8 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     @doc false
     # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
-    # returns the live process that already owns the agent id.
+    # finds the live process that already owns the agent id. An id whose
+    # stored conversation is another agent's is an error the caller reads.
     def agent(agent_module, opts) do
       opts = Keyword.put_new(opts, :idle_timeout, @idle_timeout)
 
@@ -448,9 +458,19 @@ if Code.ensure_loaded?(Anubis.Server) do
       }
 
       case DynamicSupervisor.start_child(Legion.AgentSupervisor, child) do
-        {:ok, pid} -> pid
-        {:error, {:already_started, pid}} -> pid
-        {:error, reason} -> raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
+        {:ok, pid} ->
+          {:ok, pid}
+
+        {:error, {:already_started, pid}} ->
+          {:ok, pid}
+
+        {:error, {:agent_module_mismatch, stored}} ->
+          {:error,
+           "This session's agent id holds a conversation of #{inspect(stored)}, " <>
+             "not #{inspect(agent_module)}"}
+
+        {:error, reason} ->
+          raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
       end
     end
 
