@@ -175,6 +175,22 @@ defmodule Legion.Tools.AgentToolTest do
     assert_receive {:DOWN, ^ref, :process, ^child, :normal}, 1_000
   end
 
+  test "a sub-agent outlives an eval killed at sandbox_timeout" do
+    owner = start_owner(OwnerAgent, sandbox_timeout: 100)
+
+    assert {:error, _text} =
+             Legion.eval(owner, """
+             child = AgentTool.start_link(ChildAgent)[2]
+             while true do end
+             """)
+
+    [child_id] = sub_agents(owner)
+    {:ok, child} = Legion.lookup(child_id)
+    ref = Process.monitor(child)
+
+    refute_receive {:DOWN, ^ref, :process, ^child, _reason}, 100
+  end
+
   describe "a start under a rate limit" do
     setup do
       start_supervised!(Legion.Test.Support.MemoryStore)
