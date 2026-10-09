@@ -3,7 +3,7 @@ if Code.ensure_loaded?(Anubis.Server) and Code.ensure_loaded?(Plug) do
     @moduledoc """
     Mounts an MCP server over Streamable HTTP with the server's request timeout.
 
-        forward "/mcp", to: Legion.MCP.Plug, server: MyApp.MCP
+        forward "/mcp", Legion.MCP.Plug, server: MyApp.MCP
 
     A wrapper for `Anubis.Server.Transport.StreamableHTTP.Plug`, which speaks
     the transport: the session header, SSE streams, OAuth bearer checks. It
@@ -22,8 +22,7 @@ if Code.ensure_loaded?(Anubis.Server) and Code.ensure_loaded?(Plug) do
     from `localhost`, `127.0.0.1` or `[::1]` on any port, such as the MCP
     Inspector. Any other origin is answered with 403 unless it is listed:
 
-        forward "/mcp",
-          to: Legion.MCP.Plug,
+        forward "/mcp", Legion.MCP.Plug,
           server: MyApp.MCP,
           allowed_origins: ["https://app.example.com"]
 
