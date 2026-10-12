@@ -3,6 +3,7 @@ defmodule Legion.MCP.HTTPTest do
   use ExUnit.Case, async: false
 
   alias Anubis.Client
+  alias Legion.MCP.Plug, as: MCPPlug
   alias Legion.Test.Support.{MathAgent, SlowTool, VaultTool}
 
   defmodule HTTPMCP do
@@ -38,6 +39,7 @@ defmodule Legion.MCP.HTTPTest do
   setup do
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
     start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
+    start_supervised!(Legion.MCP.Admission)
     start_supervised!({HTTPMCP, transport: :streamable_http})
 
     bandit =
@@ -138,6 +140,129 @@ defmodule Legion.MCP.HTTPTest do
 
       open = start_plug(:open_bandit, allowed_origins: :any)
       assert %{status: 200} = initialize(open, origin: "http://evil.example")
+    end
+  end
+
+  describe "sessions and streams" do
+    def client(conn), do: conn |> Plug.Conn.get_req_header("x-client") |> List.first()
+
+    defp start_capped_plug(id, opts) do
+      bandit =
+        start_supervised!(
+          {Bandit,
+           plug: {Legion.MCP.Plug, [server: HTTPMCP, client_key: &__MODULE__.client/1] ++ opts},
+           ip: :loopback,
+           port: 0},
+          id: id
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+      port
+    end
+
+    defp session(port, client) do
+      response = initialize("http://127.0.0.1:#{port}", [{"x-client", client}])
+      {response.status, List.first(response.headers["mcp-session-id"] || [])}
+    end
+
+    # Over a raw socket, so the test sees exactly when the server ends the
+    # stream: `connection: close` makes the end of the response close it.
+    defp open_stream(port, session_id, client) do
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+
+      :ok =
+        :gen_tcp.send(
+          socket,
+          "GET / HTTP/1.1\r\nhost: localhost\r\naccept: text/event-stream\r\n" <>
+            "connection: close\r\nx-client: #{client}\r\n" <>
+            if(session_id, do: "mcp-session-id: #{session_id}\r\n", else: "") <> "\r\n"
+        )
+
+      {:ok, "HTTP/1.1 " <> <<status::binary-size(3)>> <> _rest} = :gen_tcp.recv(socket, 0, 5_000)
+      {String.to_integer(status), socket}
+    end
+
+    defp closed?(socket, timeout \\ 2_000) do
+      case :gen_tcp.recv(socket, 0, timeout) do
+        {:ok, _data} -> closed?(socket, timeout)
+        {:error, :closed} -> true
+        {:error, :timeout} -> false
+      end
+    end
+
+    test "a client over its session cap gets 429, and another client is still served" do
+      port = start_capped_plug(:client_cap_bandit, max_sessions_per_client: 2)
+
+      assert {200, _id} = session(port, "ann")
+      assert {200, _id} = session(port, "ann")
+      assert {429, nil} = session(port, "ann")
+      assert {200, _id} = session(port, "bob")
+    end
+
+    test "a server over its session cap gets 503 until a session ends" do
+      port = start_capped_plug(:server_cap_bandit, max_sessions: 1)
+
+      assert {200, session_id} = session(port, "ann")
+      assert {503, nil} = session(port, "bob")
+
+      assert %{status: 200} =
+               Req.delete!("http://127.0.0.1:#{port}", headers: [{"mcp-session-id", session_id}])
+
+      assert {200, _id} = session(port, "bob")
+    end
+
+    test "the server issues the session id, not the client" do
+      port = start_capped_plug(:issued_id_bandit, [])
+
+      response =
+        initialize("http://127.0.0.1:#{port}", [{"x-client", "ann"}, {"mcp-session-id", "mine"}])
+
+      assert [session_id] = response.headers["mcp-session-id"]
+      assert session_id != "mine"
+      assert byte_size(session_id) == 32
+    end
+
+    test "a stream needs a live session" do
+      port = start_capped_plug(:stream_session_bandit, [])
+
+      assert {400, _socket} = open_stream(port, nil, "ann")
+      assert {404, _socket} = open_stream(port, "made-up", "ann")
+    end
+
+    test "a newer stream closes the one it replaces, and the end of the session closes it" do
+      port = start_capped_plug(:stream_close_bandit, max_streams_per_client: 1)
+      {200, session_id} = session(port, "ann")
+
+      {200, first} = open_stream(port, session_id, "ann")
+      refute closed?(first, 200)
+
+      # The replaced stream does not count against the cap of one.
+      {200, second} = open_stream(port, session_id, "ann")
+      assert closed?(first)
+      refute closed?(second, 200)
+
+      Req.delete!("http://127.0.0.1:#{port}", headers: [{"mcp-session-id", session_id}])
+      assert closed?(second)
+    end
+
+    test "a client over its stream cap gets 429, and another client is still served" do
+      port = start_capped_plug(:stream_cap_bandit, max_streams_per_client: 1)
+      {200, first_session} = session(port, "ann")
+      {200, second_session} = session(port, "ann")
+
+      assert {200, _socket} = open_stream(port, first_session, "ann")
+      assert {429, _socket} = open_stream(port, second_session, "ann")
+      assert {200, _socket} = open_stream(port, second_session, "bob")
+    end
+
+    test "limits and :client_key are checked when the plug is built" do
+      assert_raise ArgumentError, ~r/:max_sessions must be/, fn ->
+        MCPPlug.init(server: HTTPMCP, max_sessions: 0)
+      end
+
+      assert_raise ArgumentError, ~r/:client_key must be/, fn ->
+        MCPPlug.init(server: HTTPMCP, client_key: :remote_ip)
+      end
     end
   end
 
