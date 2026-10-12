@@ -35,6 +35,7 @@ defmodule Legion.MixProject do
           "guides/ash.md": [title: "Using Legion with Ash"],
           "guides/local_llms.md": [title: "Local LLMs"],
           "guides/mcp.md": [title: "Serving an agent over MCP"],
+          "guides/legion_web.md": [title: "Monitoring agents with legion_web"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()
