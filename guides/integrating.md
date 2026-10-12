@@ -44,7 +44,7 @@ defmodule MyShop.Tools.OrdersTool do
     for order <- MyShop.Orders.list_orders(shopper_id: shopper_id) do
       %{
         id: order.id,
-        placed_at: order.placed_at,
+        placed_at: DateTime.to_iso8601(order.placed_at),
         status: order.status,
         items: Enum.map(order.items, & &1.name)
       }

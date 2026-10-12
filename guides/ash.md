@@ -62,11 +62,23 @@ defmodule MyApp.Tools.PostsTool do
 end
 ```
 
-Start an agent whose `tools/0` includes `PostsTool` the same way as in any
-other Legion app:
+The actor comes from the Vault hooks in [Adding Legion to an existing
+app](integrating.md), with one change: they store the whole user record
+instead of a map with its id, since policies read actor fields beyond the id.
+Change the existing calls rather than adding one, because a second
+`Vault.init` in the same process raises:
 
 ```elixir
+# the on_mount hook
 Vault.init(current_user: socket.assigns.current_user)
+
+# the plug
+Vault.init(current_user: conn.assigns.current_user)
+```
+
+Then start an agent whose `tools/0` includes `PostsTool` as usual:
+
+```elixir
 {:ok, pid} = Legion.start_link(MyApp.WriterAgent)
 ```
 

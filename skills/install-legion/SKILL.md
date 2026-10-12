@@ -167,7 +167,7 @@ defmodule MyApp.RateLimiter do
   use Legion.RateLimiter.Postgres, repo: MyApp.Repo
 end
 
-# config/config.exs
+# config/runtime.exs - config.exs loads before Legion, so it can't build the struct
 config :legion, :rate_limit,
   limiter: MyApp.RateLimiter,
   default_policy: %Legion.RateLimiter.Policy{
@@ -295,7 +295,7 @@ defmodule MyApp.Tools.OrdersTool do
     %{id: user_id} = Vault.get(:current_user)
 
     for order <- MyApp.Orders.list_orders(user_id: user_id) do
-      %{id: order.id, status: order.status, placed_at: order.placed_at}
+      %{id: order.id, status: order.status, placed_at: DateTime.to_iso8601(order.placed_at)}
     end
   end
 end
