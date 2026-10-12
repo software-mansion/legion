@@ -1,31 +1,59 @@
 # Changelog
 
-## v0.6.0 - 2026-10-09
+## v0.6.0 - 2026-10-12
+
+### Highlights
+
+- **MCP server** - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) serves a Lua agent to MCP hosts as `repl` and `help` tools; see the [MCP guide](https://hexdocs.pm/legion/mcp.html)
+  - Over stdio or Streamable HTTP; [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html) refuses browser requests from origins other than `localhost` unless listed in `:allowed_origins`
+  - OAuth 2.1, and a `session/1` callback choosing the agent, vault and rate limits per call
+  - `Legion.Tools.AgentTool` and `Legion.Tools.HumanTool` are left out
+  - Needs the optional `{:anubis_mcp, "~> 2.0"}` dependency
+- **[`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3)** - runs code in a running agent as if its model had written it, with no LLM call: same tools, variables and limits, saved and rate-limited as one step of the conversation
+- **On-demand tool docs** - `tool_docs: :on_demand` lists tools in the prompt by a one-line [`summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), and `Help.help(Name)` returns a tool's full description; the default over MCP
+- **Sub-agents from Lua** - Lua agents hold sub-agent conversations through [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html), whose ids cross the Lua bridge
 
 ### Breaking
 
-- Default model bumped to `openai:gpt-5.6-luna`
-- [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) - `start_link/1,2` return the sub-agent's id instead of a pid, and `call/2`, `cast/2` and the new `stop/1` take that id; only the agent that started a sub-agent reaches it, and the sub-agent stops when that agent stops, when the turn that started it ends unless `:binding_scope` is `:conversation`, or after `:sub_agent_idle_timeout` without a message (default thirty minutes). An agent runs at most `:max_sub_agents` at once (default 10), and a start is checked against the rate limit, returning `{:cancel, {:rate_limited, violations}}` when denied
-- [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) is in every agent's sandbox, so a tool of your own with the short name `Help` is no longer reachable; `use Legion.Agent` warns about it
-- [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) - `summary/0` and `mcp?/0` are callbacks `use Legion.Tool` defines: Lua code no longer reaches a tool function of either name, and a `summary/0` not marked `@impl Legion.Tool` warns. A module that implements `@behaviour Legion.Tool` without `use` must define both
-- Usage tracking - a `Legion.eval/3` step records an entry with no token counts, `%{"at" => ..., "evals" => 1, "message_index" => ...}`, and an LLM entry whose action ran code carries `"evals" => 1`; code summing token keys over usage must allow for entries without them. See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
-- Custom [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) adapters - a saved `:conversation_state` carries `:base_bindings` next to `:bindings`; an adapter that keeps only the keys it knew drops it, and an agent restarted mid-turn loses the variables that turn started with
-- `:max_bindings_bytes` (default `10_000_000`) fails an execution that would leave larger variables behind; set it to `:infinity` for the old behaviour
-- [`Legion.RateLimiter.Postgres`](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html) - an agent whose rules set `:max_tokens`, `:max_evals` or `:max_running_agents` raises at start unless its store is a `Legion.Store.Postgres` on the limiter's repo and table, since those limits count what that store writes; with `config :legion, :track_usage, false`, rules setting `:max_tokens` or `:max_evals` raise at start too
-- [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) - `check/2` no longer reports syntax errors; parsing moved inside the sandbox process, under its limits, and syntax errors come back from `execute/5`
-- Rate limiting - an agent's start is checked against `:max_agents`, so it caps the agents themselves: a denied `Legion.start_link/2` returns `{:error, {:rate_limited, violations}}` with no process started and nothing saved, and `Legion.execute/3` returns `{:cancel, {:rate_limited, violations}}`. Resumed and recovered runs are not checked
-- An agent id belongs to one agent module: starting another module under an id whose stored conversation is not its own returns `{:error, {:agent_module_mismatch, stored}}`
-- [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) and [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) finish only a conversation that stopped mid-turn, behind a checkpoint or on a prompt with nothing after it
+#### Agents
 
-### Changes
+- **Default model is `openai:gpt-5.6-luna`**
+- **An agent id belongs to one agent module** - starting another module under an id whose stored conversation is not its own returns `{:error, {:agent_module_mismatch, stored}}`
+- **[`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) and [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) finish only interrupted turns** - a conversation that stopped mid-turn, behind a checkpoint or on a prompt with nothing after it
 
-- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) serves a Lua agent to MCP hosts as `repl` and `help` tools over stdio or Streamable HTTP ([`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html), which refuses browser requests from origins other than `localhost` unless listed in `:allowed_origins`), with OAuth 2.1 and a `session/1` callback choosing the agent, vault and rate limits per call; `Legion.Tools.AgentTool` and `Legion.Tools.HumanTool` are left out. Needs the optional `{:anubis_mcp, "~> 2.0"}` dependency; see the [MCP guide](https://hexdocs.pm/legion/mcp.html)
-- [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
-- Tool discovery - `tool_docs: :on_demand` lists tools in the prompt by a one-line [`summary/0`](https://hexdocs.pm/legion/Legion.Tool.html#c:summary/0), and `Help.help(Name)` returns a tool's full description; the default over MCP
+#### Sub-agents
+
+- **[`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) works with ids, not pids** - `start_link/1,2` return the sub-agent's id, and `call/2`, `cast/2` and the new `stop/1` take it
+  - Only the agent that started a sub-agent reaches it
+  - A sub-agent stops when that agent stops, when the turn that started it ends unless `:binding_scope` is `:conversation`, or after `:sub_agent_idle_timeout` without a message (default thirty minutes)
+  - An agent runs at most `:max_sub_agents` at once (default 10)
+  - A start is checked against the rate limit, returning `{:cancel, {:rate_limited, violations}}` when denied
+
+#### Tools
+
+- **`Help` is a reserved tool name** - [`Legion.Tools.Help`](https://hexdocs.pm/legion/Legion.Tools.Help.html) is in every agent's sandbox, so a tool of your own with the short name `Help` is no longer reachable; `use Legion.Agent` warns about it
+- **`summary/0` and `mcp?/0` are [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) callbacks** - `use Legion.Tool` defines them, so Lua code no longer reaches a tool function of either name, and a `summary/0` not marked `@impl Legion.Tool` warns. A module that implements `@behaviour Legion.Tool` without `use` must define both
+
+#### Rate limiting
+
+- **`:max_agents` caps agents, checked at start** - a denied `Legion.start_link/2` returns `{:error, {:rate_limited, violations}}` with no process started and nothing saved, and `Legion.execute/3` returns `{:cancel, {:rate_limited, violations}}`. Resumed and recovered runs are not checked
+- **`:max_tokens`, `:max_evals` and `:max_running_agents` need the Postgres store** - with [`Legion.RateLimiter.Postgres`](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html), an agent whose rules set any of them raises at start unless its store is a `Legion.Store.Postgres` on the limiter's repo and table, since those limits count what that store writes. With `config :legion, :track_usage, false`, rules setting `:max_tokens` or `:max_evals` raise at start too
+
+#### Persistence
+
+- **Usage entries may have no token counts** - a `Legion.eval/3` step records `%{"at" => ..., "evals" => 1, "message_index" => ...}`, and an LLM entry whose action ran code carries `"evals" => 1`; code summing token keys over usage must allow for entries without them. See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html#module-usage-tracking)
+- **Custom [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) adapters must keep `:base_bindings`** - a saved `:conversation_state` carries it next to `:bindings`; an adapter that keeps only the keys it knew drops it, and an agent restarted mid-turn loses the variables that turn started with
+
+#### Sandbox
+
+- **`:max_bindings_bytes` caps leftover variables** - default `10_000_000`; an execution that would leave larger variables behind fails. Set it to `:infinity` for the old behaviour
+- **[`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) `check/2` no longer reports syntax errors** - parsing moved inside the sandbox process, under its limits, and syntax errors come back from `execute/5`
+
+### Other changes
+
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps code evaluations per window
 - [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2) takes `:vault`, put in the agent process for its tools, and `:idle_timeout`, which stops an agent nobody calls
 - `max_message_length` defaults to `40_000` bytes and also bounds code sent with `Legion.eval/3`
-- Lua agents hold sub-agent conversations through [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html), whose ids cross the Lua bridge
 - `:step` stores persist usage with every checkpoint instead of only at turn end
 
 ## v0.5.1 - 2026-09-25
