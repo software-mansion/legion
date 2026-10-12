@@ -51,6 +51,5 @@ Legion.execute(PingAgent, "Return the sum of 2 and 2")
 - Give agents tools and run them: [Usage](https://hexdocs.pm/legion/Legion.html#module-usage)
 - Drop Legion into an app you already have: [Adding Legion to an existing app](integrating.md)
 - Pick a language and trust model for generated code: [Sandboxes](sandboxes.md)
-- Persist conversations across restarts with `Legion.Store.Postgres`, whose
-  table is created by `Legion.Store.Postgres.Migration.up()` in a migration
-- Monitor agents in a LiveView dashboard: [legion_web](https://github.com/software-mansion/legion_web)
+- Monitor agents in a LiveView dashboard: [legion_web](legion_web.md)
+- Persist conversations across restarts: [`Legion.Store.Postgres`](https://hexdocs.pm/legion/Legion.Store.Postgres.html)
