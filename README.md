@@ -152,7 +152,7 @@ def config, do: %{model: "google:gemini-3.5-flash", max_iterations: 5}
 - [Using Legion with Ash](https://hexdocs.pm/legion/ash.html)
 - [Local LLMs](https://hexdocs.pm/legion/local_llms.html)
 - [Serving an agent over MCP](https://hexdocs.pm/legion/mcp.html)
-- [Monitoring agents with legion_web](https://hexdocs.pm/legion/legion_web.html)
+- [Monitoring agents with Legion Web](https://hexdocs.pm/legion/legion_web.html)
 
 <!-- MDOC -->
 

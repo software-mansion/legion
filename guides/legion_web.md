@@ -1,4 +1,4 @@
-# Monitoring agents with legion_web
+# Monitoring agents with Legion Web
 
 [`legion_web`](https://github.com/software-mansion/legion_web) is a
 LiveView dashboard, packaged separately from Legion, that follows every
@@ -24,7 +24,7 @@ mix hex.info legion_web
 ```elixir
 # mix.exs
 {:legion, "~> 0.6"},
-{:legion_web, "~> X.Y"}
+{:legion_web, "~> 0.5"}
 ```
 
 ```bash
