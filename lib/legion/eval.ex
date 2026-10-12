@@ -32,10 +32,8 @@ defmodule Legion.Eval do
   """
   def run(agent_module, code, config, bindings) do
     Telemetry.span([:legion, :sandbox, :eval], %{agent: agent_module, code: code}, fn ->
-      # `Help` is in every sandbox; the prompt names it only under
-      # `tool_docs: :on_demand`, where it lists the tools by summary. A call
-      # may leave tools out: see `:exclude_tools` in `Legion.eval/3`.
-      tools = (agent_module.tools() -- Vault.get(:excluded_tools, [])) ++ [Legion.Tools.Help]
+      tools =
+        Enum.uniq((agent_module.tools() -- Vault.get(:excluded_tools, [])) ++ [Legion.Tools.Help])
 
       allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
 
@@ -72,7 +70,7 @@ defmodule Legion.Eval do
 
   @doc false
   # Renders a successful eval as the text the model reads back: the inspected
-  # value (truncated to `max_message_length`) plus the variables now in scope.
+  # value plus the variables now in scope, each truncated to `max_message_length`.
   # `inspect` has its own cap on strings, 4096 characters by default, so it is
   # raised to the configured one; the byte-level truncation below still rules.
   def format_result(result, bindings, config) do
@@ -94,16 +92,25 @@ defmodule Legion.Eval do
     if variable_names == [] do
       base
     else
-      base <> "\nAvailable variables: #{Enum.join(variable_names, ", ")}"
+      variables = variable_names |> Enum.join(", ") |> Executor.truncate_content(max_length)
+      base <> "\nAvailable variables: #{variables}"
     end
   end
 
   @doc false
-  # Renders any `{:error, reason}` from `run/4` as one line of text.
-  def format_error(message) when is_binary(message), do: message
-  def format_error(%{message: message}) when is_binary(message), do: message
-  def format_error(error) when is_exception(error), do: Exception.message(error)
-  def format_error(error), do: inspect(error, pretty: true, limit: 50)
+  # Renders any `{:error, reason}` from `run/4` as one line of text. Code can
+  # raise any bytes, and the text goes to an LLM or an MCP host as JSON, so
+  # whatever is not UTF-8 is replaced.
+  def format_error(error), do: error |> error_text() |> String.replace_invalid()
+
+  defp error_text(message) when is_binary(message), do: message
+  defp error_text(%{message: message}) when is_binary(message), do: message
+  defp error_text(error) when is_exception(error), do: Exception.message(error)
+  defp error_text(error), do: inspect(error, pretty: true, limit: 50)
+
+  # `:iteration` drops the variables after every execution, so their size
+  # never matters.
+  defp check_bindings_size(_bindings, %{binding_scope: :iteration}), do: :ok
 
   defp check_bindings_size(bindings, %{max_bindings_bytes: max}) when is_integer(max) do
     size = :erlang.external_size(bindings)

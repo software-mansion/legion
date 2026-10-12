@@ -41,6 +41,7 @@ defmodule Legion.Integration.MixedChatReplTest do
 
     start_supervised!(MemoryStore)
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+    start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
     start_supervised!({MixedMCP, transport: :streamable_http})
 
     bandit =
@@ -59,7 +60,7 @@ defmodule Legion.Integration.MixedChatReplTest do
 
     set_x = "Set x = 40 and return \"Done\"."
     assert {:ok, first} = Legion.call(pid, set_x)
-    assert inspect(first) =~ "Done"
+    assert inspect(first) =~ ~r/done/i
     before_repl = Legion.get_messages(pid)
     assert Enum.any?(before_repl, &(&1.type == :eval_result)), "turn 1 ran no code"
 

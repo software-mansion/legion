@@ -6,25 +6,25 @@ defmodule Legion.Telemetry do
 
   ## Agent Lifecycle Events
 
-  - `[:legion, :agent, :started]` — emitted during `init/1`, before any
+  - `[:legion, :agent, :started]` - emitted during `init/1`, before any
     persisted conversation is restored
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t()}` (plus `parent_agent_id: String.t()`
       when the agent was started inside another agent's run)
-    - `agent_id` names the conversation — stable across restarts, so a resumed
+    - `agent_id` names the conversation - stable across restarts, so a resumed
       conversation emits under the same id.
     - Not emitted if `init/1` crashes before the event fires (e.g. while building
-    the system prompt) — in that case `:stopped` is not emitted either, since
+    the system prompt) - in that case `:stopped` is not emitted either, since
     GenServer does not call `terminate/2` on init failure.
 
-  - `[:legion, :agent, :stopped]` — agent process terminated via `terminate/2`
+  - `[:legion, :agent, :stopped]` - agent process terminated via `terminate/2`
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t()}` (plus `parent_agent_id: String.t()`
       when the agent was started inside another agent's run)
 
   ## Agent Message Events (spans)
 
-  - `[:legion, :agent, :message, :start | :stop | :exception]` — agent handling a message
+  - `[:legion, :agent, :message, :start | :stop | :exception]` - agent handling a message
     - Metadata includes: `agent`, `agent_id`, `message`
     - Stop adds: `iterations` (count of assistant turns in this message),
       `status` (`:ok` or `:cancel`), `result` (the value returned, or the
@@ -55,13 +55,13 @@ defmodule Legion.Telemetry do
 
   ## Eval Guard Events
 
-  - `[:legion, :eval_guard, :denied]` — a guard refused generated code
+  - `[:legion, :eval_guard, :denied]` - a guard refused generated code
     - Metadata: `%{agent: module, agent_id: String.t(), guard: module, code: String.t(), reason: String.t()}`
 
   ## Rate Limit Events
 
-  - `[:legion, :rate_limit, :exceeded]` — a rate limiter denied a turn, or a
-    `Legion.eval/3` call, before it started; metadata carries the identity and policy of the rule that
+  - `[:legion, :rate_limit, :exceeded]` - a rate limiter denied an agent's
+    start, a turn, or a `Legion.eval/3` call, before it ran; metadata carries the identity and policy of the rule that
     denied it, the usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
@@ -71,13 +71,17 @@ defmodule Legion.Telemetry do
   ## MCP Events
 
   A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
-  sandbox and rate limit events above. On top of those, every `repl` call is
-  a span that ties them to the MCP session:
+  sandbox and rate limit events above. On top of those, every `repl` and
+  `help` call is a span that ties them to the MCP session:
 
-  - `[:legion, :mcp, :call, :start | :stop | :exception]` — one MCP tool call
-    (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
-    denied call has no eval span)
+  - `[:legion, :mcp, :call, :start | :stop | :exception]` - one `repl` or
+    `help` call. A `repl` span wraps the `[:legion, :sandbox, :eval]` span of
+    the same `agent_id`; a denied call has no eval span, and a `help` call
+    runs no eval at all.
     - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
+      for `repl`. A `help` call carries `tool: String.t() | nil` (`nil` lists
+      every tool) instead of `code`, and its `agent_id` is `nil` until the
+      session has an agent.
     - Stop adds: `success`, and `error` with the text the host's model was
       given when the code failed or the call was rate limited.
 
@@ -99,8 +103,8 @@ defmodule Legion.Telemetry do
 
   ## Options
 
-    - `:level` — log level, defaults to `:info`
-    - `:events` — `:all` or a list of event categories
+    - `:level` - log level, defaults to `:info`
+    - `:events` - `:all` or a list of event categories
       (`:agent`, `:message`, `:iteration`, `:llm`, `:sandbox`, `:mcp`).
       Defaults to `:all`.
   """
@@ -315,6 +319,10 @@ defmodule Legion.Telemetry do
   def handle_event([:legion, :sandbox, :eval, :exception], measurements, meta, opts) do
     ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
     log(opts, meta, "    eval:exception #{inspect(meta.reason)} #{ms}ms", :error)
+  end
+
+  def handle_event([:legion, :mcp, :call, :start], _measurements, %{tool: tool} = meta, opts) do
+    log(opts, meta, "mcp:call:start #{short(meta.agent)} help #{tool || "(every tool)"}")
   end
 
   def handle_event([:legion, :mcp, :call, :start], _measurements, meta, opts) do

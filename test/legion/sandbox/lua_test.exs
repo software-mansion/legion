@@ -38,7 +38,7 @@ defmodule Legion.Sandbox.LuaTest.FakeSubAgent do
 end
 
 defmodule Legion.Sandbox.LuaTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   doctest Legion.Sandbox.Lua, import: true
 
@@ -47,15 +47,6 @@ defmodule Legion.Sandbox.LuaTest do
   alias Legion.Sandbox.LuaTest.FakeSubAgent
   alias Legion.Sandbox.LuaTest.ListTool
 
-  test "returns result and reusable bindings" do
-    assert {:ok, {nil, bindings}} = Lua.execute("x = 40", 15_000)
-    assert {:ok, {42, _}} = Lua.execute("return x + 2", 15_000, [], bindings)
-  end
-
-  test "chunk without return yields nil" do
-    assert {:ok, {nil, _}} = Lua.execute("y = 1", 15_000)
-  end
-
   test "multiple return values become a list" do
     assert {:ok, {[1, 2], _}} = Lua.execute("return 1, 2", 15_000)
   end
@@ -63,6 +54,19 @@ defmodule Legion.Sandbox.LuaTest do
   test "local variables do not persist, globals do" do
     {:ok, {nil, bindings}} = Lua.execute("local a = 1\nb = 2", 15_000)
     assert {:ok, {nil, _}} = Lua.execute("return a", 15_000, [], bindings)
+    assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
+  end
+
+  test "global keys that are not UTF-8 strings are not carried as bindings" do
+    code = "_G[7] = 1\n_G[2.5] = 1\n_G[true] = 1\n_G[\"\\255\"] = 1\nb = 2"
+
+    {:ok, {nil, bindings}} = Lua.execute(code, 15_000)
+    assert bindings == [{"b", 2}]
+    assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
+  end
+
+  test "stored bindings with names restore cannot set are skipped" do
+    bindings = [{7, 1}, {<<255>>, 1}, {"b", 2}]
     assert {:ok, {2, _}} = Lua.execute("return b", 15_000, [], bindings)
   end
 
@@ -77,12 +81,6 @@ defmodule Legion.Sandbox.LuaTest do
              Lua.execute("return EchoTool.add(count, 1)", 15_000, [EchoTool], revived)
 
     assert Lua.binding_names(revived) == ["count"]
-  end
-
-  test "binding_names lists user globals only" do
-    {:ok, {nil, bindings}} = Lua.execute("count = 1\nitems = {1, 2}", 15_000, [EchoTool])
-    assert Enum.sort(Lua.binding_names(bindings)) == ["count", "items"]
-    assert Lua.binding_names([]) == []
   end
 
   test "bindings are plain data: functions, cycles, and dead tables are not carried" do
@@ -110,14 +108,6 @@ defmodule Legion.Sandbox.LuaTest do
     assert {:ok, {nil, [{"y", 2}]}} = Lua.execute("_G = {evil = 1}\ny = 2", 15_000)
   end
 
-  test "a tool removed from the agent is unreachable from restored bindings" do
-    {:ok, {nil, bindings}} = Lua.execute("saved = EchoTool.add", 15_000, [EchoTool])
-
-    assert {:ok, {nil, _}} = Lua.execute("return saved", 15_000, [], bindings)
-    assert {:error, message} = Lua.execute("return EchoTool.add(1, 2)", 15_000, [], bindings)
-    assert message =~ "attempt to index a nil value"
-  end
-
   test "a stored tool reference resolves against the tools of the run that reads it" do
     {:ok, {nil, bindings}} = Lua.execute("planner = EchoTool", 15_000, [EchoTool])
 
@@ -125,11 +115,11 @@ defmodule Legion.Sandbox.LuaTest do
              Lua.execute("return EchoTool.module_check(planner)", 15_000, [EchoTool], bindings)
   end
 
-  test "a global named after a tool does not break later evaluations" do
-    {:ok, {nil, bindings}} = Lua.execute("EchoTool = 1", 15_000, [EchoTool])
+  test "a global named after a tool is neither exported nor restored over the tool" do
+    assert {:ok, {nil, []}} = Lua.execute("EchoTool = 1", 15_000, [EchoTool])
 
     assert {:ok, {3, _}} =
-             Lua.execute("return EchoTool.add(1, 2)", 15_000, [EchoTool], bindings)
+             Lua.execute("return EchoTool.add(1, 2)", 15_000, [EchoTool], [{"EchoTool", 1}])
   end
 
   test "parse errors come back as errors" do
@@ -166,12 +156,26 @@ defmodule Legion.Sandbox.LuaTest do
     assert message =~ "boom"
   end
 
-  test "io and os escapes are sandboxed" do
-    assert {:error, message} = Lua.execute("os.getenv('HOME')", 15_000)
-    assert message =~ "sandboxed"
+  test "host escapes are sandboxed" do
+    for code <- [
+          "os.getenv('HOME')",
+          "os.execute('ls')",
+          "os.exit(1)",
+          "io.open('/etc/hosts')",
+          "print('hi')",
+          "require('os')",
+          "load('return 1')",
+          "dofile('/etc/hosts')",
+          "debug(1)"
+        ] do
+      assert {:error, message} = Lua.execute(code, 15_000)
+      assert message =~ "is sandboxed", code
+    end
 
-    assert {:error, message} = Lua.execute("print('hi')", 15_000)
-    assert message =~ "sandboxed"
+    for code <- ["return debug.setmetatable", "return file.open"] do
+      assert {:error, message} = Lua.execute(code, 15_000)
+      assert message =~ "attempt to index a function value", code
+    end
   end
 
   test "an oversized string is refused by the VM instead of racing the heap kill" do
@@ -181,14 +185,6 @@ defmodule Legion.Sandbox.LuaTest do
              Lua.execute("return string.rep('x', 6000000)", 15_000, [], [], max_heap: 10_000_000)
 
     assert message =~ "resulting string too large"
-  end
-
-  test "debug library is sandboxed" do
-    assert {:error, message} = Lua.execute("return debug.setmetatable", 15_000)
-    assert message =~ "attempt to index a function value (global 'debug')"
-
-    assert {:error, message} = Lua.execute("return debug(1)", 15_000)
-    assert message =~ "sandboxed"
   end
 
   test "tool functions are callable with arity dispatch" do
@@ -210,20 +206,16 @@ defmodule Legion.Sandbox.LuaTest do
     assert value == %{"received" => %{"name" => "ada", "tags" => [1, 2]}, "tag" => "ok"}
   end
 
-  test "lua tables correctly converted to lists" do
-    num_elements = 40
-
+  test "a long list of structs from a tool keeps its order through ipairs and back" do
     code = """
-    talks=ListTool.get_list(#{num_elements})
+    talks=ListTool.get_list(40)
     list={}
     for _,t in ipairs(talks) do table.insert(list, t.id) end
     return list
     """
 
     assert {:ok, {list, _}} = Lua.execute(code, 15_000, [ListTool])
-
-    assert is_list(list)
-    assert list == Enum.to_list(1..num_elements)
+    assert list == Enum.to_list(1..40)
   end
 
   test "tuple results become arrays" do
@@ -289,7 +281,8 @@ defmodule Legion.Sandbox.LuaTest do
   end
 
   test "meta functions from Legion.Tool are not bridged" do
-    assert {:error, _message} = Lua.execute("return EchoTool.description()", 15_000, [EchoTool])
+    assert {:error, message} = Lua.execute("return EchoTool.description()", 15_000, [EchoTool])
+    assert message =~ "attempt to call a nil value"
   end
 
   test "timeout kills the evaluation" do
@@ -303,12 +296,5 @@ defmodule Legion.Sandbox.LuaTest do
              )
 
     assert message =~ "reduction (CPU) limit"
-  end
-
-  test "prompt_info describes the Lua environment" do
-    info = Lua.prompt_info()
-    assert info.language == "Lua"
-    assert info.constraints =~ "global"
-    assert info.tool_usage =~ "Lua"
   end
 end

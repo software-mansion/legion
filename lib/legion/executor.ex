@@ -24,7 +24,9 @@ defmodule Legion.Executor do
     eval_guard: nil,
     binding_scope: :turn,
     max_message_length: 40_000,
-    max_bindings_bytes: 10_000_000
+    max_bindings_bytes: 10_000_000,
+    max_sub_agents: 10,
+    sub_agent_idle_timeout: :timer.minutes(30)
   }
 
   @doc false

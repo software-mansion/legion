@@ -1,5 +1,7 @@
 # Installation
 
+Legion needs Elixir 1.18 and Erlang/OTP 26 or later.
+
 1. Add `:legion` to your dependencies in `mix.exs` and run `mix deps.get`:
 
 ```elixir

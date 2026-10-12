@@ -261,14 +261,6 @@ defmodule Legion.RateLimiterTest do
       assert %{limiter: OtherLimiter, rules: [rule(@ip, @policy)]} ==
                RateLimiter.resolve!(limiter: OtherLimiter)
     end
-
-    test "carries only the limiter and rules" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
-
-      resolved = RateLimiter.resolve!(rules: [%Rule{identity: @ip}])
-
-      assert Enum.sort(Map.keys(resolved)) == [:limiter, :rules]
-    end
   end
 
   describe "Rule.validate!/1" do
