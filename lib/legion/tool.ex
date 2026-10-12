@@ -61,10 +61,20 @@ defmodule Legion.Tool do
         MyApp.Orders.list(user, status)
       end
 
-  Each key must bind a plain variable - a literal value instead raises a
-  `CompileError`. A key missing from Vault raises an error that names
-  neither the key nor its value, so a misconfigured tool fails without
-  exposing other Vault values to the LLM.
+  A key's value can be destructured further with a nested map:
+
+      def orders(status), %{current_user: %{id: user_id}} do
+        MyApp.Orders.list(user_id, status)
+      end
+
+  Every key, at any depth, must bind a plain variable, and each variable
+  name can be used only once - a literal, a pin, or a repeated name
+  instead raises a `CompileError`, since any of them would make the
+  match depend on a Vault value instead of just its presence. A key
+  missing from Vault, or a value that isn't a map where the pattern
+  expects one, raises an error that names neither the key nor its
+  value, so a misconfigured tool fails without exposing other Vault
+  values to the LLM.
 
   ## External modules as tools
 
@@ -74,6 +84,8 @@ defmodule Legion.Tool do
 
       config :legion, extra_source_modules: [Req]
   """
+
+  require Logger
 
   @doc "Description of the tool shown to the LLM. Defaults to the module's source code."
   @callback description() :: String.t()
@@ -107,7 +119,6 @@ defmodule Legion.Tool do
       @on_definition Legion.Tool
 
       import Legion.Tool, only: [def: 3]
-      require Logger
 
       def description, do: unquote(source)
       def extra_allowed_modules, do: []
@@ -122,56 +133,118 @@ defmodule Legion.Tool do
   See "Reading from Vault" above.
   """
   defmacro def(head, {:%{}, _meta, pairs} = pattern, blocks) do
-    keys =
-      for {key, binding} <- pairs do
-        case binding do
-          {name, _meta, context} when is_atom(name) and is_atom(context) ->
-            key
-
-          other ->
-            raise CompileError,
-              description:
-                "def/3 only binds plain variables from Vault, got `#{Macro.to_string(other)}` for key #{inspect(key)}"
-        end
-      end
-
     tool = __CALLER__.module
     function = Macro.to_string(head)
+    reject_repeated_vars!(pairs)
 
-    vault_bind =
-      quote do
-        fetched = Vault.take(unquote(keys))
-        missing = unquote(keys) -- Map.keys(fetched)
-
-        if missing != [] do
-          Legion.Telemetry.emit([:legion, :tool, :vault_mismatch], %{}, %{
-            tool: unquote(tool),
-            function: unquote(function),
-            missing: missing
-          })
-
-          Logger.error(
-            "#{inspect(unquote(tool))}.#{unquote(function)} is missing Vault key(s) #{inspect(missing)} - nothing the agent does can fix this"
-          )
-
-          raise "this tool cannot succeed for this call and will fail the same way every time; do not retry it"
-        end
-
-        unquote(pattern) = fetched
-      end
+    # One read, so the checks and the match see the same map.
+    vault = Macro.var(:vault, __MODULE__)
+    checks = vault_checks(pairs, vault, [], tool, function)
 
     # blocks is just :do - try requires at least one of rescue/catch/after/else
     inner = if Keyword.keys(blocks) == [:do], do: blocks[:do], else: {:try, [], [blocks]}
 
     body =
       quote do
-        unquote(vault_bind)
+        unquote(vault) = Vault.vault() || %{}
+        unquote_splicing(checks)
+        unquote(pattern) = unquote(vault)
         unquote(inner)
       end
 
     quote do
       Kernel.def(unquote(head), do: unquote(body))
     end
+  end
+
+  # Checks every key up front so pattern's final match can never fail.
+  defp vault_checks(pairs, level_expr, path, tool, function) do
+    classified = classify!(pairs)
+
+    leaf_keys = for {:leaf, key, _name} <- classified, do: key
+    nested = for {:nested, key, inner_pairs} <- classified, do: {key, inner_pairs}
+    nested_keys = for {key, _inner_pairs} <- nested, do: key
+
+    level_check =
+      quote do
+        Legion.Tool.__check_vault__(
+          unquote(level_expr),
+          unquote(leaf_keys),
+          unquote(nested_keys),
+          unquote(tool),
+          unquote(function),
+          unquote(path)
+        )
+      end
+
+    nested_checks =
+      Enum.flat_map(nested, fn {key, inner_pairs} ->
+        child_expr = quote(do: Map.get(unquote(level_expr), unquote(key), %{}))
+        vault_checks(inner_pairs, child_expr, path ++ [key], tool, function)
+      end)
+
+    [level_check | nested_checks]
+  end
+
+  defp classify!(pairs) do
+    for {key, binding} <- pairs do
+      case binding do
+        {name, _meta, context} when is_atom(name) and is_atom(context) ->
+          {:leaf, key, name}
+
+        {:%{}, _meta, inner_pairs} ->
+          {:nested, key, inner_pairs}
+
+        other ->
+          raise CompileError,
+            description:
+              "def/3 only binds plain variables or nested maps from Vault, got `#{Macro.to_string(other)}` for key #{inspect(key)}"
+      end
+    end
+  end
+
+  @doc false
+  # The agent is told nothing: the key names go to the operator, the only one
+  # who can fix this.
+  def __check_vault__(level, leaf_keys, nested_keys, tool, function, path) do
+    missing =
+      (leaf_keys -- Map.keys(level)) ++
+        for key <- nested_keys, not is_map(Map.get(level, key)), do: key
+
+    if missing != [] do
+      Legion.Telemetry.emit([:legion, :tool, :vault_mismatch], %{}, %{
+        tool: tool,
+        function: function,
+        path: path,
+        missing: missing
+      })
+
+      Logger.error(
+        "#{inspect(tool)}.#{function} is missing Vault key(s) #{inspect(missing)} at #{inspect(path)} - nothing the agent does can fix this"
+      )
+
+      raise "this tool cannot succeed for this call and will fail the same way every time; do not retry it"
+    end
+  end
+
+  # A repeated name makes the second occurrence an equality check instead of a
+  # bind, failing with a MatchError that names every Vault value.
+  defp reject_repeated_vars!(pairs) do
+    names = pairs |> leaf_var_names() |> Enum.reject(&(&1 == :_))
+    repeated = names -- Enum.uniq(names)
+
+    if repeated != [] do
+      raise CompileError,
+        description:
+          "def/3 binds Vault variable(s) #{inspect(Enum.uniq(repeated))} more than once"
+    end
+  end
+
+  defp leaf_var_names(pairs) do
+    Enum.flat_map(classify!(pairs), fn
+      {:leaf, _key, name} -> [name]
+      {:nested, _key, inner_pairs} -> leaf_var_names(inner_pairs)
+    end)
   end
 
   @doc false

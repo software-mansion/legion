@@ -1323,7 +1323,38 @@ defmodule Legion.AgentServerTest do
 
       assert_receive {[:legion, :tool, :vault_mismatch], ^ref, _measurements, metadata}
       assert metadata.tool == Legion.Test.Support.VaultTool
+      assert metadata.path == []
       assert metadata.missing == [:role]
+    end
+
+    test "a tool function destructures a nested Vault value" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [profile: %{id: "p1"}])
+
+      assert {:ok, text} = AgentServer.eval(pid, ~s|return VaultTool.profile_id("x")|)
+      assert text =~ "p1-x"
+    end
+
+    test "a missing key inside a nested Vault value fails without exposing it" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [profile: %{}])
+
+      assert {:error, reason} = AgentServer.eval(pid, ~s|return VaultTool.profile_id("x")|)
+      assert reason =~ "do not retry"
+    end
+
+    @tag capture_log: true
+    test "a Vault value that isn't a map where the pattern expects one fails the same way" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :tool, :vault_mismatch]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [profile: "not-a-map"])
+
+      assert {:error, reason} = AgentServer.eval(pid, ~s|return VaultTool.profile_id("x")|)
+      assert reason =~ "do not retry"
+      refute reason =~ "not-a-map"
+
+      assert_receive {[:legion, :tool, :vault_mismatch], ^ref, _measurements, metadata}
+      assert metadata.path == []
+      assert metadata.missing == [:profile]
     end
 
     test "a rejected call runs nothing and saves nothing", %{agent_id: agent_id} do

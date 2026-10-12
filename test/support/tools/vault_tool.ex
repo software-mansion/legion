@@ -20,6 +20,9 @@ defmodule Legion.Test.Support.VaultTool do
   @doc "Requires a Vault key no agent seeds, to exercise the missing-key error."
   def gated(x), %{current_user: user, role: role}, do: "#{user} #{role} #{x}"
 
+  @doc "Destructures a nested Vault value."
+  def profile_id(x), %{profile: %{id: id}}, do: "#{id}-#{x}"
+
   @doc "The token the current call carried."
   def token, do: Vault.get(:token)
 

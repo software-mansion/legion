@@ -64,7 +64,10 @@ defmodule Legion.Telemetry do
     didn't match; the error the LLM sees names neither the key nor its value,
     so this event (and the matching `Logger.error`) is the only place the
     missing key names show up
-    - Metadata: `%{tool: module, function: String.t(), missing: [atom]}`
+    - Metadata: `%{tool: module, function: String.t(), path: [atom], missing: [atom]}`
+    - `path` locates the failing level in a nested pattern (`[]` at the top
+      level); `missing` names the keys absent there, or present but not a
+      map where the pattern expects to descend further
 
   ## Rate Limit Events
 
