@@ -12,7 +12,10 @@ defmodule Legion.Recovery do
   The worker calls `list(store_scan_limit)` on every configured store, selects
   payloads with `status: :running` and no `parent_agent_id`, then invokes
   `Legion.recover/2` for each selected run, with at most
-  `concurrent_request_limit` recoveries in flight.
+  `concurrent_request_limit` recoveries in flight. A run is selected only
+  when a turn was interrupted: its checkpoint or its prompt is the last thing
+  saved. A row an interrupted `Legion.eval/3` left running, such as an MCP
+  call, is skipped, since no turn of the agent's own model was under way.
 
   Recovery deliberately does not restart sub-agents. A parent can persist its
   state before a code evaluation dispatches a sub-agent, then crash before the
@@ -65,8 +68,20 @@ defmodule Legion.Recovery do
     |> Stream.run()
   end
 
-  defp running_root?(%Payload{status: :running, parent_agent_id: nil}), do: true
+  defp running_root?(%Payload{status: :running, parent_agent_id: nil} = payload),
+    do: unfinished_turn?(payload.conversation_state)
+
   defp running_root?(_payload), do: false
+
+  # A turn left behind a checkpoint, or its prompt with nothing after it. A
+  # `Legion.eval/3` step, an MCP call, leaves neither: its row is running
+  # only because the rate limiter marked it, and recovering it would run the
+  # agent's own model over a conversation an outside model drives.
+  defp unfinished_turn?(%{executor_state: executor_state}) when executor_state != :nonexistent,
+    do: true
+
+  defp unfinished_turn?(%{messages: messages}), do: match?(%{type: :user}, List.last(messages))
+  defp unfinished_turn?(_conversation_state), do: false
 
   @doc false
   def child_spec(config) do

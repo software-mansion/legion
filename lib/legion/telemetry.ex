@@ -94,6 +94,9 @@ defmodule Legion.Telemetry do
   @doc """
   Attaches a default logger for Legion telemetry events.
 
+  It logs the full code of every evaluation and the first 80 characters of
+  each message, so user data can end up in your logs.
+
   ## Options
 
     - `:level` — log level, defaults to `:info`

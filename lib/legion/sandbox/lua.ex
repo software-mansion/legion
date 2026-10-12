@@ -22,7 +22,7 @@ defmodule Legion.Sandbox.Lua do
     `local` variables, functions, and metatables do not.
   - **Blocked** - `io`, `file`, `os.execute/exit/getenv/...`, `require`,
     `load`, `print`, and `debug` are sandboxed and raise when called.
-  - **Timeout and resource limits** - evaluation runs through
+  - **Timeout and resource limits** - parsing and evaluation run through
     `Legion.Sandbox.Runner`, same as `Legion.Sandbox.Elixir`. The VM
     additionally refuses to build any single string larger than half the
     memory budget, before allocating it.
@@ -54,7 +54,13 @@ defmodule Legion.Sandbox.Lua do
   @max_code_size 64 * 1024
 
   # Defined by `use Legion.Tool`, not part of a tool's callable surface.
-  @tool_meta_functions [description: 0, description: 1, summary: 0, extra_allowed_modules: 0]
+  @tool_meta_functions [
+    description: 0,
+    description: 1,
+    summary: 0,
+    extra_allowed_modules: 0,
+    mcp?: 0
+  ]
 
   @module_key "__module"
 
@@ -65,18 +71,11 @@ defmodule Legion.Sandbox.Lua do
   def check(code, _tools) when byte_size(code) > @max_code_size,
     do: {:error, "code exceeds maximum size of #{@max_code_size} bytes"}
 
-  def check(code, _tools) do
-    case Lua.parse_chunk(code) do
-      {:ok, _chunk} ->
-        :ok
-
-      {:error, exception} ->
-        {:error,
-         Exception.message(exception) <>
-           "\nNote: a bare expression is not a valid Lua statement - " <>
-           "to produce a value, write `return <expression>`."}
-    end
-  end
+  # No parse here: the caller's process would run it with no limits, and the
+  # parser takes seconds on some inputs (deeply nested table constructors)
+  # and raises on others (a comment after `goto`). `execute/5` parses inside
+  # the Runner, where syntax errors come back like any other.
+  def check(_code, _tools), do: :ok
 
   @impl Legion.Sandbox
   def binding_names(bindings), do: for({name, _value} <- bindings, do: name)
@@ -129,7 +128,14 @@ defmodule Legion.Sandbox.Lua do
 
     {:ok, {value, export(lua, baseline)}}
   rescue
-    e in [Lua.RuntimeException, Lua.CompilerException] -> {:error, Exception.message(e)}
+    e in Lua.CompilerException ->
+      {:error,
+       Exception.message(e) <>
+         "\nNote: a bare expression is not a valid Lua statement - " <>
+         "to produce a value, write `return <expression>`."}
+
+    e in Lua.RuntimeException ->
+      {:error, Exception.message(e)}
   catch
     :throw, value -> {:error, {:throw, value}}
     :exit, reason -> {:error, {:exit, reason}}

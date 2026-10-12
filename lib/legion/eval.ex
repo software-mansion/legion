@@ -33,8 +33,9 @@ defmodule Legion.Eval do
   def run(agent_module, code, config, bindings) do
     Telemetry.span([:legion, :sandbox, :eval], %{agent: agent_module, code: code}, fn ->
       # `Help` is in every sandbox; the prompt names it only under
-      # `tool_docs: :discovery`, where it lists the tools by summary.
-      tools = agent_module.tools() ++ [Legion.Tools.Help]
+      # `tool_docs: :on_demand`, where it lists the tools by summary. A call
+      # may leave tools out: see `:exclude_tools` in `Legion.eval/3`.
+      tools = (agent_module.tools() -- Vault.get(:excluded_tools, [])) ++ [Legion.Tools.Help]
 
       allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
 
@@ -72,13 +73,16 @@ defmodule Legion.Eval do
   @doc false
   # Renders a successful eval as the text the model reads back: the inspected
   # value (truncated to `max_message_length`) plus the variables now in scope.
+  # `inspect` has its own cap on strings, 4096 characters by default, so it is
+  # raised to the configured one; the byte-level truncation below still rules.
   def format_result(result, bindings, config) do
     variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")
+    max_length = config[:max_message_length] || :infinity
 
     inspected =
       result
-      |> inspect(pretty: true, limit: 1000)
-      |> Executor.truncate_content(config[:max_message_length])
+      |> inspect(pretty: true, limit: 1000, printable_limit: max_length)
+      |> Executor.truncate_content(max_length)
 
     base = """
     Code executed successfully. Result:

@@ -191,5 +191,34 @@ defmodule Legion.ToolTest do
 
       assert Legion.ReleasedTool.summary() == "Adds numbers."
     end
+
+    @tag :tmp_dir
+    test "warns when a summary/0 not marked @impl takes over", %{tmp_dir: dir} do
+      warning = compile_tool_warnings(dir, "ReportTool", "def summary, do: %{total: 1}")
+
+      assert warning =~ "Legion.ReportTool.summary/0 is taken as the tool's one-line summary"
+    end
+
+    @tag :tmp_dir
+    test "an @impl summary/0 and the generated one compile without warning", %{tmp_dir: dir} do
+      assert compile_tool_warnings(dir, "MarkedTool", "@impl Legion.Tool\ndef summary, do: \"x\"") ==
+               ""
+
+      assert compile_tool_warnings(dir, "PlainTool", "def add(a, b), do: a + b") == ""
+    end
+  end
+
+  defp compile_tool_warnings(dir, name, body) do
+    path = Path.join(dir, "#{name}.ex")
+
+    File.write!(path, """
+    defmodule Legion.#{name} do
+      @moduledoc "Test tool."
+      use Legion.Tool
+      #{body}
+    end
+    """)
+
+    ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_file(path) end)
   end
 end

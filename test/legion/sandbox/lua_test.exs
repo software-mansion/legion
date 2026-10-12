@@ -132,9 +132,21 @@ defmodule Legion.Sandbox.LuaTest do
              Lua.execute("return EchoTool.add(1, 2)", 15_000, [EchoTool], bindings)
   end
 
-  test "parse errors are caught by check" do
+  test "parse errors come back as errors" do
     assert {:error, message} = Lua.execute("local x =;", 15_000)
     assert message =~ "Failed to compile Lua!"
+  end
+
+  test "parsing runs under the eval's limits, not in check/2" do
+    nested = "return " <> String.duplicate("{", 30_000) <> String.duplicate("}", 30_000)
+
+    assert Lua.check(nested, []) == :ok
+    assert {:error, :timeout} = Lua.execute(nested, 100)
+  end
+
+  test "code the parser crashes on is an error" do
+    assert {:error, message} = Lua.execute("goto --c", 15_000)
+    assert is_binary(message)
   end
 
   test "bare-expression mistake gets a return hint" do

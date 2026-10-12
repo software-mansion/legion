@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(Anubis.Server.Transport.StreamableHTTP.Plug) do
+if Code.ensure_loaded?(Anubis.Server) and Code.ensure_loaded?(Plug) do
   defmodule Legion.MCP.Plug do
     @moduledoc """
     Mounts an MCP server over Streamable HTTP with the server's request timeout.
