@@ -70,6 +70,7 @@ defmodule Legion.ParallelAndPipelineTest do
     test "AgentTool.parallel accepts [agent, task] pairs from the Lua sandbox bridge" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("42") end)
       Vault.unsafe_put(AgentTool, agents: [MathAgent])
+      Vault.unsafe_put(:sub_agents, %{max: 1})
 
       assert {:ok, ["42"]} = AgentTool.parallel([[MathAgent, "What is 6 * 7?"]])
     end

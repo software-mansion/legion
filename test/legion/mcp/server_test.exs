@@ -538,10 +538,13 @@ defmodule Legion.MCP.ServerTest do
       assert opts[:request_timeout] == 10
     end
 
-    test "refuses to start for an agent that is not on the Lua sandbox" do
-      %{start: {module, function, arguments}} = ElixirMCP.child_spec(transport: :stdio)
+    @tag capture_log: true
+    test "fails the supervisor it starts under for an agent that is not on the Lua sandbox" do
+      Process.flag(:trap_exit, true)
 
-      assert {:error, message} = apply(module, function, arguments)
+      assert {:error, {:shutdown, {:failed_to_start_child, ElixirMCP, message}}} =
+               Supervisor.start_link([{ElixirMCP, transport: :stdio}], strategy: :one_for_one)
+
       assert message =~ "Legion.Sandbox.Lua agents only"
       assert message =~ "ElixirAgent runs Legion.Sandbox.Elixir"
     end

@@ -14,14 +14,14 @@ defmodule Legion.Tools.AgentTool do
   sub-agent id that `call/2` and `cast/2` take to hold a conversation and
   `stop/1` ends, and `parallel/2`, `pipeline/1` and `then/3` compose tasks.
 
-  Two settings of the starting agent's config bound its long-lived
-  sub-agents, set like any other in `Legion.Agent`: per agent in `config/0`,
-  for every agent in `config :legion, :config`, or per start in
-  `Legion.start_link/2`:
+  Two settings of the starting agent's config bound its sub-agents, set
+  like any other in `Legion.Agent`: per agent in `config/0`, for every agent
+  in `config :legion, :config`, or per start in `Legion.start_link/2`:
 
-    - `:max_sub_agents` - how many may run at once (default: `10`)
-    - `:sub_agent_idle_timeout` - how long one may go without a message
-      before it stops (default: thirty minutes); it overrides the
+    - `:max_sub_agents` - how many long-lived ones may run at once, and how
+      many tasks one `parallel/2` takes (default: `10`)
+    - `:sub_agent_idle_timeout` - how long a long-lived one may go without a
+      message before it stops (default: thirty minutes); it overrides the
       sub-agent's own `:idle_timeout`
 
   Blocking calls (`call/2`, `parallel/2`, `pipeline/1`, `then/3`) run inside
@@ -187,11 +187,13 @@ defmodule Legion.Tools.AgentTool do
   Runs multiple sub-agent tasks in parallel and collects results.
 
   Returns `{:ok, [result1, result2, ...]}` when every task succeeds, or the
-  first `{:cancel, reason}`. Raises if any agent is not in the allowed list.
+  first `{:cancel, reason}`. Raises if any agent is not in the allowed list,
+  or if there are more tasks than the agent's `:max_sub_agents` (default 10).
   """
   def parallel(tasks, timeout \\ :infinity) when is_list(tasks) do
     tasks = Enum.map(tasks, &normalize_pair/1)
     for {agent, _task} <- tasks, do: check_allowed!(agent)
+    check_width!(length(tasks), Vault.fetch!(:sub_agents).max)
     Legion.parallel(tasks, timeout)
   end
 
@@ -353,6 +355,14 @@ defmodule Legion.Tools.AgentTool do
       raise ArgumentError,
             "this agent already runs #{running} sub-agents, as many as it may " <>
               "(:max_sub_agents); stop one with stop/1 first"
+    end
+  end
+
+  defp check_width!(count, max) do
+    if count > max do
+      raise ArgumentError,
+            "parallel/2 got #{count} tasks, more than this agent may run at once " <>
+              "(:max_sub_agents is #{max}); split them across calls"
     end
   end
 

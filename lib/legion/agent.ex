@@ -93,7 +93,8 @@ defmodule Legion.Agent do
       - `idle_timeout` - milliseconds without a call after which the agent
         process stops normally; see `Legion.start_link/2` (default: `:infinity`)
       - `max_sub_agents` - how many sub-agents from `Legion.Tools.AgentTool.start_link/1`
-        the agent may run at once (default: `10`)
+        the agent may run at once, and how many tasks one
+        `Legion.Tools.AgentTool.parallel/2` takes (default: `10`)
       - `sub_agent_idle_timeout` - milliseconds without a message after which
         such a sub-agent stops, overriding its own `idle_timeout`
         (default: thirty minutes)

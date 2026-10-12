@@ -109,6 +109,18 @@ defmodule Legion.Tools.AgentToolTest do
       assert {:error, text} = Legion.eval(owner, "AgentTool.start_link(ChildAgent)")
       assert text =~ "already runs 0 sub-agents"
     end
+
+    test "refuses a parallel/2 with more tasks than the cap, before starting any" do
+      owner = start_owner(OwnerAgent, max_sub_agents: 2)
+
+      assert {:error, text} =
+               Legion.eval(owner, """
+               AgentTool.parallel({{ChildAgent, "a"}, {ChildAgent, "b"}, {ChildAgent, "c"}})
+               """)
+
+      assert text =~ "parallel/2 got 3 tasks"
+      assert text =~ ":max_sub_agents is 2"
+    end
   end
 
   describe "a turn's sub-agents" do
