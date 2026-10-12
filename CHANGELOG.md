@@ -19,7 +19,7 @@
 
 - **Default model is `openai:gpt-5.6-luna`**
 - **An agent id belongs to one agent module** - starting another module under an id whose stored conversation is not its own returns `{:error, {:agent_module_mismatch, stored}}`
-- **[`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) and [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) finish only interrupted turns** - a conversation that stopped mid-turn, behind a checkpoint or on a prompt with nothing after it
+- **[`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2) and [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2) run the model only to finish an interrupted turn** - one stopped behind a checkpoint or on a prompt with nothing after it; `resume/2` restores any other conversation and waits for the next message
 
 #### Sub-agents
 
