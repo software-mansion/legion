@@ -62,10 +62,7 @@ defmodule Legion.Tools.AgentToolTest do
     pid
   end
 
-  defp sub_agents(owner) do
-    owner_id = Legion.get_agent_id(owner)
-    for {:legion_sub_agent, ^owner_id, child_id} <- :global.registered_names(), do: child_id
-  end
+  defp sub_agents(owner), do: AgentTool.running(Legion.get_agent_id(owner))
 
   describe "max_sub_agents" do
     test "refuses a start past the cap, and stop/1 frees a slot" do
