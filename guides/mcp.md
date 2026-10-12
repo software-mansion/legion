@@ -119,6 +119,9 @@ Web pages are kept out already: `Legion.MCP.Plug` refuses a browser
 request from any origin but `localhost`, so a site you have open cannot
 reach your local server. Hosts that send no `Origin`, as CLI and desktop
 ones do, are served; list a web client's origin in `allowed_origins:`.
+The plug also caps the sessions and event streams the server holds, 10,000
+of each; pass `max_sessions_per_client:` and `max_streams_per_client:`, with
+a `client_key:` that sees past your proxy, to cap each client too.
 
 ## Next steps
 

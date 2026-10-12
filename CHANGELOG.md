@@ -6,6 +6,7 @@
 
 - **MCP server** - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) serves a Lua agent to MCP hosts as `repl` and `help` tools; see the [MCP guide](https://hexdocs.pm/legion/mcp.html)
   - Over stdio or Streamable HTTP; [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html) refuses browser requests from origins other than `localhost` unless listed in `:allowed_origins`
+  - `Legion.MCP.Plug` caps live sessions and event streams, overall and per client (`:max_sessions`, `:max_streams`, `:max_sessions_per_client`, `:max_streams_per_client`, `:client_key`), issues session ids itself, and closes the event streams Anubis leaves open
   - OAuth 2.1, and a `session/1` callback choosing the agent, vault and rate limits per call
   - `Legion.Tools.AgentTool` and `Legion.Tools.HumanTool` are left out
   - Needs the optional `{:anubis_mcp, "~> 2.0"}` dependency

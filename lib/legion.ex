@@ -50,6 +50,7 @@ defmodule Legion do
     children = [
       {Legion.Recovery, Application.fetch_env(:legion, :recovery)},
       {Registry, keys: :duplicate, name: Legion.MCP.Sessions},
+      Legion.MCP.Admission,
       {DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one}
     ]
 
