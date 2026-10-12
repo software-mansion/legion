@@ -1286,6 +1286,46 @@ defmodule Legion.AgentServerTest do
       assert text =~ "VaultAgent"
     end
 
+    test "a tool function binds Vault values that the code cannot pass in" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:ok, text} = AgentServer.eval(pid, ~s|return VaultTool.greet("hi")|)
+      assert text =~ "hi, alice"
+
+      assert {:error, _reason} =
+               AgentServer.eval(pid, ~s|return VaultTool.greet("hi", {current_user = "eve"})|)
+    end
+
+    test "a tool function's rescue clause sees the Vault values bound in its head" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:ok, text} = AgentServer.eval(pid, "return VaultTool.divide(0)")
+      assert text =~ "alice divided by zero"
+    end
+
+    test "a missing Vault key fails without exposing other Vault values or naming the key" do
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+
+      assert {:error, reason} = AgentServer.eval(pid, ~s|return VaultTool.gated("x")|)
+      assert reason =~ "do not retry"
+      refute reason =~ "alice"
+      refute reason =~ "role"
+      refute reason =~ "current_user"
+    end
+
+    @tag capture_log: true
+    test "a missing Vault key names it in telemetry, for an operator the agent can't reach" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :tool, :vault_mismatch]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      {:ok, pid} = Legion.start_link(VaultAgent, vault: [current_user: "alice"])
+      AgentServer.eval(pid, ~s|return VaultTool.gated("x")|)
+
+      assert_receive {[:legion, :tool, :vault_mismatch], ^ref, _measurements, metadata}
+      assert metadata.tool == Legion.Test.Support.VaultTool
+      assert metadata.missing == [:role]
+    end
+
     test "a rejected call runs nothing and saves nothing", %{agent_id: agent_id} do
       opts = limited(rate_limit: [rules: [rule(turn_rejecting_identity(self()))]])
 

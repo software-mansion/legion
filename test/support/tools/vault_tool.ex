@@ -7,6 +7,19 @@ defmodule Legion.Test.Support.VaultTool do
   @doc "The current user this code runs for."
   def current_user, do: Vault.get(:current_user)
 
+  @doc "Greets the current user."
+  def greet(greeting), %{current_user: user}, do: "#{greeting}, #{user}"
+
+  @doc "Divides and names the current user in the rescue clause."
+  def divide(n), %{current_user: user} do
+    10 / n
+  rescue
+    ArithmeticError -> "#{user} divided by zero"
+  end
+
+  @doc "Requires a Vault key no agent seeds, to exercise the missing-key error."
+  def gated(x), %{current_user: user, role: role}, do: "#{user} #{role} #{x}"
+
   @doc "The token the current call carried."
   def token, do: Vault.get(:token)
 

@@ -51,6 +51,21 @@ defmodule Legion.Tool do
         end
       end
 
+  ## Reading from Vault
+
+  A map after a function head binds values from `Vault`, keyed as they were
+  stored, before the body runs. The function keeps its arity, so the LLM
+  cannot pass the values in:
+
+      def orders(status), %{current_user: user} do
+        MyApp.Orders.list(user, status)
+      end
+
+  Each key must bind a plain variable - a literal value instead raises a
+  `CompileError`. A key missing from Vault raises an error that names
+  neither the key nor its value, so a misconfigured tool fails without
+  exposing other Vault values to the LLM.
+
   ## External modules as tools
 
   A module that does not `use Legion.Tool` (e.g. `Req`) can still be listed as
@@ -91,11 +106,71 @@ defmodule Legion.Tool do
       @before_compile Legion.Tool
       @on_definition Legion.Tool
 
+      import Legion.Tool, only: [def: 3]
+      require Logger
+
       def description, do: unquote(source)
       def extra_allowed_modules, do: []
       def mcp?, do: true
 
       defoverridable description: 0, extra_allowed_modules: 0, mcp?: 0
+    end
+  end
+
+  @doc """
+  Defines a function whose body sees the Vault values named in `pattern`.
+  See "Reading from Vault" above.
+  """
+  defmacro def(head, {:%{}, _meta, pairs} = pattern, blocks) do
+    keys =
+      for {key, binding} <- pairs do
+        case binding do
+          {name, _meta, context} when is_atom(name) and is_atom(context) ->
+            key
+
+          other ->
+            raise CompileError,
+              description:
+                "def/3 only binds plain variables from Vault, got `#{Macro.to_string(other)}` for key #{inspect(key)}"
+        end
+      end
+
+    tool = __CALLER__.module
+    function = Macro.to_string(head)
+
+    vault_bind =
+      quote do
+        fetched = Vault.take(unquote(keys))
+        missing = unquote(keys) -- Map.keys(fetched)
+
+        if missing != [] do
+          Legion.Telemetry.emit([:legion, :tool, :vault_mismatch], %{}, %{
+            tool: unquote(tool),
+            function: unquote(function),
+            missing: missing
+          })
+
+          Logger.error(
+            "#{inspect(unquote(tool))}.#{unquote(function)} is missing Vault key(s) #{inspect(missing)} - nothing the agent does can fix this"
+          )
+
+          raise "this tool cannot succeed for this call and will fail the same way every time; do not retry it"
+        end
+
+        unquote(pattern) = fetched
+      end
+
+    # blocks is just :do - try requires at least one of rescue/catch/after/else
+    inner = if Keyword.keys(blocks) == [:do], do: blocks[:do], else: {:try, [], [blocks]}
+
+    body =
+      quote do
+        unquote(vault_bind)
+        unquote(inner)
+      end
+
+    quote do
+      Kernel.def(unquote(head), do: unquote(body))
     end
   end
 

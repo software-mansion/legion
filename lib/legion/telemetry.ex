@@ -58,6 +58,14 @@ defmodule Legion.Telemetry do
   - `[:legion, :eval_guard, :denied]` - a guard refused generated code
     - Metadata: `%{agent: module, agent_id: String.t(), guard: module, code: String.t(), reason: String.t()}`
 
+  ## Tool Events
+
+  - `[:legion, :tool, :vault_mismatch]` - a `def/3` function's Vault pattern
+    didn't match; the error the LLM sees names neither the key nor its value,
+    so this event (and the matching `Logger.error`) is the only place the
+    missing key names show up
+    - Metadata: `%{tool: module, function: String.t(), missing: [atom]}`
+
   ## Rate Limit Events
 
   - `[:legion, :rate_limit, :exceeded]` - a rate limiter denied an agent's

@@ -158,6 +158,24 @@ defmodule Legion.ToolTest do
     end
   end
 
+  describe "def/3" do
+    @tag :tmp_dir
+    test "rejects a literal value in the Vault pattern at compile time", %{tmp_dir: dir} do
+      path = Path.join(dir, "gated_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.GatedTool do
+        use Legion.Tool
+        def gated(x), %{role: "admin"}, do: x
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+  end
+
   # A unique module name per call keeps --repeat-until-failure free of
   # redefinition warnings, and diagnostics are collected in this process so
   # concurrent tests writing to stderr cannot leak in.
