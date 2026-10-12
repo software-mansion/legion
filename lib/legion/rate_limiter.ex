@@ -44,7 +44,8 @@ defmodule Legion.RateLimiter do
   ## Configuration
 
   The limiter and a default policy can be set globally, leaving only the
-  identities to the call site:
+  identities to the call site. The policy is a struct, so set it in
+  `config/runtime.exs`: `config/config.exs` is read before Legion is loaded.
 
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,

@@ -51,9 +51,9 @@ config :req_llm, :ollama, base_url: "http://gpu-box:11434/v1"
 
 Everything above the model stays the same - tools, sandboxes, store, rate
 limiter, [legion_web](https://github.com/software-mansion/legion_web). What
-changes is how much the model has to carry: Legion asks it for structured
-JSON on every step, expects working Lua (or Elixir) against tool source it
-has just read, and its system prompt is long - every tool's source is in it.
+changes is how much the model has to carry: it must return structured JSON
+on every step, write working Lua (or Elixir) against tool source it has just
+read, and take in a long system prompt that includes every tool's source.
 So pick a model that handles structured output and code well, with a context
 window to match, and make sure the server is actually configured to use that
 window; local servers tend to default to a small one and truncate silently.

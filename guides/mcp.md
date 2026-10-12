@@ -1,17 +1,16 @@
 # Serving an agent over MCP
 
-AI harnesses - the coding assistants, chat apps and other programs that run a
-model for you - can use tools that live outside them through MCP, the Model
-Context Protocol. `Legion.MCP.Server` turns one of your agents into such a
-tool source, an MCP server. The harness's own model writes the code, your
-application runs it in the agent's sandbox against your tools, and the result
-goes back to the model. Your agent never calls an LLM itself, so it needs no
-API key.
+`Legion.MCP.Server` exposes one of your agents as an
+[MCP](https://modelcontextprotocol.io) server. The harness's model writes
+Lua, your app runs it in the agent's sandbox against your tools, and the
+result goes back to the harness. The agent never calls an LLM itself, so it
+needs no API key.
 
 ## 1. Install
 
-The MCP server is built on [anubis_mcp](https://hexdocs.pm/anubis_mcp) (Anubis
-for short), an optional dependency of Legion, so add it next to Legion:
+The server is built on [anubis_mcp](https://hexdocs.pm/anubis_mcp), an
+optional dependency of Legion: without it in your deps, `Legion.MCP.Server`
+does not exist. Add it next to Legion:
 
 ```elixir
 # mix.exs
@@ -19,11 +18,17 @@ for short), an optional dependency of Legion, so add it next to Legion:
 {:anubis_mcp, "~> 2.0"}
 ```
 
+Serving over HTTP through `Legion.MCP.Plug` also needs `:plug`, which every
+Phoenix app already has. If Legion was compiled before you added
+`:anubis_mcp`, recompile it with `mix deps.compile legion --force`.
+
 ## 2. Write the agent
 
-Any agent works, including one you already chat with. This one serves a shop's
-catalogue: `CatalogTool` wraps your product search (`MyApp.Catalog` stands for
-your own code), and `CatalogAgent` answers questions with it.
+Any agent on the Lua sandbox, the default, can be served, including one you
+already chat with. If it lists `Legion.Tools.AgentTool` or
+`Legion.Tools.HumanTool`, those are left out over MCP. This agent serves a
+shop's catalogue: `CatalogTool` wraps your product search, and `CatalogAgent`
+answers questions with it.
 
 ```elixir
 defmodule MyApp.Tools.CatalogTool do
@@ -44,12 +49,10 @@ defmodule MyApp.CatalogAgent do
 end
 ```
 
-The two `@moduledoc`s are what the harness's model reads first. When a harness
-connects, the server sends it a short introduction made of the agent's
-`@moduledoc` and one line per tool, taken from the first sentence of the tool's
-`@moduledoc`. The model reads a tool in full only when it is about to use it,
-so keep the agent's doc short and let each tool's first sentence say what the
-tool is for.
+On connect, the server sends the harness a short introduction: the agent's
+`@moduledoc` plus the first sentence of each tool's `@moduledoc`. The model
+reads a tool in full only when it is about to use it, so keep the agent's
+doc short and let each tool's first sentence say what the tool is for.
 
 ## 3. Create the server
 
@@ -60,15 +63,13 @@ defmodule MyApp.MCP do
 end
 ```
 
-The harness gets two tools: `help`, which returns a tool's full reference (its
-source code with the docs), and `repl`, which runs code in the agent's sandbox
-with the agent's tools and returns the result.
+The harness gets two tools: `help` returns a tool's source and docs, and
+`repl` runs code in the agent's sandbox and returns the result.
 
 ## 4. Serve it
 
 In a Phoenix app, start the server after `Legion` and forward a path to
-`Legion.MCP.Plug` (a `Plug.Router` takes
-`forward "/mcp", to: Legion.MCP.Plug, init_opts: [server: MyApp.MCP]`):
+`Legion.MCP.Plug`:
 
 ```elixir
 # lib/my_app/application.ex
@@ -84,16 +85,19 @@ scope "/mcp" do
 end
 ```
 
+Outside Phoenix, a `Plug.Router` takes
+`forward "/mcp", to: Legion.MCP.Plug, init_opts: [server: MyApp.MCP]`.
+
 `start: true` starts the server even when Phoenix isn't serving, as in
 `mix test`. Leave the scope without a pipeline: `plug :accepts, ["json"]`
-would refuse the event stream harnesses open.
+would reject the event stream that harnesses open.
 
 ## 5. Connect and try it
 
-Run `mix phx.server` and add `http://localhost:4000/mcp` to your harness's MCP
-settings as an HTTP server. Ask it which green hoodies are in stock. Its model
-calls `help` with `CatalogTool` to learn what `search` returns, then sends
-code like this to `repl`:
+Run `mix phx.server` and add `http://localhost:4000/mcp` to your harness's
+MCP settings as an HTTP server. Ask it which green hoodies are in stock. Its
+model calls `help` with `CatalogTool` to learn what `search` returns, then
+sends code like this to `repl`:
 
 ```lua
 local hoodies = CatalogTool.search("hoodie")
@@ -107,21 +111,33 @@ return green
 ```
 
 `repl` returns the matching names, such as `["Green Hoodie"]`, and the model
-answers you. Global variables the code sets stay around for the next call.
-Meanwhile the server logs a warning that anyone who reaches the endpoint can
-run code in your sandbox; signing users in fixes that.
+answers you. Globals set by the code persist across `repl` calls.
+
+On the first request the server also logs a warning: anyone who can reach
+the endpoint can run code in your sandbox. Signing users in closes that.
+Web pages are kept out already: `Legion.MCP.Plug` refuses a browser
+request from any origin but `localhost`, so a site you have open cannot
+reach your local server. Hosts that send no `Origin`, as CLI and desktop
+ones do, are served; list a web client's origin in `allowed_origins:`.
 
 ## Next steps
 
-- **Sign users in** - pass `authorization:` to `use Legion.MCP.Server` and
-  mount the discovery plug, as in [Anubis's sign-in guide](https://hexdocs.pm/anubis_mcp/authorization.html);
-  `session/1` then gives each user [their own agent and vault](https://hexdocs.pm/legion/Legion.MCP.Server.html#module-sessions-are-agents).
-- **Rate limits** - return `rate_limit:` rules from `session/1`; every `repl`
-  call counts towards `:max_evals`, `help` is free
-  ([set up a limiter and rules](https://hexdocs.pm/legion/Legion.html#module-7-rate-limiting-baked-in)).
-- **Your own MCP tools** - `component` in the server module adds them
-  ([writing one](https://hexdocs.pm/anubis_mcp/building-a-server.html)). They
-  skip the agent: no rate limit, saving or vault, so use a `Legion.Tool` when
-  those matter.
-- **The rest** - request timeouts, trimming the introduction, telemetry and the
-  `transport: :stdio` option: [the `Legion.MCP.Server` docs](https://hexdocs.pm/legion/Legion.MCP.Server.html).
+- **Sign-in** - pass `authorization:` to `use Legion.MCP.Server` and mount
+  `Anubis.Server.Transport.WellKnown` at the site root
+  ([Anubis's sign-in guide](https://hexdocs.pm/anubis_mcp/authorization.html)).
+  `session/1` then gives each user
+  [their own agent and vault](https://hexdocs.pm/legion/Legion.MCP.Server.html#module-sessions-are-agents).
+  Keep it one agent per user: whoever reaches an agent shares its history
+  and variables.
+- **Rate limits** - return `rate_limit:` rules from `session/1`. Every `repl`
+  call counts towards `:max_evals`, which the limiter reads from the store,
+  so it needs a `Legion.Store.Postgres` store too; `help` is free.
+  [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html)
+  covers setting up the limiter.
+- **Custom MCP tools** - add them with `component` in the server module
+  ([Anubis's server guide](https://hexdocs.pm/anubis_mcp/building-a-server.html)).
+  They bypass the agent, so they get no rate limiting, saved history or
+  vault. Use a `Legion.Tool` when you need those.
+- **Other options** - request timeouts, trimming the introduction, telemetry
+  and the stdio transport are covered in the
+  [`Legion.MCP.Server` docs](https://hexdocs.pm/legion/Legion.MCP.Server.html).
