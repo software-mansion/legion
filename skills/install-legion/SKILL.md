@@ -425,4 +425,4 @@ has been reported and work stopped there.
 - Guides in the repo: https://github.com/software-mansion/legion/tree/main/guides
   (`installation.md`, `integrating.md`, `sandboxes.md`, `ash.md`, `mcp.md`)
 - API docs: https://hexdocs.pm/legion
-- Dashboard: https://github.com/software-mansion-labs/legion_web
+- Dashboard: https://github.com/software-mansion/legion_web
