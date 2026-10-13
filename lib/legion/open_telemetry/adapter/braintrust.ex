@@ -27,12 +27,14 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
       # config/runtime.exs
       if config_env() == :prod do
         config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
-        config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Braintrust
 
-        config :legion, Legion.OpenTelemetry.Adapter.Braintrust,
-          api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
-          project: "my_app",
-          region: :eu
+        config :legion, Legion.OpenTelemetry,
+          adapter: :braintrust,
+          vendor: [
+            api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
+            project: "my_app",
+            region: :eu
+          ]
       end
 
       # application.ex

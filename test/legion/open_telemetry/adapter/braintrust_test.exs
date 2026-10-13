@@ -24,7 +24,7 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
   describe "spans" do
     setup do
       :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
-      :ok = Legion.OpenTelemetry.attach(adapter: Legion.OpenTelemetry.Adapter.Braintrust)
+      :ok = Legion.OpenTelemetry.attach(adapter: :braintrust)
       on_exit(fn -> Legion.OpenTelemetry.detach() end)
 
       {:ok, script} =

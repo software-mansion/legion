@@ -22,12 +22,14 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
       # config/runtime.exs
       if config_env() == :prod do
         config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
-        config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Datadog
 
-        config :legion, Legion.OpenTelemetry.Adapter.Datadog,
-          api_key: System.fetch_env!("DD_API_KEY"),
-          site: "datadoghq.eu",
-          ml_app: "my-app"
+        config :legion, Legion.OpenTelemetry,
+          adapter: :datadog,
+          vendor: [
+            api_key: System.fetch_env!("DD_API_KEY"),
+            site: "datadoghq.eu",
+            ml_app: "my-app"
+          ]
       end
 
       # application.ex

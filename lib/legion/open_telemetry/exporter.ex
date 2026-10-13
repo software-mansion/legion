@@ -1,8 +1,8 @@
 defmodule Legion.OpenTelemetry.Exporter do
   @moduledoc """
   OpenTelemetry trace exporter that sends spans to the vendor adapter named in
-  `config :legion, Legion.OpenTelemetry, adapter: ...`, using its
-  `c:Legion.OpenTelemetry.Adapter.exporter_config/1`:
+  `config :legion, Legion.OpenTelemetry, adapter: ..., vendor: [...]`, using
+  its `c:Legion.OpenTelemetry.Adapter.exporter_config/1`:
 
       config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
 
@@ -23,6 +23,7 @@ defmodule Legion.OpenTelemetry.Exporter do
   def init(_opts) do
     with {:ok, {adapter, opts}} <- vendor(),
          {:ok, config} <- Legion.OpenTelemetry.exporter_config(adapter, opts),
+         :ok <- Legion.OpenTelemetry.check_endpoint_override(adapter, config.exporter),
          :ok <- otlp_exporter() do
       # credo:disable-for-next-line Credo.Check.Refactor.Apply
       {:ok, inner} = apply(:opentelemetry_exporter, :init, [config.exporter])

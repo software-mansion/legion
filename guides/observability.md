@@ -106,21 +106,24 @@ the vendor setup is incomplete.
 # config/runtime.exs
 if config_env() == :prod do
   config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
-  config :legion, Legion.OpenTelemetry, adapter: Legion.OpenTelemetry.Adapter.Braintrust
 
-  config :legion, Legion.OpenTelemetry.Adapter.Braintrust,
-    api_key: System.fetch_env!("BRAINTRUST_API_KEY"),
-    project: "my_app"
+  config :legion, Legion.OpenTelemetry,
+    adapter: :braintrust,
+    vendor: [api_key: System.fetch_env!("BRAINTRUST_API_KEY"), project: "my_app"]
 end
 ```
 
-Settings for each vendor are in `Legion.OpenTelemetry.Adapter.Braintrust`
-and `Legion.OpenTelemetry.Adapter.Datadog`. The SDK has one trace exporter, so
+The `:vendor` settings of each are listed in
+`Legion.OpenTelemetry.Adapter.Braintrust` and
+`Legion.OpenTelemetry.Adapter.Datadog`. The SDK has one trace exporter, so
 an app that already exports elsewhere should fan out through an
 [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) instead.
 `OTEL_EXPORTER_OTLP_*` variables take precedence over the vendor's settings,
 and `OTEL_TRACES_EXPORTER` replaces `Legion.OpenTelemetry.Exporter`
-altogether, so unset them.
+altogether, so unset them. An endpoint override is refused while the vendor
+authenticates with headers, since the OTLP exporter replaces the endpoint but
+keeps them; override `OTEL_EXPORTER_OTLP_HEADERS` as well to send a vendor's
+spans through a collector.
 
 **Braintrust** shows one row per trace. To read a conversation, group the
 Logs by `session_id` (**Group by**, then **Custom** if it is not listed) and

@@ -74,6 +74,7 @@ defmodule Legion.OpenTelemetry.Handler do
   # A raising handler gets detached by `:telemetry`, so failures are logged
   # and swallowed instead.
   def handle_event(event, measurements, meta, config) do
+    discard_stale(config)
     handle(event, measurements, meta, config)
   rescue
     exception ->
@@ -106,6 +107,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
     push(%{
       kind: :agent,
+      config: config,
       span: span,
       token: attach_span(span, session),
       agent: meta.agent,
@@ -116,14 +118,14 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp handle([:legion, :agent, :message, :stop], _measurements, meta, config) do
-    with %{} = frame <- pop(:agent, config) do
-      closing(frame, config, fn -> end_agent(frame, meta, config) end)
+    with %{} = frame <- pop(:agent) do
+      closing(frame, fn -> end_agent(frame, meta, config) end)
     end
   end
 
   defp handle([:legion, :agent, :message, :exception], _measurements, meta, config) do
-    with %{} = frame <- pop(:agent, config) do
-      closing(frame, config, fn -> fail(frame, meta, config) end)
+    with %{} = frame <- pop(:agent) do
+      closing(frame, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -138,15 +140,15 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp handle([:legion, :iteration, :stop], _measurements, meta, config) do
-    with %{} = frame <- pop(:iteration, config) do
-      closing(frame, config, fn -> put_action(frame.span, meta[:action], config) end)
+    with %{} = frame <- pop(:iteration) do
+      closing(frame, fn -> put_action(frame.span, meta[:action], config) end)
     end
   end
 
   defp handle([:legion, :iteration, :exception], _measurements, meta, config) do
     # Without a span (`iteration_spans: false`) the frame holds no context either.
-    with %{span: span} = frame when not is_nil(span) <- pop(:iteration, config) do
-      closing(frame, config, fn -> fail(frame, meta, config) end)
+    with %{span: span} = frame when not is_nil(span) <- pop(:iteration) do
+      closing(frame, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -191,6 +193,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
     push(%{
       kind: :eval,
+      config: config,
       span: span,
       token: attach_span(span),
       agent: meta.agent
@@ -198,21 +201,21 @@ defmodule Legion.OpenTelemetry.Handler do
   end
 
   defp handle([:legion, :sandbox, :eval, :stop], _measurements, meta, config) do
-    with %{} = frame <- pop(:eval, config) do
+    with %{} = frame <- pop(:eval) do
       error_kind =
         if meta[:success],
           do: nil,
           else: Atom.to_string(meta[:error_kind] || :runtime)
 
-      closing(frame, config, fn -> end_eval(frame, meta, error_kind, config) end)
+      closing(frame, fn -> end_eval(frame, meta, error_kind, config) end)
 
       update(:iteration, &%{&1 | eval: if(error_kind, do: :error, else: :ok)})
     end
   end
 
   defp handle([:legion, :sandbox, :eval, :exception], _measurements, meta, config) do
-    with %{} = frame <- pop(:eval, config) do
-      closing(frame, config, fn -> fail(frame, meta, config) end)
+    with %{} = frame <- pop(:eval) do
+      closing(frame, fn -> fail(frame, meta, config) end)
       update(:iteration, &%{&1 | eval: :error})
     end
   end
@@ -228,18 +231,24 @@ defmodule Legion.OpenTelemetry.Handler do
     name = "tools/call " <> (meta[:mcp_tool] || "repl")
     span = config[:tracer].start_span(name, attributes, Keyword.put(config, :span_kind, :server))
 
-    push(%{kind: :mcp, span: span, token: attach_span(span, session), agent: meta.agent})
+    push(%{
+      kind: :mcp,
+      config: config,
+      span: span,
+      token: attach_span(span, session),
+      agent: meta.agent
+    })
   end
 
   defp handle([:legion, :mcp, :call, :stop], _measurements, meta, config) do
-    with %{} = frame <- pop(:mcp, config) do
-      closing(frame, config, fn -> end_mcp_call(frame, meta, config) end)
+    with %{} = frame <- pop(:mcp) do
+      closing(frame, fn -> end_mcp_call(frame, meta, config) end)
     end
   end
 
   defp handle([:legion, :mcp, :call, :exception], _measurements, meta, config) do
-    with %{} = frame <- pop(:mcp, config) do
-      closing(frame, config, fn -> fail(frame, meta, config) end)
+    with %{} = frame <- pop(:mcp) do
+      closing(frame, fn -> fail(frame, meta, config) end)
     end
   end
 
@@ -263,7 +272,12 @@ defmodule Legion.OpenTelemetry.Handler do
   # parent agent's `execute_tool`) always wins.
   defp conversation_parent(meta, session, config) do
     if config[:conversation_traces] and not current_span?() do
-      Process.get(@conversation_key) || start_conversation(meta, session, config)
+      key = {meta.agent, session}
+
+      case Process.get(@conversation_key) do
+        %{key: ^key, span: span} -> span
+        _none -> start_conversation(key, meta, session, config)
+      end
     end
   end
 
@@ -271,7 +285,7 @@ defmodule Legion.OpenTelemetry.Handler do
   # when it ends, and Braintrust lists a trace only once its root has arrived,
   # so a span left open for the conversation would hide every turn until the
   # agent stops. Turns started later still parent on it.
-  defp start_conversation(meta, session, config) do
+  defp start_conversation(key, meta, session, config) do
     adapter = config[:tracer]
     name = "conversation " <> Attributes.agent_name(meta.agent)
 
@@ -279,8 +293,26 @@ defmodule Legion.OpenTelemetry.Handler do
       adapter.start_span(name, meta |> Attributes.conversation() |> with_session(session), config)
 
     adapter.end_span(span, config)
-    Process.put(@conversation_key, span)
+    Process.put(@conversation_key, %{key: key, span: span, config: config})
     span
+  end
+
+  # A turn running during a detach keeps its frames, its context and its
+  # conversation span in the process dictionary, outliving the attachment.
+  defp discard_stale(config) do
+    attachment = config[:attachment]
+    {fresh, stale} = Enum.split_while(stack(), &(&1.config[:attachment] == attachment))
+
+    if stale != [] do
+      put_stack(fresh)
+      Enum.each(stale, &finish/1)
+    end
+
+    conversation = Process.get(@conversation_key)
+
+    if conversation && conversation.config[:attachment] != attachment do
+      Process.delete(@conversation_key)
+    end
   end
 
   # The session of the running turn, or, for an eval outside one (an MCP
@@ -334,7 +366,7 @@ defmodule Legion.OpenTelemetry.Handler do
       [%{kind: :iteration} = enclosing | rest] ->
         put_stack([%{enclosing | span: nil, token: nil} | rest])
 
-        closing(enclosing, config, fn -> end_iteration(enclosing, number, config) end)
+        closing(enclosing, fn -> end_iteration(enclosing, number, config) end)
 
       _ ->
         :ok
@@ -364,6 +396,7 @@ defmodule Legion.OpenTelemetry.Handler do
 
     push(%{
       kind: :iteration,
+      config: config,
       number: number,
       span: span,
       token: attach_span(span),
@@ -430,14 +463,15 @@ defmodule Legion.OpenTelemetry.Handler do
   # Runs `fun`, which records `frame`'s outcome, then ends the span and
   # restores the context even if `fun` raises: a span left open is never
   # exported, and its context would stay current in the agent process.
-  defp closing(frame, config, fun) do
+  defp closing(frame, fun) do
     fun.()
   after
-    finish(frame, config)
+    finish(frame)
   end
 
-  defp finish(frame, config) do
-    if frame.span, do: config[:tracer].end_span(frame.span, config)
+  # Ended under the configuration that started the span, not the current one.
+  defp finish(frame) do
+    if frame.span, do: frame.config[:tracer].end_span(frame.span, frame.config)
   after
     detach_span(frame.token)
   end
@@ -464,13 +498,13 @@ defmodule Legion.OpenTelemetry.Handler do
 
   # Pops the innermost frame of `kind`. Frames above it were left open by a
   # missed stop event; they are closed so the context stack stays balanced.
-  defp pop(kind, config) do
+  defp pop(kind) do
     {above, rest} = Enum.split_while(stack(), &(&1.kind != kind))
 
     case rest do
       [frame | rest] ->
         put_stack(rest)
-        Enum.each(above, &finish(&1, config))
+        Enum.each(above, &finish/1)
         frame
 
       [] ->

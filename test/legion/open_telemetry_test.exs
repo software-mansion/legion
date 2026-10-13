@@ -89,6 +89,11 @@ defmodule Legion.OpenTelemetryTest do
     end)
   end
 
+  defp put_system_env(variable, value) do
+    System.put_env(variable, value)
+    on_exit(fn -> System.delete_env(variable) end)
+  end
+
   defp llm_response(result) do
     %ReqLLM.Response{
       id: "test",
@@ -276,9 +281,8 @@ defmodule Legion.OpenTelemetryTest do
   describe "attach/1 with a vendor adapter in config" do
     @datadog [api_key: "key", site: "datadoghq.eu", ml_app: "my-app"]
 
-    test "uses the vendor adapter and takes the other options from config" do
-      put_env(:legion, OpenTelemetry, adapter: Datadog, iteration_spans: true)
-      put_env(:legion, Datadog, @datadog)
+    test "resolves the adapter shorthand and takes the other options from config" do
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog, iteration_spans: true)
       put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
 
       :ok = OpenTelemetry.attach()
@@ -289,8 +293,7 @@ defmodule Legion.OpenTelemetryTest do
     end
 
     test "raises on invalid vendor options, naming the option but not its value" do
-      put_env(:legion, OpenTelemetry, adapter: Datadog)
-      put_env(:legion, Datadog, api_key: 12_345, ml_app: "my-app")
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: [api_key: 12_345, ml_app: "a"])
       put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
 
       error = assert_raise ArgumentError, fn -> OpenTelemetry.attach() end
@@ -299,13 +302,51 @@ defmodule Legion.OpenTelemetryTest do
     end
 
     test "raises with the config line to add when the SDK does not export through Legion" do
-      put_env(:legion, OpenTelemetry, adapter: Datadog)
-      put_env(:legion, Datadog, @datadog)
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog)
       put_env(:opentelemetry, :traces_exporter, :none)
 
       assert_raise ArgumentError,
                    ~r/config :opentelemetry, traces_exporter: \{Legion.OpenTelemetry.Exporter, \[\]\}/,
                    fn -> OpenTelemetry.attach() end
+    end
+
+    test "raises when an endpoint override would receive the vendor's headers" do
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog)
+      put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
+      put_system_env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com")
+
+      error = assert_raise ArgumentError, fn -> OpenTelemetry.attach() end
+      assert Exception.message(error) =~ "OTEL_EXPORTER_OTLP_ENDPOINT"
+      refute Exception.message(error) =~ "collector.example.com"
+    end
+
+    test "attaches when the endpoint override replaces the headers as well" do
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog)
+      put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
+      put_system_env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com")
+      put_system_env("OTEL_EXPORTER_OTLP_HEADERS", "x-tenant=acme")
+
+      assert OpenTelemetry.attach() == :ok
+    end
+
+    test "names another traces_exporter without its options, which hold its credentials" do
+      put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog)
+
+      put_env(
+        :opentelemetry,
+        :traces_exporter,
+        {:opentelemetry_exporter, %{headers: [{"x-honeycomb-team", "hcaik_SUPER_SECRET"}]}}
+      )
+
+      error = assert_raise ArgumentError, fn -> OpenTelemetry.attach() end
+      assert Exception.message(error) =~ ":opentelemetry_exporter"
+      refute Exception.message(error) =~ "hcaik_SUPER_SECRET"
+    end
+
+    test "raises when :vendor is passed to attach/1, which the exporter never reads" do
+      assert_raise ArgumentError, ~r/config :legion, Legion.OpenTelemetry/, fn ->
+        OpenTelemetry.attach(adapter: :datadog, vendor: @datadog)
+      end
     end
   end
 

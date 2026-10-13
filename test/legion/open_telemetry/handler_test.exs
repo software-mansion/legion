@@ -70,6 +70,27 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
   end
 
+  # Holds the first LLM request until the test sends `:go`, so a turn can be
+  # observed mid-flight.
+  defp block_first_request do
+    test_pid = self()
+    {:ok, requests} = Agent.start_link(fn -> 0 end)
+
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
+      if Agent.get_and_update(requests, &{&1, &1 + 1}) == 0 do
+        send(test_pid, {:llm_waiting, self()})
+
+        receive do
+          :go -> :ok
+        after
+          1000 -> raise "the test never released the LLM stub"
+        end
+      end
+
+      answer(return("done"), opts)
+    end)
+  end
+
   defp return(result), do: %{"action" => "return", "code" => "", "result" => result}
   defp eval(code), do: %{"action" => "eval_and_continue", "code" => code, "result" => ""}
 
@@ -404,6 +425,43 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       # Ended before the first turn starts, so the trace is exported at once.
       assert Enum.find_index(messages, &match?({:otel, :end_span, ^conversation, _}, &1)) <
                Enum.find_index(messages, &match?({:otel, :start_span, _, @agent_span, _, _}, &1))
+    end
+
+    test "a re-attach opens a new conversation span instead of reusing the old handle" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, conversation_traces: true)
+      reply_with([return("one"), return("two")])
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      assert {:ok, "one"} = Legion.call(pid, "hi")
+
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, conversation_traces: true)
+      assert {:ok, "two"} = Legion.call(pid, "again")
+
+      names = started_span_names(flush())
+      assert Enum.count(names, &(&1 == "conversation Legion.Test.Support.MathAgent")) == 2
+    end
+  end
+
+  describe "detaching during a turn" do
+    test "the next attachment closes the span the turn left open in the agent process" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+      block_first_request()
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      turn = Task.async(fn -> Legion.call(pid, "hi") end)
+
+      assert_receive {:llm_waiting, agent}
+      {span, _attributes, _config} = span_named(@agent_span)
+
+      assert OpenTelemetry.detach() == :ok
+      send(agent, :go)
+      assert {:ok, "done"} = Task.await(turn)
+
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+      assert {:ok, "done"} = Legion.call(pid, "again")
+
+      assert_receive {:otel, :end_span, ^span, config}
+      assert config[:content] == :attributes
     end
   end
 

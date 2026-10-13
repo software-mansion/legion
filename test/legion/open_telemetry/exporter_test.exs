@@ -7,13 +7,18 @@ defmodule Legion.OpenTelemetry.ExporterTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias Legion.OpenTelemetry.Adapter.Datadog
+  import ExUnit.CaptureLog
+
   alias Legion.OpenTelemetry.Exporter
 
   # Names `adapter` as the vendor in `config :legion` for one test.
   defp configure_vendor(adapter, opts) do
-    put_env(:legion, Legion.OpenTelemetry, adapter: adapter)
-    put_env(:legion, adapter, opts)
+    put_env(:legion, Legion.OpenTelemetry, adapter: adapter, vendor: opts)
+  end
+
+  defp put_system_env(variable, value) do
+    System.put_env(variable, value)
+    on_exit(fn -> System.delete_env(variable) end)
   end
 
   # Sets an app env key for one test.
@@ -29,9 +34,18 @@ defmodule Legion.OpenTelemetry.ExporterTest do
     end)
   end
 
+  describe "init/1" do
+    test "exports nothing when an endpoint override would receive the vendor's headers" do
+      configure_vendor(:datadog, api_key: "key", ml_app: "my-app")
+      put_system_env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com")
+
+      capture_log(fn -> assert Exporter.init([]) == :ignore end)
+    end
+  end
+
   describe "export/3" do
     test "exports the spans to the vendor with its resource attributes over the SDK's" do
-      configure_vendor(Datadog, api_key: "key", ml_app: "my-app")
+      configure_vendor(:datadog, api_key: "key", ml_app: "my-app")
       test_pid = self()
 
       stub(:opentelemetry_exporter, :init, fn config ->
