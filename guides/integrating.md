@@ -29,7 +29,8 @@ its public functions. Decide two things for each tool:
 - **What to expose.** The agent can call every public function, so give it a
   small facade over your context rather than the context itself.
 - **Who is asking.** Keep the shopper's identity in
-  [Vault](https://github.com/dimamik/vault) and read it inside the tool.
+  [Vault](https://github.com/dimamik/vault) and bind it in the tool's
+  [function head](https://hexdocs.pm/legion/Legion.Tool.html#module-reading-from-vault).
   Generated code can't read Vault, so it can't ask for another shopper's
   orders.
 
@@ -38,9 +39,7 @@ defmodule MyShop.Tools.OrdersTool do
   use Legion.Tool
 
   @doc "Orders of the signed-in shopper, newest first"
-  def my_orders do
-    %{id: shopper_id} = Vault.get(:current_user)
-
+  def my_orders, %{current_user: %{id: shopper_id}} do
     for order <- MyShop.Orders.list_orders(shopper_id: shopper_id) do
       %{
         id: order.id,
@@ -52,8 +51,7 @@ defmodule MyShop.Tools.OrdersTool do
   end
 
   @doc "Carrier tracking status for one of the shopper's orders"
-  def track(order_id) do
-    %{id: shopper_id} = Vault.get(:current_user)
+  def track(order_id), %{current_user: %{id: shopper_id}} do
     MyShop.Orders.tracking(shopper_id, order_id)
   end
 end
@@ -204,7 +202,7 @@ pass `store:` and `agent_id:` (see `Legion.Store`).
   evals and tokens per shopper or per IP. It reads usage from the Postgres
   store. See `Legion.RateLimiter`.
 - **Writes** - a write is one more tool function, such as `CartTool.add/2`,
-  that reads the shopper from Vault like the others.
+  that binds the shopper in its head like the others.
 - **Irreversible actions** - keep things like charging a card or cancelling
   an order out of the agent's reach, or behind a confirmation step in your UI.
 - **Observability** - `Legion.Telemetry.attach_default_logger/0` logs agent
