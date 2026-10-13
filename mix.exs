@@ -1,7 +1,7 @@
 defmodule Legion.MixProject do
   use Mix.Project
 
-  @version "0.5.1"
+  @version "0.6.0"
   @source_url "https://github.com/software-mansion/legion"
 
   def project do
@@ -16,7 +16,7 @@ defmodule Legion.MixProject do
       # Hex
       package: package(),
       description: """
-      Legion is an Elixir-native framework for building AI agents
+      Legion is an Elixir runtime for AI agents that live inside your application and get things done by writing code
       """,
       # Docs
       name: "Legion",

@@ -138,6 +138,7 @@ Start the agent once the socket is connected, then send it each message:
 
 ```elixir
 # mount/3, after the hook from step 2 has set the shopper
+# no LLM call yet - that happens on Legion.call/2
 {:ok, agent} = Legion.start_link(MyShop.SupportAgent)
 
 # handle_event/3
