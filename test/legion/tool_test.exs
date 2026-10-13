@@ -158,6 +158,114 @@ defmodule Legion.ToolTest do
     end
   end
 
+  describe "def/3" do
+    @tag :tmp_dir
+    test "rejects a literal value in the Vault pattern at compile time", %{tmp_dir: dir} do
+      path = Path.join(dir, "gated_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.GatedTool do
+        use Legion.Tool
+        def gated(x), %{role: "admin"}, do: x
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "rejects a literal value nested inside the Vault pattern at compile time", %{
+      tmp_dir: dir
+    } do
+      path = Path.join(dir, "nested_gated_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.NestedGatedTool do
+        use Legion.Tool
+        def gated(x), %{current_user: %{role: "admin"}}, do: x
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "rejects a pinned variable in the Vault pattern at compile time", %{tmp_dir: dir} do
+      path = Path.join(dir, "pinned_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.PinnedTool do
+        use Legion.Tool
+        def gated(guess), %{role: ^guess}, do: guess
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "rejects a special form that parses as a variable in the Vault pattern", %{tmp_dir: dir} do
+      path = Path.join(dir, "special_form_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.SpecialFormTool do
+        use Legion.Tool
+        def gated(x), %{role: __MODULE__}, do: x
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "rejects a Vault pattern that binds the same variable twice", %{tmp_dir: dir} do
+      path = Path.join(dir, "repeated_var_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.RepeatedVarTool do
+        use Legion.Tool
+        def leak(x), %{a: v, b: v}, do: "\#{x}-\#{v}"
+      end
+      """)
+
+      assert_raise CompileError, ~r/more than once/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "rejects a Vault pattern that binds the same variable twice across nesting levels", %{
+      tmp_dir: dir
+    } do
+      path = Path.join(dir, "repeated_nested_var_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.RepeatedNestedVarTool do
+        use Legion.Tool
+        def leak(x), %{a: v, b: %{c: v}}, do: "\#{x}-\#{v}"
+      end
+      """)
+
+      assert_raise CompileError, ~r/more than once/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
+    test "allows a bare _ more than once in the Vault pattern", %{tmp_dir: dir} do
+      {tool, []} = compile_tool(dir, ~s|def gated(x), %{a: _, b: _}, do: x|)
+      assert tool
+    end
+  end
+
   # A unique module name per call keeps --repeat-until-failure free of
   # redefinition warnings, and diagnostics are collected in this process so
   # concurrent tests writing to stderr cannot leak in.

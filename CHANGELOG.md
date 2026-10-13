@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Tools - [`Legion.Tool.def/3`](https://hexdocs.pm/legion/Legion.Tool.html#def/3) binds Vault values in a tool's function head, before the body runs, so a tool reads the caller's identity without an argument the LLM could pass; a value can be destructured further with a nested map, and a key that is missing or wrongly shaped fails with an error naming neither the key nor its value, while the key names reach the operator through a `[:legion, :tool, :vault_mismatch]` telemetry event and a `Logger.error`
+
 ## v0.6.0 - 2026-10-13
 
 ### Highlights
