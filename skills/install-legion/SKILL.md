@@ -10,8 +10,9 @@ modules next to the code the app already has. Nothing gets rewritten. The
 install is one reviewable diff: minimal edits, in the order below, nothing
 the user did not choose in step 0.
 
-Steps 1, 2, 3, 8 and 9 run on every install. Steps 4 to 7 run only when the
-matching answer from step 0 is yes; each names its gate in its heading.
+Steps 1, 2, 3, 8 and 10 run on every install. Steps 4 to 7 and 9 run only
+when the matching answer from step 0 is yes; each names its gate in its
+heading.
 
 ## 0. Look, then ask
 
@@ -27,6 +28,9 @@ Read, editing nothing yet:
   whether any of them admits admins only (`phx.gen.auth` gives
   `:require_authenticated_user`, which admits every signed-in user).
 - `lib/<app>/` - the contexts (orders, tickets, catalog) a tool could wrap.
+- `lib/*_web/live/`, `lib/*_web/controllers/`, `lib/<app>/workers/` - the
+  entry points a message could reach the agent through: a chat or assistant
+  LiveView, a support form, a webhook action, an Oban worker, a mix task.
 - `git status` - start from a clean tree so the install is one reviewable
   diff.
 
@@ -35,11 +39,11 @@ this order. Offer a question only when its condition holds; otherwise say in
 one line why it is not offered.
 
 - **Provider and model.** Recommend the provider already configured, else
-  OpenAI (default model `openai:gpt-5.4`, no model line needed). Any other
+  OpenAI (default model `openai:gpt-5.6-luna`, no model line needed). Any other
   provider needs a model in ReqLLM's `provider:model` form.
 - **Store** - Postgres Ecto repo present. Conversations survive deploys and
   resume by id; costs one migration.
-- **Rate limiter** - store = yes. Caps agents and tokens per user or IP on
+- **Rate limiter** - store = yes. Caps agents, tokens and code evaluations per user or IP on
   the same table; meant for agents driven by untrusted users.
 - **Dashboard** - `:phoenix` present. `legion_web` shows every user's
   prompts, generated snippets and results, so only admins may reach it - a
@@ -53,9 +57,14 @@ one line why it is not offered.
   behalf of a signed-in user (their orders, their tickets)? Yes means the
   user's identity travels in Vault. No means a public tool, such as catalog
   search, and no Vault at all.
+- **Entry point** - asked last. List the ones found, recommend the one the
+  user's request points at; step 9 wires the agent into it. None found: say
+  so and ask whether to create one; yes means step 9 adds a minimal chat
+  LiveView (a message list, a text input) at a route the user names. Skip
+  means the agent stays callable from code only.
 
-Done when: the plan (provider, model, each yes/no, context) is recapped and
-the user has confirmed it.
+Done when: the plan (provider, model, each yes/no, context, entry point) is
+recapped and the user has confirmed it.
 
 ## 1. Dependency
 
@@ -158,7 +167,7 @@ defmodule MyApp.RateLimiter do
   use Legion.RateLimiter.Postgres, repo: MyApp.Repo
 end
 
-# config/config.exs
+# config/runtime.exs - config.exs loads before Legion, so it can't build the struct
 config :legion, :rate_limit,
   limiter: MyApp.RateLimiter,
   default_policy: %Legion.RateLimiter.Policy{
@@ -169,7 +178,7 @@ config :legion, :rate_limit,
 ```
 
 The config holds the limiter and policy only. Rules naming the group go on
-every `Legion.start_link/2` call (step 8); without them Legion logs a
+every `Legion.start_link/2` call (step 9); without them Legion logs a
 warning and runs unlimited. Identity keys are strings:
 
 ```elixir
@@ -177,10 +186,14 @@ warning and runs unlimited. Identity keys are strings:
 rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"user_id" => to_string(user.id)}}]]
 ```
 
-A denied turn returns `{:cancel, {:rate_limited, violations}}`.
+A denied turn returns `{:cancel, {:rate_limited, violations}}`. A start is
+checked against `max_agents` too: past it, `Legion.start_link/2` returns
+`{:error, {:rate_limited, violations}}` with no agent started, and
+`Legion.execute/3` returns `{:cancel, {:rate_limited, violations}}`.
+`Legion.resume/2` is not checked.
 
 Done when: the limiter module and `:rate_limit` config exist and the
-`start_link/2` call in step 8 names its group.
+`start_link/2` call in step 9 names its group.
 
 ## 6. Dashboard (dashboard = yes)
 
@@ -265,7 +278,7 @@ it is started from that process with `Legion.start_link/2`; generated code
 cannot read it.
 
 Done when: `:vault` is a dependency, exactly one `Vault.init` site carries
-`:current_user`, and the agent of step 8 starts under it.
+`:current_user`, and the agent starts under it in step 9.
 
 ## 8. First tool and agent
 
@@ -282,7 +295,7 @@ defmodule MyApp.Tools.OrdersTool do
     %{id: user_id} = Vault.get(:current_user)
 
     for order <- MyApp.Orders.list_orders(user_id: user_id) do
-      %{id: order.id, status: order.status, placed_at: order.placed_at}
+      %{id: order.id, status: order.status, placed_at: DateTime.to_iso8601(order.placed_at)}
     end
   end
 end
@@ -315,7 +328,18 @@ Rules that keep this safe and cheap:
 - Ash app: the tool calls the domain's code interface with
   `actor: Vault.get(:current_user)` so policies keep applying.
 
-Starting it, in the process of step 7 when identity = yes:
+Done when: one tool module and one agent module exist, the agent lists the
+tool, and the facade exposes only the functions the chosen context needs.
+
+## 9. Entry point (entry point = yes)
+
+Wire the entry point chosen in step 0 to the agent, or the chat LiveView
+agreed there. Its look and every other behaviour stay; only what happens to
+the message changes.
+
+A LiveView starts the agent in its own process, under the identity of step 7
+when identity = yes; a controller or a job runs it with `Legion.execute/3`
+instead (below):
 
 ```elixir
 {:ok, pid} = Legion.start_link(MyApp.SupportAgent)
@@ -324,7 +348,9 @@ Starting it, in the process of step 7 when identity = yes:
 `start_link/2` links the agent to the caller, so in a LiveView it dies with
 the socket. The gates from step 0 add to that call:
 
-- Rate limiter = yes: pass `rate_limit: [rules: ...]` from step 5.
+- Rate limiter = yes: pass `rate_limit: [rules: ...]` from step 5, and
+  handle `{:error, {:rate_limited, violations}}` from `start_link/2` where the
+  handler shows errors today, so a refused start does not crash the caller.
 - Store = yes: give the agent a stable `agent_id`, or every start writes a
   fresh conversation under a random id and nothing can be resumed.
   `Legion.resume/2` brings a stored one back:
@@ -334,32 +360,46 @@ the socket. The gates from step 0 add to that call:
   # the rate_limit option when rate limiter = yes, else []
   opts = []
 
-  {:ok, pid} =
+  # {:ok, pid}, or {:error, {:rate_limited, violations}} past max_agents
+  started =
     case Legion.resume(agent_id, opts) do
       {:ok, pid} -> {:ok, pid}
       {:error, :not_resumable} -> Legion.start_link(MyApp.SupportAgent, [agent_id: agent_id] ++ opts)
     end
   ```
 
-`Legion.call/2` waits for the whole turn with no timeout, so a LiveView
-calls it through `start_async` rather than blocking `handle_event`:
+Then the call, by entry point:
 
-```elixir
-def handle_event("ask", %{"question" => question}, socket) do
-  pid = socket.assigns.agent
-  {:noreply, start_async(socket, :reply, fn -> Legion.call(pid, question) end)}
-end
+- LiveView (a chat pane, a form): `Legion.call/2` waits for the whole turn
+  with no timeout, so call it through `start_async` rather than blocking
+  `handle_event`:
 
-def handle_async(:reply, {:ok, {:ok, reply}}, socket), do: ...
-def handle_async(:reply, {:ok, {:cancel, reason}}, socket), do: ...
-```
+  ```elixir
+  def handle_event("ask", %{"question" => question}, socket) do
+    pid = socket.assigns.agent
+    {:noreply, start_async(socket, :reply, fn -> Legion.call(pid, question) end)}
+  end
 
-A controller may call `Legion.call/2` directly.
+  def handle_async(:reply, {:ok, {:ok, reply}}, socket), do: ...
+  def handle_async(:reply, {:ok, {:cancel, reason}}, socket), do: ...
+  ```
 
-Done when: one tool module and one agent module exist, the agent lists the
-tool, and the facade exposes only the functions the chosen context needs.
+  The reply goes where the pane shows messages today.
+- Controller action or webhook: no `start_link`. `Legion.execute/3` starts
+  the agent, runs one turn and stops it, so nothing outlives the request: a
+  linked agent would, since a request process exits normally. It takes the
+  same options; with a store, the same `agent_id` continues the conversation:
 
-## 9. Verify
+  ```elixir
+  {:ok, reply} = Legion.execute(MyApp.SupportAgent, message, [agent_id: agent_id] ++ opts)
+  ```
+- Worker, scheduled job or mix task: `Legion.execute/3` the same way; the
+  result goes where the job's output went before.
+
+Done when: the entry point's handler calls the agent and the reply lands
+where that handler's output landed before.
+
+## 10. Verify
 
 ```bash
 mix format
@@ -374,14 +414,15 @@ mix run -e 'IO.inspect(Legion.execute(MyApp.SupportAgent, "Return the sum of 2 a
 
 Any `{:ok, _}` proves it; the reply's wording is the model's (`"4"`, `4`,
 `"The sum is 4"`). A missing or wrong key comes back as
-`{:error, "LLM request failed: ..."}`. Leave the diff for review, uncommitted.
+`{:cancel, :reached_max_retries}`: every request fails until the retries run
+out. Leave the diff for review, uncommitted.
 
 Done when: an `{:ok, _}` was seen, or the exact variable the user must set
 has been reported and work stopped there.
 
 ## Further reading
 
-- Guides in the repo: https://github.com/software-mansion-labs/legion/tree/main/guides
-  (`installation.md`, `integrating.md`, `sandboxes.md`, `ash.md`)
+- Guides in the repo: https://github.com/software-mansion/legion/tree/main/guides
+  (`installation.md`, `integrating.md`, `sandboxes.md`, `ash.md`, `mcp.md`)
 - API docs: https://hexdocs.pm/legion
 - Dashboard: https://github.com/software-mansion-labs/legion_web

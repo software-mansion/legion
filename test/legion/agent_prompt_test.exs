@@ -1,5 +1,5 @@
 defmodule Legion.AgentPromptTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Legion.AgentPrompt
   alias Legion.Test.Support.{HackerNewsAgent, MathAgent, NoToolAgent}
@@ -24,9 +24,11 @@ defmodule Legion.AgentPromptTest do
       assert prompt =~ "An agent that does math."
     end
 
-    test "includes the sandbox language" do
-      prompt = AgentPrompt.system_prompt(MathAgent)
-      assert prompt =~ "Lua"
+    test "names the sandbox language" do
+      assert AgentPrompt.system_prompt(MathAgent) =~ "writing and executing Lua code"
+
+      assert AgentPrompt.system_prompt(MathAgent, %{sandbox: Legion.Sandbox.Elixir}) =~
+               "writing and executing Elixir"
     end
 
     test "includes custom description when description/0 is overridden" do
@@ -65,10 +67,9 @@ defmodule Legion.AgentPromptTest do
     test "uses Lua-safe AgentTool documentation in the Lua sandbox" do
       prompt = AgentPrompt.system_prompt(AgentToolAgent)
 
-      assert prompt =~ "response = AgentTool.call(SomeAgent, {"
-      assert prompt =~ "result = response[2]"
-      assert prompt =~ "Lua cannot pass a function through the tool bridge"
-      assert prompt =~ "Long-lived sub-agents are not available from Lua"
+      assert prompt =~ ~s|response = AgentTool.call(SomeAgent, "Summarize|
+      assert prompt =~ "writer = AgentTool.start_link(WriterAgent)[2]"
+      refute prompt =~ "AgentTool.pipeline"
       refute prompt =~ "{:ok, result}"
     end
 
@@ -76,15 +77,15 @@ defmodule Legion.AgentPromptTest do
       prompt = AgentPrompt.system_prompt(AgentToolAgent, %{sandbox: Legion.Sandbox.Elixir})
 
       assert prompt =~ "{:ok, result} ="
-      assert prompt =~ "AgentTool.start_link("
-      assert prompt =~ "WriterAgent,"
-      refute prompt =~ "result = response[2]"
+      assert prompt =~ "{:ok, writer} = AgentTool.start_link(WriterAgent)"
+      assert prompt =~ "AgentTool.pipeline"
+      refute prompt =~ "response[2]"
     end
   end
 
-  describe "tool_docs: :discovery" do
+  describe "tool_docs: :on_demand" do
     test "lists tools by name and summary instead of their source" do
-      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :on_demand})
 
       assert prompt =~ "- `MathTool` - This is math tool moduledoc."
       assert prompt =~ "- `Help` -"
@@ -93,29 +94,29 @@ defmodule Legion.AgentPromptTest do
     end
 
     test "steers the model to Help before the first use of a tool" do
-      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :on_demand})
 
-      assert prompt =~ ~s|Help.help("Name")|
+      assert prompt =~ "Help.help(Name)"
       assert prompt =~ "Help.help()"
       refute prompt =~ "Examine the tool source code below"
     end
 
     test "keeps the rest of the executor prompt" do
-      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :discovery})
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :on_demand})
 
       assert prompt =~ "## How you work"
       assert prompt =~ "An agent that does math."
       assert prompt =~ "**Constraints:**"
     end
 
-    test "an explicit :full renders the same prompt as the default" do
-      assert AgentPrompt.system_prompt(MathAgent, %{tool_docs: :full}) ==
+    test "an explicit :inline renders the same prompt as the default" do
+      assert AgentPrompt.system_prompt(MathAgent, %{tool_docs: :inline}) ==
                AgentPrompt.system_prompt(MathAgent)
     end
   end
 
   describe "mode: :mcp" do
-    test "defaults to tool_docs: :discovery" do
+    test "defaults to tool_docs: :on_demand" do
       prompt = AgentPrompt.system_prompt(MathAgent, nil, mode: :mcp)
 
       assert prompt =~ "- `MathTool` - This is math tool moduledoc."
@@ -125,17 +126,8 @@ defmodule Legion.AgentPromptTest do
       refute prompt =~ "**Constraints:**"
     end
 
-    test "keeps the agent's purpose and the repl mechanics" do
-      prompt = AgentPrompt.system_prompt(MathAgent, nil, mode: :mcp)
-
-      assert prompt =~ "An agent that does math."
-      assert prompt =~ "`repl`"
-      assert prompt =~ "Variables persist"
-      assert prompt =~ "Lua"
-    end
-
-    test "tool_docs: :full renders the full tools section over MCP" do
-      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :full}, mode: :mcp)
+    test "tool_docs: :inline renders the full tools section over MCP" do
+      prompt = AgentPrompt.system_prompt(MathAgent, %{tool_docs: :inline}, mode: :mcp)
 
       assert prompt =~ "### MathTool"
       assert prompt =~ "MathTool — performs math operations"

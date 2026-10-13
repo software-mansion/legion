@@ -93,7 +93,8 @@ trace only shows up once its root is exported, and a turn called under
 another span still nests there.
 
 Each `repl` or `help` call to a `Legion.MCP.Server` is a `tools/call <tool>`
-server span keyed by the MCP session id, with the agent's eval under it.
+server span keyed by the MCP session id; a `repl` span has the agent's eval
+under it.
 
 ## Vendors
 

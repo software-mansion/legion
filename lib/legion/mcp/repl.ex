@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(Anubis.Server.Component) do
+if Code.ensure_loaded?(Anubis.Server) do
   defmodule Legion.MCP.Repl do
     @moduledoc """
     The `repl` tool of a `Legion.MCP.Server`.
@@ -35,7 +35,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @doc false
     # What the host reads about `repl`: the language, whether variables
     # survive between calls, and the sandbox rules in full, since the
-    # instructions under `tool_docs: :discovery` no longer carry them.
+    # instructions under `tool_docs: :on_demand` no longer carry them.
     def description(agent) do
       config = Agent.resolve_config(agent)
       info = config.sandbox.prompt_info()
@@ -57,7 +57,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     @doc false
     # The host's code, run as one step of the session's agent.
     def execute(%{code: code}, %Frame{assigns: %{legion_mcp_server: _}} = frame),
-      do: Server.run(frame, "repl", code)
+      do: Server.run(frame, code)
 
     def execute(_params, %Frame{} = frame) do
       message = "Session is not initialized: send notifications/initialized before calling tools."

@@ -3,9 +3,12 @@ defmodule Legion.EvalGuard do
   Last check before generated code runs.
 
   A guard sees the code an agent wrote and decides whether the sandbox may
-  evaluate it. It runs after the AST checker accepts the code and before the
-  eval process is spawned, so it is the place for policy the sandbox cannot
-  express: "never loop over checkout", "no bulk export of the orders table".
+  evaluate it. It runs after the sandbox's static check accepts the code and
+  before the eval process is spawned, so it is the place for policy the
+  sandbox cannot express: "never loop over checkout", "no bulk export of the
+  orders table". `Legion.Sandbox.Lua` parses inside that process, under its
+  limits, so a guard also reviews code that will fail to parse; the Elixir
+  sandbox rejects such code before the guard.
 
       defmodule MyApp.CodeReview do
         @behaviour Legion.EvalGuard

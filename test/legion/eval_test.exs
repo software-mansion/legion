@@ -67,12 +67,18 @@ defmodule Legion.EvalTest do
   end
 
   describe "run/4" do
-    test "fails an execution whose variables would exceed max_bindings_bytes, keeping the old ones" do
+    test "fails an execution whose variables would exceed max_bindings_bytes" do
       config = config(%{max_bindings_bytes: 30})
 
       assert {:ok, {_value, bindings}} = Eval.run(ExtraAgent, "x", config, [])
       assert {:error, error} = Eval.run(ExtraAgent, String.duplicate("y", 100), config, bindings)
       assert error =~ "over the 30 byte limit"
+    end
+
+    test "skips the max_bindings_bytes check under :iteration, which drops the variables" do
+      config = config(%{max_bindings_bytes: 30, binding_scope: :iteration})
+
+      assert {:ok, _} = Eval.run(ExtraAgent, String.duplicate("y", 100), config, [])
     end
 
     test "checks and executes the code with the agent's tools and their extra modules allowed" do
@@ -132,7 +138,9 @@ defmodule Legion.EvalTest do
       :telemetry.attach_many(
         "eval-test-#{inspect(ref)}",
         [[:legion, :sandbox, :eval, :start], [:legion, :sandbox, :eval, :stop]],
-        fn event, _measurements, metadata, _ -> send(test_pid, {ref, event, metadata}) end,
+        fn event, _measurements, metadata, _config ->
+          if self() == test_pid, do: send(test_pid, {ref, event, metadata})
+        end,
         nil
       )
 
@@ -170,6 +178,48 @@ defmodule Legion.EvalTest do
       assert text =~ "[... truncated"
       refute text =~ String.duplicate("a", 100)
     end
+
+    test "truncates the variables line to max_message_length" do
+      bindings = for index <- 1..1_000, do: {:"variable_#{index}", index}
+      text = Eval.format_result(1, bindings, config(%{max_message_length: 200}))
+
+      assert text =~ "Available variables: `variable_1`"
+      assert text =~ "[... truncated"
+      assert byte_size(text) < 600
+    end
+
+    test "a cut through a multibyte character leaves valid UTF-8" do
+      for character <- ["é", "€", "🙂"], max <- 40..44 do
+        text =
+          Eval.format_result(
+            String.duplicate(character, 100),
+            [],
+            config(%{max_message_length: max})
+          )
+
+        assert String.valid?(text), "#{character} at #{max} bytes"
+        assert text =~ "[... truncated"
+      end
+    end
+
+    test "a string past inspect's own 4096 limit is shown whole under max_message_length" do
+      text = Eval.format_result(String.duplicate("a", 10_000), [], config())
+
+      assert text =~ String.duplicate("a", 10_000)
+      refute text =~ "<> ..."
+      refute text =~ "[... truncated"
+    end
+
+    test "max_message_length: :infinity lifts inspect's limit too" do
+      text =
+        Eval.format_result(
+          String.duplicate("a", 50_000),
+          [],
+          config(%{max_message_length: :infinity})
+        )
+
+      assert text =~ String.duplicate("a", 50_000)
+    end
   end
 
   describe "format_error/1" do
@@ -184,6 +234,10 @@ defmodule Legion.EvalTest do
 
     test "inspects anything else" do
       assert Eval.format_error({:exit, :killed}) == "{:exit, :killed}"
+    end
+
+    test "replaces bytes that are not UTF-8" do
+      assert Eval.format_error("bad \xFF byte") == "bad \uFFFD byte"
     end
   end
 end

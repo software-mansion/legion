@@ -9,17 +9,21 @@ defmodule Legion.Integration.SubagentTest do
   """
   use ExUnit.Case, async: true
 
-  alias Legion.Test.Support.OrchestratorAgent
+  alias Legion.Test.Support.{HackerNewsAgent, OrchestratorAgent, RedditAgent}
 
   @moduletag :integration
   @moduletag timeout: 600_000
 
   setup do
     unless System.get_env("OPENAI_API_KEY"), do: raise("OPENAI_API_KEY not set")
-    :ok
+
+    ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :agent, :started]])
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    {:ok, ref: ref}
   end
 
-  test "orchestrator delegates to sub-agents and combines results" do
+  test "orchestrator delegates to sub-agents and combines results", %{ref: ref} do
     IO.puts("\n" <> String.duplicate("=", 60))
     IO.puts("Sub-agent Integration Test")
     IO.puts(String.duplicate("=", 60))
@@ -38,5 +42,13 @@ defmodule Legion.Integration.SubagentTest do
     IO.puts(String.duplicate("=", 60) <> "\n")
 
     assert match?({:ok, _}, result) or match?({:cancel, _}, result)
+
+    assert_receive {[:legion, :agent, :started], ^ref, _measurements,
+                    %{agent: OrchestratorAgent, agent_id: orchestrator_id}}
+
+    for sub_agent <- [HackerNewsAgent, RedditAgent] do
+      assert_receive {[:legion, :agent, :started], ^ref, _measurements,
+                      %{agent: ^sub_agent, parent_agent_id: ^orchestrator_id}}
+    end
   end
 end

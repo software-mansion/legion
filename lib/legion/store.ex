@@ -77,7 +77,8 @@ defmodule Legion.Store do
 
   `"at"` is when the call finished. `"message_index"` is the position of the
   call's code among the stored messages, counting from zero, so an entry can
-  be matched to its message. These are the evaluations `:max_evals` in a
+  be matched to its message, or `nil` for a call whose step could not be
+  saved: its code ran, so it still counts. These are the evaluations `:max_evals` in a
   `Legion.RateLimiter.Policy` limits.
 
   ## Identifying a conversation
@@ -108,7 +109,9 @@ defmodule Legion.Store do
   tracking" for the `"at"` and `"message_index"` keys.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
-  while the turn is running and cleared from the final snapshot. Bindings with
+  while the turn is running, next to `:base_bindings`, the ones the turn
+  started from and goes back to when it ends: what `Legion.eval/3` made
+  outside any turn. The final snapshot holds those alone. Bindings with
   `binding_scope: :conversation` remain in the final snapshot, while
   iteration-scoped bindings are cleared before a step is saved.
 

@@ -36,6 +36,7 @@ defmodule Legion.MixProject do
           "guides/local_llms.md": [title: "Local LLMs"],
           "guides/mcp.md": [title: "Serving an agent over MCP"],
           "guides/observability.md": [title: "Observability"],
+          "guides/legion_web.md": [title: "Monitoring agents with Legion Web"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()
@@ -88,7 +89,9 @@ defmodule Legion.MixProject do
       {:nimble_options, "~> 1.0"},
       {:lua, "~> 1.0"},
       {:postgrex, "~> 0.22"},
+      # Legion.MCP.Server; Legion.MCP.Plug needs plug too
       {:anubis_mcp, "~> 2.0", optional: true},
+      {:plug, "~> 1.18", optional: true},
       {:opentelemetry_api, "~> 1.4", optional: true},
 
       # Test and Dev

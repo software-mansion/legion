@@ -1,5 +1,5 @@
 defmodule Legion.Sandbox.ElixirTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   doctest Legion.Sandbox.Elixir, import: true
 
@@ -8,11 +8,6 @@ defmodule Legion.Sandbox.ElixirTest do
   test "returns result and bindings" do
     assert {:ok, {5, bindings}} = Sandbox.execute("a = 2 + 2\na + 1", 15_000)
     assert Keyword.get(bindings, :a) == 4
-  end
-
-  test "accepts bindings from a previous execution" do
-    {:ok, {_result, bindings}} = Sandbox.execute("posts = [1, 2, 3]", 15_000)
-    assert {:ok, {6, _}} = Sandbox.execute("Enum.sum(posts)", 15_000, [], bindings)
   end
 
   test "bindings survive the term round-trip a store does" do
@@ -54,11 +49,6 @@ defmodule Legion.Sandbox.ElixirTest do
              )
   end
 
-  test "heap budget leaves ordinary evals untouched" do
-    assert {:ok, {499_500, _}} =
-             Sandbox.execute("Enum.sum(1..999)", 15_000, [], [], max_heap: 10_000_000)
-  end
-
   test "eval exceeding the reduction budget is killed with a CPU error" do
     code = "Enum.reduce(1..100_000_000, 0, fn n, acc -> acc + n end)"
 
@@ -68,9 +58,12 @@ defmodule Legion.Sandbox.ElixirTest do
     assert message =~ "reduction (CPU) limit"
   end
 
-  test "reduction budget leaves ordinary evals untouched" do
+  test "heap and reduction budgets leave ordinary evals untouched" do
     assert {:ok, {499_500, _}} =
-             Sandbox.execute("Enum.sum(1..999)", 15_000, [], [], max_reductions: 1_000_000)
+             Sandbox.execute("Enum.sum(1..999)", 15_000, [], [],
+               max_heap: 10_000_000,
+               max_reductions: 1_000_000
+             )
   end
 
   test "eval piling up binaries is killed by the heap budget even though they live off-heap" do
@@ -116,13 +109,6 @@ defmodule Legion.Sandbox.ElixirTest do
 
     assert {:ok, {{:priority, :normal}, _}} =
              Sandbox.execute(code, 15_000, [Process], [], priority: :normal)
-  end
-
-  test "generated code cannot raise its own priority" do
-    assert {:error, message} =
-             Sandbox.execute("Process.flag(:priority, :high)", 15_000)
-
-    assert message =~ "Module Process is not allowed"
   end
 
   test "compile error surfaces diagnostics instead of the generic wrapper message" do

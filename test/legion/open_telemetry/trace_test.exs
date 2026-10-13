@@ -295,6 +295,7 @@ defmodule Legion.OpenTelemetry.TraceTest do
   describe "MCP calls" do
     setup do
       start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
+      start_supervised!({Registry, keys: :duplicate, name: Legion.MCP.Sessions})
       context = %Context{session_id: "mcp-session-1", client_info: %{}}
       {:ok, frame} = MathMCP.init(%{}, %Frame{context: context})
       %{frame: frame}
@@ -328,6 +329,19 @@ defmodule Legion.OpenTelemetry.TraceTest do
       assert call[:"gen_ai.tool.call.arguments"] == "return 1 + 1"
       assert call[:"gen_ai.tool.call.result"] =~ "2"
       assert attributes(spans, "execute_tool sandbox")[:"session.id"] == "mcp-session-1"
+    end
+
+    test "a help call is a span of its own, naming no eval", %{frame: frame} do
+      request = %{"method" => "tools/call", "params" => %{"name" => "help", "arguments" => %{}}}
+      {:reply, _response, _frame} = Handlers.handle(request, MathMCP, frame)
+      spans = collect("tools/call help", [])
+
+      assert [span(parent_span_id: :undefined, kind: :server)] = spans["tools/call help"]
+      refute Map.has_key?(spans, "execute_tool sandbox")
+
+      call = attributes(spans, "tools/call help")
+      assert call[:"gen_ai.tool.name"] == "help"
+      assert call[:"mcp.session.id"] == "mcp-session-1"
     end
 
     test "a failed call is marked as a tool error", %{frame: frame} do

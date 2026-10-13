@@ -19,6 +19,9 @@ defmodule Legion.Test.Support.VaultTool do
   @doc "The rate limit this code runs under."
   def rate_limit, do: inspect(Vault.get(:rate_limit))
 
+  @doc "The action this code runs as."
+  def current_action, do: Vault.get(:current_action)
+
   @doc "The agent module this code runs under."
   def agent_module, do: inspect(Vault.get(:agent_module))
 end

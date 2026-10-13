@@ -1,4 +1,5 @@
 defmodule Legion.RecoveryTest do
+  # Legion.recover/2 starts each agent itself, out of reach of a private-mode stub.
   use ExUnit.Case, async: false
   use Mimic
 
@@ -119,12 +120,12 @@ defmodule Legion.RecoveryTest do
   test "uses separate store scan and concurrent request limits" do
     stores = [RecoveryStoreOne, RecoveryStoreTwo]
 
-    Enum.each(stores, fn store ->
+    for store <- stores do
       StoreState.put(store, [
         interrupted_payload("#{store}-one"),
         interrupted_payload("#{store}-two")
       ])
-    end)
+    end
 
     test_pid = self()
 
@@ -213,12 +214,41 @@ defmodule Legion.RecoveryTest do
     assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
   end
 
-  test "filters out idle and child runs before recovering" do
+  test "filters out idle and child runs, and interrupted evals, before recovering" do
     eligible = interrupted_payload("eligible")
     idle_root = %{interrupted_payload("idle-root") | status: :idle}
     running_child = %{interrupted_payload("running-child") | parent_agent_id: "parent"}
 
-    StoreState.put(RecoveryStoreOne, [eligible, idle_root, running_child])
+    # What a crash during an MCP call leaves: marked running by the rate
+    # limiter, no checkpoint, an eval step last.
+    interrupted_eval = %{
+      interrupted_payload("interrupted-eval")
+      | conversation_state: %{
+          messages: [
+            %{role: "assistant", type: :assistant, content: ~s({"action":"eval_and_continue"})},
+            %{role: "user", type: :eval_result, content: "Code executed successfully."}
+          ],
+          bindings: [],
+          executor_state: :nonexistent
+        }
+    }
+
+    unstarted_turn = %{
+      interrupted_payload("unstarted-turn")
+      | conversation_state: %{
+          messages: [%{role: "user", type: :user, content: "recover me"}],
+          bindings: [],
+          executor_state: :nonexistent
+        }
+    }
+
+    StoreState.put(RecoveryStoreOne, [
+      eligible,
+      idle_root,
+      running_child,
+      interrupted_eval,
+      unstarted_turn
+    ])
 
     test_pid = self()
 
@@ -232,19 +262,25 @@ defmodule Legion.RecoveryTest do
 
     assert {:ok, worker} =
              Legion.Recovery.start_link(
-               {:ok, stores: [RecoveryStoreOne], store_scan_limit: 3, concurrent_request_limit: 3}
+               {:ok, stores: [RecoveryStoreOne], store_scan_limit: 5, concurrent_request_limit: 5}
              )
 
     monitor_ref = Process.monitor(worker)
 
-    assert_receive {:listed, RecoveryStoreOne, 3}
-    assert_receive {:recovering, recovery_pid}
-    refute_receive {:looked_up, RecoveryStoreOne, "idle-root"}, 50
-    refute_receive {:looked_up, RecoveryStoreOne, "running-child"}, 50
+    assert_receive {:listed, RecoveryStoreOne, 5}
+    assert_receive {:recovering, first_pid}
+    assert_receive {:recovering, second_pid}
 
-    send(recovery_pid, :complete_recovery)
+    send(first_pid, :complete_recovery)
+    send(second_pid, :complete_recovery)
 
     assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
+
+    assert_received {:looked_up, RecoveryStoreOne, "eligible"}
+    assert_received {:looked_up, RecoveryStoreOne, "unstarted-turn"}
+    refute_received {:looked_up, RecoveryStoreOne, "idle-root"}
+    refute_received {:looked_up, RecoveryStoreOne, "running-child"}
+    refute_received {:looked_up, RecoveryStoreOne, "interrupted-eval"}
   end
 
   test "recovers without warning about a configured limiter and no rules" do

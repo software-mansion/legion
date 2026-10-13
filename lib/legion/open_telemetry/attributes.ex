@@ -94,7 +94,7 @@ defmodule Legion.OpenTelemetry.Attributes do
     |> agent(meta[:agent_id])
     |> Map.merge(%{
       "gen_ai.operation.name": "execute_tool",
-      "gen_ai.tool.name": meta[:tool],
+      "gen_ai.tool.name": meta[:mcp_tool],
       "gen_ai.agent.id": meta[:agent_id],
       "mcp.method.name": "tools/call",
       "mcp.session.id": meta[:session_id]

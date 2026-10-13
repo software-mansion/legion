@@ -3,6 +3,8 @@ defmodule Legion.RateLimiter.PolicyTest do
 
   alias Legion.RateLimiter.Policy
 
+  @limits ~w(max_agents max_running_agents max_tokens max_evals)a
+
   describe "validate!/1" do
     test "accepts a policy with every limit set" do
       assert :ok =
@@ -10,7 +12,8 @@ defmodule Legion.RateLimiter.PolicyTest do
                  window_ms: 1_000,
                  max_agents: 1,
                  max_running_agents: 1,
-                 max_tokens: 10
+                 max_tokens: 10,
+                 max_evals: 30
                })
     end
 
@@ -19,22 +22,14 @@ defmodule Legion.RateLimiter.PolicyTest do
     end
 
     test "accepts zero limits" do
-      assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_agents: 0, max_tokens: 0})
-    end
-
-    test "accepts max_evals, zero included" do
-      assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_evals: 30})
-      assert :ok = Policy.validate!(%Policy{window_ms: 1_000, max_evals: 0})
-    end
-
-    test "rejects a max_evals that is not a non-negative integer" do
-      assert_raise ArgumentError, ~r/:max_evals/, fn ->
-        Policy.validate!(%Policy{window_ms: 1_000, max_evals: -1})
-      end
-
-      assert_raise ArgumentError, ~r/:max_evals/, fn ->
-        Policy.validate!(%Policy{window_ms: 1_000, max_evals: "30"})
-      end
+      assert :ok =
+               Policy.validate!(%Policy{
+                 window_ms: 1_000,
+                 max_agents: 0,
+                 max_running_agents: 0,
+                 max_tokens: 0,
+                 max_evals: 0
+               })
     end
 
     test "rejects a non-positive window" do
@@ -43,21 +38,11 @@ defmodule Legion.RateLimiter.PolicyTest do
       end
     end
 
-    test "rejects a negative limit" do
-      assert_raise ArgumentError, ~r/:max_agents/, fn ->
-        Policy.validate!(%Policy{window_ms: 1_000, max_agents: -1})
-      end
-    end
-
-    test "rejects a non-integer limit" do
-      assert_raise ArgumentError, ~r/:max_tokens/, fn ->
-        Policy.validate!(%Policy{window_ms: 1_000, max_tokens: "10"})
-      end
-    end
-
-    test "rejects a negative running-agents limit" do
-      assert_raise ArgumentError, ~r/:max_running_agents/, fn ->
-        Policy.validate!(%Policy{window_ms: 1_000, max_running_agents: -1})
+    test "rejects a limit that is not a non-negative integer" do
+      for limit <- @limits, value <- [-1, "10"] do
+        assert_raise ArgumentError, ~r/#{inspect(limit)}/, fn ->
+          Policy.validate!(struct!(Policy, [{:window_ms, 1_000}, {limit, value}]))
+        end
       end
     end
 

@@ -4,6 +4,7 @@ defmodule Legion.Test.Support.SummaryTool do
   """
   use Legion.Tool
 
+  @impl Legion.Tool
   def summary, do: "Custom summary."
 
   def sum(list), do: Enum.sum(list)

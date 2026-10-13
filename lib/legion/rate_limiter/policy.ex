@@ -27,9 +27,9 @@ defmodule Legion.RateLimiter.Policy do
       the limit that bounds how far one window can overshoot `:max_tokens`.
       `0` allows no turns; `nil` disables this limit.
     * `:max_tokens` - maximum recorded token total for matching agents during
-      the window. Limits are checked when a turn starts and never interrupt
-      a running turn, so one turn can carry the recorded total past the
-      maximum before the next one is denied. `0` accepts no tokens and so
+      the window. Checked when a turn starts, never during one, so one turn
+      can carry the recorded total past the maximum before the next one is
+      denied. `0` accepts no tokens and so
       denies every turn; `nil` disables this limit.
     * `:max_evals` - maximum recorded code evaluations for matching agents
       during the window. Checked when a turn starts, like `:max_tokens`.

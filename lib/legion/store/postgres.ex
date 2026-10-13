@@ -105,6 +105,11 @@ defmodule Legion.Store.Postgres do
       @impl Legion.Store
       def persistence_frequency, do: unquote(persistence_frequency)
 
+      @doc false
+      # Where the rows live, so `Legion.RateLimiter.Postgres` can check that
+      # it counts the rows this store writes.
+      def __legion_table__, do: {unquote(repo), unquote(table)}
+
       @impl Legion.Store
       def get(agent_id) when not is_binary(agent_id), do: :error
 
@@ -209,11 +214,10 @@ defmodule Legion.Store.Postgres do
   defp decode_conversation_state(binary) when is_binary(binary) do
     state = :erlang.binary_to_term(binary)
 
-    %{
-      messages: Map.get(state, :messages, []),
-      bindings: Map.get(state, :bindings, []),
-      executor_state: Map.get(state, :executor_state, :nonexistent)
-    }
+    Map.merge(
+      %{messages: [], bindings: [], executor_state: :nonexistent},
+      Map.take(state, [:messages, :bindings, :base_bindings, :executor_state])
+    )
   end
 
   defp decode_status("running"), do: :running

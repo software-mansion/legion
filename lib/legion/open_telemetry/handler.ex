@@ -225,7 +225,7 @@ defmodule Legion.OpenTelemetry.Handler do
   defp handle([:legion, :mcp, :call, :start], _measurements, meta, config) do
     session = meta[:session_id] || meta[:agent_id]
     attributes = meta |> Attributes.mcp_call_start(config) |> with_session(session)
-    name = "tools/call " <> (meta[:tool] || "repl")
+    name = "tools/call " <> (meta[:mcp_tool] || "repl")
     span = config[:tracer].start_span(name, attributes, Keyword.put(config, :span_kind, :server))
 
     push(%{kind: :mcp, span: span, token: attach_span(span, session), agent: meta.agent})
