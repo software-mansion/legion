@@ -191,17 +191,28 @@ defmodule Legion.Tool do
     for {key, binding} <- pairs do
       case binding do
         {name, _meta, context} when is_atom(name) and is_atom(context) ->
-          {:leaf, key, name}
+          classify_var!(binding, key, name)
 
         {:%{}, _meta, inner_pairs} ->
           {:nested, key, inner_pairs}
 
         other ->
-          raise CompileError,
-            description:
-              "def/3 only binds plain variables or nested maps from Vault, got `#{Macro.to_string(other)}` for key #{inspect(key)}"
+          reject_binding!(other, key)
       end
     end
+  end
+
+  # A special form parses as a variable but matches as a literal.
+  defp classify_var!(binding, key, name) do
+    if Macro.special_form?(name, 0),
+      do: reject_binding!(binding, key),
+      else: {:leaf, key, name}
+  end
+
+  defp reject_binding!(binding, key) do
+    raise CompileError,
+      description:
+        "def/3 only binds plain variables or nested maps from Vault, got `#{Macro.to_string(binding)}` for key #{inspect(key)}"
   end
 
   @doc false

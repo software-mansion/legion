@@ -210,6 +210,22 @@ defmodule Legion.ToolTest do
     end
 
     @tag :tmp_dir
+    test "rejects a special form that parses as a variable in the Vault pattern", %{tmp_dir: dir} do
+      path = Path.join(dir, "special_form_tool.ex")
+
+      File.write!(path, """
+      defmodule MyApp.SpecialFormTool do
+        use Legion.Tool
+        def gated(x), %{role: __MODULE__}, do: x
+      end
+      """)
+
+      assert_raise CompileError, ~r/only binds plain variables/, fn ->
+        Code.compile_file(path)
+      end
+    end
+
+    @tag :tmp_dir
     test "rejects a Vault pattern that binds the same variable twice", %{tmp_dir: dir} do
       path = Path.join(dir, "repeated_var_tool.ex")
 
