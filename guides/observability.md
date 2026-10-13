@@ -10,11 +10,11 @@ One trace per agent turn, shaped by the GenAI semantic conventions:
 
 ```
 invoke_agent MyApp.ResearchAgent
-├─ chat gpt-5.4                      legion.iteration=0
+├─ chat gpt-5.6-luna                 legion.iteration=0
 ├─ execute_tool sandbox              legion.iteration=0
 │  └─ invoke_agent MyApp.SubAgent    (called from the tool code)
-│     └─ chat gpt-5.4
-└─ chat gpt-5.4                      legion.iteration=1
+│     └─ chat gpt-5.6-luna
+└─ chat gpt-5.6-luna                 legion.iteration=1
 ```
 
 - `invoke_agent <agent>` is one turn, with the agent's name and id, its

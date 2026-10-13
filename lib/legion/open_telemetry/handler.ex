@@ -77,13 +77,15 @@ defmodule Legion.OpenTelemetry.Handler do
     discard_stale(config)
     handle(event, measurements, meta, config)
   rescue
-    exception -> log_failure(event, :error, exception, __STACKTRACE__)
+    exception -> log_failure(event, :error, exception, __STACKTRACE__, config)
   catch
-    kind, reason -> log_failure(event, kind, reason, __STACKTRACE__)
+    kind, reason -> log_failure(event, kind, reason, __STACKTRACE__, config)
   end
 
-  defp log_failure(event, kind, reason, stacktrace) do
-    if is_nil(Process.put({__MODULE__, :logged, event}, true)) do
+  defp log_failure(event, kind, reason, stacktrace, config) do
+    attachment = config[:attachment]
+
+    if Process.put({__MODULE__, :logged, event}, attachment) != attachment do
       Logger.warning(
         "Legion.OpenTelemetry failed to handle #{inspect(event)}: " <>
           Exception.format(kind, reason, stacktrace)

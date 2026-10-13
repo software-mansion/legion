@@ -157,7 +157,7 @@ defmodule Legion.OpenTelemetry.Attributes do
   def cancel_reason({reason, _detail}) when is_atom(reason), do: Atom.to_string(reason)
   def cancel_reason(reason), do: inspect(reason)
 
-  @doc "`gen_ai.provider.name` from a ReqLLM model spec, e.g. `\"openai:gpt-5.4\"`."
+  @doc "`gen_ai.provider.name` from a ReqLLM model spec, e.g. `\"openai:gpt-5.6-luna\"`."
   def provider_name(model) when is_binary(model) do
     case String.split(model, ":", parts: 2) do
       [provider, _model] -> provider
@@ -223,8 +223,10 @@ defmodule Legion.OpenTelemetry.Attributes do
 
   defp parts(content, max) when is_binary(content), do: [text_part(content, max)]
 
-  defp parts(content, max) when is_list(content),
-    do: Enum.map(content, &part(&1, div(max, length(content))))
+  defp parts(content, max) when is_list(content) do
+    budget = Kernel.max(div(max, length(content)), 1)
+    Enum.map(content, &part(&1, budget))
+  end
 
   defp parts(nil, _max), do: []
   defp parts(content, max), do: [text_part(inspect_text(content, max), max)]
