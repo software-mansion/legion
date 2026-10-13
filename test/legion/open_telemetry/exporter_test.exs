@@ -8,6 +8,7 @@ defmodule Legion.OpenTelemetry.ExporterTest do
   use Mimic
 
   import ExUnit.CaptureLog
+  import Legion.Test.Support.Env, only: [put_env: 3, put_system_env: 2]
 
   alias Legion.OpenTelemetry.Exporter
 
@@ -16,30 +17,21 @@ defmodule Legion.OpenTelemetry.ExporterTest do
     put_env(:legion, Legion.OpenTelemetry, adapter: adapter, vendor: opts)
   end
 
-  defp put_system_env(variable, value) do
-    System.put_env(variable, value)
-    on_exit(fn -> System.delete_env(variable) end)
-  end
-
-  # Sets an app env key for one test.
-  defp put_env(app, key, value) do
-    previous = Application.fetch_env(app, key)
-    Application.put_env(app, key, value)
-
-    on_exit(fn ->
-      case previous do
-        {:ok, value} -> Application.put_env(app, key, value)
-        :error -> Application.delete_env(app, key)
-      end
-    end)
-  end
-
   describe "init/1" do
     test "exports nothing when an endpoint override would receive the vendor's headers" do
       configure_vendor(:datadog, api_key: "key", ml_app: "my-app")
       put_system_env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com")
 
       capture_log(fn -> assert Exporter.init([]) == :ignore end)
+    end
+
+    test "exports nothing when the OTLP exporter rejects the vendor's options" do
+      configure_vendor(:datadog, api_key: "key", ml_app: "my-app")
+      stub(:opentelemetry_exporter, :init, fn _config -> {:error, :badarg} end)
+
+      log = capture_log(fn -> assert Exporter.init([]) == :ignore end)
+
+      assert log =~ "opentelemetry_exporter rejected the vendor's exporter options"
     end
   end
 

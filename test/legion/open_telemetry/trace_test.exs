@@ -15,8 +15,10 @@ defmodule Legion.OpenTelemetry.TraceTest do
   require OpenTelemetry.Tracer, as: Tracer
   require Record
 
+  import Legion.Test.Support.LLMStub, only: [eval: 1, reply_with: 1, return: 1]
+
   alias Anubis.Server.{Context, Frame, Handlers}
-  alias Legion.Test.Support.{MathAgent, ReqLLMTelemetry}
+  alias Legion.Test.Support.{LLMStub, MathAgent}
 
   Record.defrecordp(
     :span,
@@ -67,8 +69,6 @@ defmodule Legion.OpenTelemetry.TraceTest do
     def set_attributes(_span, _attributes, _config), do: raise("attributes are down")
   end
 
-  @model "openai:gpt-4o-mini"
-
   setup do
     :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
     :ok = Legion.OpenTelemetry.attach()
@@ -79,18 +79,16 @@ defmodule Legion.OpenTelemetry.TraceTest do
   # The parent evaluates code that calls ChildAgent; everyone else returns.
   defp stub_llm do
     stub(ReqLLM, :generate_object, fn _model, messages, _schema, opts ->
-      ReqLLMTelemetry.emit_request(@model, opts)
-
       object =
         if Enum.any?(messages, &(&1[:content] == "delegate")) and
              not Enum.any?(messages, &(&1[:role] == "assistant")) do
           code = ~s|local reply = AgentTool.call(ChildAgent, "child task")\nreturn reply[2]|
           %{"action" => "eval_and_complete", "code" => code, "result" => ""}
         else
-          %{"action" => "return", "code" => "", "result" => "done"}
+          return("done")
         end
 
-      {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
+      LLMStub.answer(object, opts)
     end)
   end
 
@@ -260,17 +258,6 @@ defmodule Legion.OpenTelemetry.TraceTest do
     end
   end
 
-  # Stubs the LLM to answer with `objects` in order.
-  defp reply_with(objects) do
-    {:ok, script} = Agent.start_link(fn -> objects end)
-
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
-      ReqLLMTelemetry.emit_request(@model, opts)
-      object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
-      {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
-    end)
-  end
-
   test "iteration spans stay siblings when recording an iteration's outcome fails" do
     :ok =
       Legion.OpenTelemetry.attach(
@@ -279,10 +266,7 @@ defmodule Legion.OpenTelemetry.TraceTest do
         iteration_spans: true
       )
 
-    reply_with([
-      %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""},
-      %{"action" => "return", "code" => "", "result" => "done"}
-    ])
+    reply_with([eval("1 + 1"), return("done")])
 
     {:ok, pid} = Legion.start_link(MathAgent, sandbox: Legion.Sandbox.Elixir)
     assert {:ok, "done"} = Legion.call(pid, "go")

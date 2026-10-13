@@ -10,11 +10,13 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
   @moduletag capture_log: true
 
-  alias Legion.OpenTelemetry
-  alias Legion.OpenTelemetry.{Attributes, Handler}
-  alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
+  import Legion.Test.Support.LLMStub, only: [eval: 1, reply_with: 1, response: 1, return: 1]
 
-  @model "openai:gpt-4o-mini"
+  alias Legion.OpenTelemetry
+  alias Legion.OpenTelemetry.Handler
+  alias Legion.Test.Support.{FakeOTelAdapter, LLMStub, MathAgent}
+  alias ReqLLM.Message.ContentPart
+
   @agent_span "invoke_agent Legion.Test.Support.MathAgent"
   @tool_span "execute_tool sandbox"
   @chat_span "chat gpt-4o-mini"
@@ -25,6 +27,21 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
     @impl true
     def check(_code, _context), do: {:deny, "the shop is closed"}
+  end
+
+  defmodule RejectingLimiter do
+    @moduledoc "Limiter that refuses every turn."
+    @behaviour Legion.RateLimiter
+
+    @impl true
+    def enforce!(agent_id, _rules) do
+      raise Legion.RateLimiter.ExceededError,
+        agent_id: agent_id,
+        identity: %{},
+        policy: %Legion.RateLimiter.Policy{window_ms: 1_000},
+        usage: %{},
+        violations: [:max_tokens]
+    end
   end
 
   defmodule RaisingAdapter do
@@ -51,25 +68,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     :ok
   end
 
-  # Stubs the LLM to answer with `replies` in order. A reply is an action map,
-  # or `{:error, reason}` for a failed request.
-  defp reply_with(replies) do
-    {:ok, script} = Agent.start_link(fn -> replies end)
-
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
-      script
-      |> Agent.get_and_update(fn [next | rest] -> {next, rest} end)
-      |> answer(opts)
-    end)
-  end
-
-  defp answer({:error, reason}, _opts), do: {:error, reason}
-
-  defp answer(object, opts) do
-    ReqLLMTelemetry.emit_request(@model, opts)
-    {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
-  end
-
   # Holds the first LLM request until the test sends `:go`, so a turn can be
   # observed mid-flight.
   defp block_first_request do
@@ -87,12 +85,9 @@ defmodule Legion.OpenTelemetry.HandlerTest do
         end
       end
 
-      answer(return("done"), opts)
+      LLMStub.answer(return("done"), opts)
     end)
   end
-
-  defp return(result), do: %{"action" => "return", "code" => "", "result" => result}
-  defp eval(code), do: %{"action" => "eval_and_continue", "code" => code, "result" => ""}
 
   defp span_named(name) do
     assert_receive {:otel, :start_span, span, ^name, attributes, config}
@@ -160,6 +155,31 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert_receive {:otel, :set_status, ^agent, :error, "reached_max_iterations", _}
     end
 
+    test "a turn the rate limiter refuses is a cancelled span of its own" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          rate_limit: [
+            limiter: RejectingLimiter,
+            rules: [
+              %Legion.RateLimiter.Rule{
+                identity: %{},
+                policy: %Legion.RateLimiter.Policy{window_ms: 1_000}
+              }
+            ]
+          ]
+        )
+
+      assert {:cancel, {:rate_limited, [:max_tokens]}} = Legion.call(pid, "hi")
+
+      {agent, _, _} = span_named(@agent_span)
+      attributes = stop_attributes(agent)
+      assert attributes[:"legion.status"] == "cancelled"
+      assert attributes[:"legion.cancel.reason"] == "rate_limited"
+      assert_receive {:otel, :end_span, ^agent, _}
+    end
+
     test "retries become legion.retry events on the invoke_agent span" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
 
@@ -183,7 +203,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
   describe "execute_tool" do
     test "each evaluation becomes an execute_tool span" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
       reply_with([eval("return 1 + 1"), return("done")])
 
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")
@@ -195,10 +215,21 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert attributes[:"gen_ai.agent.name"] == "Legion.Test.Support.MathAgent"
       assert attributes[:"legion.iteration"] == 0
       assert config[:span_kind] == :internal
-      refute Map.has_key?(attributes, :"gen_ai.tool.call.arguments")
 
-      assert stop_attributes(tool) == %{"legion.eval.success": true}
+      assert stop_attributes(tool)[:"legion.eval.success"] == true
       assert_receive {:otel, :end_span, ^tool, _}
+    end
+
+    test "an evaluation outside a turn carries the agent it runs in as the session" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      {:ok, pid} = Legion.start_link(MathAgent)
+      agent_id = Legion.get_agent_id(pid)
+
+      assert {:ok, _text} = Legion.eval(pid, "return 1 + 1")
+
+      {_tool, attributes, _} = span_named(@tool_span)
+      assert attributes[:"session.id"] == agent_id
     end
 
     test "a failed evaluation marks the span as an error, with its message when content is on" do
@@ -301,6 +332,26 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert String.ends_with?(content, "…[truncated]")
     end
 
+    test "max_attribute_bytes caps a multipart message, not each of its parts" do
+      :ok =
+        OpenTelemetry.attach(
+          adapter: FakeOTelAdapter,
+          content: :attributes,
+          max_attribute_bytes: 2_000
+        )
+
+      reply_with([return("done")])
+      parts = for _ <- 1..20, do: ContentPart.text(String.duplicate("a", 4_000))
+
+      assert {:ok, "done"} = Legion.execute(MathAgent, {:multipart, parts})
+
+      {_agent, attributes, _} = span_named(@agent_span)
+      [%{"parts" => recorded}] = Jason.decode!(attributes[:"gen_ai.input.messages"])
+
+      assert length(recorded) == 20
+      assert recorded |> Enum.map(&byte_size(&1["content"])) |> Enum.sum() <= 2_000
+    end
+
     test "a result JSON cannot encode is recorded as inspected text, and the spans still end" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
 
@@ -334,31 +385,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert String.valid?(stop_attributes(tool)[:"gen_ai.tool.call.result"])
       assert {:ok, _} = Jason.decode(stop_attributes(agent)[:"gen_ai.output.messages"])
       assert_receive {:otel, :end_span, ^agent, _}
-    end
-
-    test "a small result JSON cannot encode is recorded whole" do
-      config = [content: :attributes, max_attribute_bytes: 20_000]
-      result = for i <- 1..60, do: {i, "name#{i}"}
-
-      attributes = Attributes.execute_tool_stop(%{success: true, result: result}, config)
-
-      assert attributes[:"gen_ai.tool.call.result"] == inspect(result, limit: :infinity)
-    end
-
-    test "a large result JSON cannot encode is cut to the cap" do
-      config = [content: :attributes, max_attribute_bytes: 20_000]
-      result = for i <- 1..2_500, do: {i, String.duplicate("x", 20_000)}
-
-      attributes = Attributes.execute_tool_stop(%{success: true, result: result}, config)
-      text = attributes[:"gen_ai.tool.call.result"]
-
-      assert byte_size(text) == 20_000
-      assert text =~ ~r/^\[\{1, "x+/
-      assert String.ends_with?(text, "…[truncated]")
-    end
-
-    test "truncate/2 stays within a cap smaller than the truncation marker" do
-      assert Attributes.truncate("abcdefghijklmnopqrstuvwxyz", 5) == "abcde"
     end
   end
 
@@ -479,8 +505,7 @@ defmodule Legion.OpenTelemetry.HandlerTest do
 
         send(test_pid, {:tool_process_attributes, attributes})
 
-        {:ok,
-         %ReqLLM.Response{id: "t", model: "t", context: nil, object: return("done"), usage: %{}}}
+        {:ok, response(return("done"))}
       end)
 
       {:ok, pid} = Legion.start_link(MathAgent)

@@ -13,8 +13,10 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
 
   require Record
 
+  import Legion.Test.Support.LLMStub, only: [eval: 1, reply_with: 1, return: 1]
+
   alias Legion.OpenTelemetry.Adapter.Braintrust
-  alias Legion.Test.Support.{MathAgent, ReqLLMTelemetry}
+  alias Legion.Test.Support.MathAgent
 
   Record.defrecordp(
     :span,
@@ -27,19 +29,7 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
       :ok = Legion.OpenTelemetry.attach(adapter: :braintrust)
       on_exit(fn -> Legion.OpenTelemetry.detach() end)
 
-      {:ok, script} =
-        Agent.start_link(fn ->
-          [
-            %{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""},
-            %{"action" => "return", "code" => "", "result" => "done"}
-          ]
-        end)
-
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, opts ->
-        ReqLLMTelemetry.emit_request("openai:gpt-4o-mini", opts)
-        object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
-        {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object, usage: %{}}}
-      end)
+      reply_with([eval("return 1 + 1"), return("done")])
 
       {:ok, pid} = Legion.start_link(MathAgent)
       assert {:ok, "done"} = Legion.call(pid, "hi")
