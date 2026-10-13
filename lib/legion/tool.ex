@@ -140,13 +140,14 @@ defmodule Legion.Tool do
     # One read, so the checks and the match see the same map.
     vault = Macro.var(:vault, __MODULE__)
     checks = vault_checks(pairs, vault, [], tool, function)
+    keys = for {key, _binding} <- pairs, do: key
 
     # blocks is just :do - try requires at least one of rescue/catch/after/else
     inner = if Keyword.keys(blocks) == [:do], do: blocks[:do], else: {:try, [], [blocks]}
 
     body =
       quote do
-        unquote(vault) = Vault.vault() || %{}
+        unquote(vault) = Vault.take(unquote(keys))
         unquote_splicing(checks)
         unquote(pattern) = unquote(vault)
         unquote(inner)
