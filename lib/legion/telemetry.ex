@@ -68,6 +68,8 @@ defmodule Legion.Telemetry do
     - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
       Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
+    - A denied turn is also an `[:legion, :agent, :message]` span, cancelled
+      with `{:rate_limited, violations}` and no iterations.
 
   ## MCP Events
 

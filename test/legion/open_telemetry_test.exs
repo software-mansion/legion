@@ -240,12 +240,12 @@ defmodule Legion.OpenTelemetryTest do
       assert Exception.message(error) =~ "takes its vendor from config"
     end
 
-    test "a blank endpoint override is not an override" do
+    test "a blank endpoint override is an override: the exporter parses it as one" do
       put_env(:legion, OpenTelemetry, adapter: :datadog, vendor: @datadog)
       put_env(:opentelemetry, :traces_exporter, {Legion.OpenTelemetry.Exporter, []})
       put_system_env("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-      assert OpenTelemetry.attach() == :ok
+      assert_raise ArgumentError, fn -> OpenTelemetry.attach() end
     end
 
     test "raises on invalid vendor options, naming the option but not its value" do

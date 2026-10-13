@@ -164,7 +164,7 @@ defmodule Legion.OpenTelemetry.Vendor do
   defp override(sources) do
     Enum.find_value(sources, fn {variable, key} ->
       cond do
-        System.get_env(variable) not in [nil, ""] ->
+        System.get_env(variable) ->
           variable
 
         Application.get_env(:opentelemetry_exporter, key) ->
