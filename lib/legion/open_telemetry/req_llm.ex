@@ -36,7 +36,7 @@ defmodule Legion.OpenTelemetry.ReqLLM do
 
   @impl true
   def add_event(span, name, attributes, config) do
-    adapter(config).add_event(span, name, attributes, legion_config(config))
+    adapter(config).add_event(span, name, join_content(attributes), legion_config(config))
   end
 
   @impl true
@@ -60,6 +60,12 @@ defmodule Legion.OpenTelemetry.ReqLLM do
       do: adapter.start_child_span(parent, name, attributes, opts, legion_config),
       else: adapter.start_span(name, attributes, legion_config)
   end
+
+  @impl true
+  defdelegate metrics_available?(), to: ReqLLM.OpenTelemetry.OTelAdapter
+
+  @impl true
+  defdelegate record_histogram(record, config), to: ReqLLM.OpenTelemetry.OTelAdapter
 
   @impl true
   def end_span_at(span, end_time, config) do

@@ -222,7 +222,10 @@ defmodule Legion.OpenTelemetry.Attributes do
   end
 
   defp parts(content, max) when is_binary(content), do: [text_part(content, max)]
-  defp parts(content, max) when is_list(content), do: Enum.map(content, &part(&1, max))
+
+  defp parts(content, max) when is_list(content),
+    do: Enum.map(content, &part(&1, div(max, length(content))))
+
   defp parts(nil, _max), do: []
   defp parts(content, max), do: [text_part(inspect_text(content, max), max)]
 

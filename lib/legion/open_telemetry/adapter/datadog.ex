@@ -64,12 +64,9 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
   # Datadog groups spans into sessions by `gen_ai.conversation.id`. A
   # sub-agent's spans carry its own conversation id and sit in the caller's
   # trace, so they would open an empty session; `session.id` is the
-  # conversation the sub-agents of a turn share. ReqLLM's `chat` spans set the
-  # id under a string key, Legion's under an atom one.
+  # conversation the sub-agents of a turn share.
   defp with_session(%{"session.id": session} = attributes) when is_binary(session) do
-    attributes
-    |> Map.delete("gen_ai.conversation.id")
-    |> Map.put(:"gen_ai.conversation.id", session)
+    Map.put(attributes, :"gen_ai.conversation.id", session)
   end
 
   defp with_session(attributes), do: attributes

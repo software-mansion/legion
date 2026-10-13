@@ -124,6 +124,9 @@ defmodule Legion.Sandbox.Runner do
   defp memory_limit_error, do: @limit_error <> "memory limit and was killed"
 
   @doc false
+  def limit_error(reason), do: @limit_error <> reason
+
+  @doc false
   # What kind of failure an eval error from `run/5` is, for telemetry.
   def error_kind(:timeout), do: :timeout
   def error_kind({:process_crashed, _reason}), do: :crash

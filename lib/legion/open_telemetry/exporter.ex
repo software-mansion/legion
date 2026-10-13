@@ -26,9 +26,8 @@ defmodule Legion.OpenTelemetry.Exporter do
   @doc false
   def init(_opts) do
     with {:ok, config} <- Vendor.exporter_config(),
-         :ok <- otlp_exporter() do
-      # credo:disable-for-next-line Credo.Check.Refactor.Apply
-      {:ok, inner} = apply(:opentelemetry_exporter, :init, [config.exporter])
+         :ok <- otlp_exporter(),
+         {:ok, inner} <- otlp_init(config.exporter) do
       # credo:disable-for-next-line Credo.Check.Refactor.Apply
       resource = apply(:otel_resource, :create, [config.resource])
       {:ok, %{inner: inner, resource: resource}}
@@ -81,5 +80,15 @@ defmodule Legion.OpenTelemetry.Exporter do
     if Code.ensure_loaded?(:opentelemetry_exporter),
       do: :ok,
       else: {:error, "the opentelemetry_exporter dependency is missing"}
+  end
+
+  defp otlp_init(opts) do
+    # credo:disable-for-next-line Credo.Check.Refactor.Apply
+    case apply(:opentelemetry_exporter, :init, [opts]) do
+      {:ok, inner} -> {:ok, inner}
+      _other -> {:error, "opentelemetry_exporter rejected the vendor's exporter options"}
+    end
+  rescue
+    error -> {:error, "opentelemetry_exporter raised #{inspect(error.__struct__)}"}
   end
 end

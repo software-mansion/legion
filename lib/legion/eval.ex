@@ -118,8 +118,10 @@ defmodule Legion.Eval do
 
     if size > max do
       {:error,
-       "variables would take #{size} bytes, over the #{max} byte limit; " <>
-         "the result was discarded, keep less in variables"}
+       Runner.limit_error(
+         "#{max} byte variable limit: they would take #{size} bytes; " <>
+           "the result was discarded, keep less in variables"
+       )}
     else
       :ok
     end

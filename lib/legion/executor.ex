@@ -263,15 +263,18 @@ defmodule Legion.Executor do
   # replaces `config :req_llm, telemetry:` in ReqLLM, so the app config is
   # merged in rather than overridden.
   def telemetry_opts do
-    env = Application.get_env(:req_llm, :telemetry, [])
+    env =
+      case Application.get_env(:req_llm, :telemetry, []) do
+        env when is_map(env) -> env
+        env when is_list(env) -> if Keyword.keyword?(env), do: env, else: []
+        _other -> []
+      end
 
     opts =
       case Vault.get(:agent_id) do
         nil -> env
         agent_id when is_map(env) -> Map.put(env, :conversation_id, agent_id)
-        agent_id when is_list(env) -> Keyword.put(env, :conversation_id, agent_id)
-        # ReqLLM ignores any other value, so there is nothing to keep.
-        agent_id -> [conversation_id: agent_id]
+        agent_id -> Keyword.put(env, :conversation_id, agent_id)
       end
 
     if OpenTelemetry.req_llm_content?(), do: raw_payloads(opts), else: opts

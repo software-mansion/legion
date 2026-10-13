@@ -412,8 +412,24 @@ defmodule Legion.AgentServer do
         do_run(state)
 
       {:rate_limited, violations} ->
-        {{:cancel, {:rate_limited, violations}}, state}
+        {refused_turn(message, violations, state), state}
     end
+  end
+
+  defp refused_turn(message, violations, state) do
+    Telemetry.span(
+      [:legion, :agent, :message],
+      %{
+        agent: state.agent_module,
+        message: stringify(message, state.config[:max_message_length])
+      },
+      fn ->
+        result = {:rate_limited, violations}
+
+        {{:cancel, result},
+         %{iterations: 0, status: :cancel, result: result, bindings: state.bindings}}
+      end
+    )
   end
 
   defp enforce_rate_limit(%{config: %{rate_limit: %{limiter: limiter, rules: rules}}} = state)

@@ -77,17 +77,20 @@ defmodule Legion.OpenTelemetry.Handler do
     discard_stale(config)
     handle(event, measurements, meta, config)
   rescue
-    exception ->
-      Logger.warning(
-        "Legion.OpenTelemetry failed to handle #{inspect(event)}: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
+    exception -> log_failure(event, :error, exception, __STACKTRACE__)
   catch
-    kind, reason ->
+    kind, reason -> log_failure(event, kind, reason, __STACKTRACE__)
+  end
+
+  defp log_failure(event, kind, reason, stacktrace) do
+    if is_nil(Process.put({__MODULE__, :logged, event}, true)) do
       Logger.warning(
         "Legion.OpenTelemetry failed to handle #{inspect(event)}: " <>
-          Exception.format(kind, reason, __STACKTRACE__)
+          Exception.format(kind, reason, stacktrace)
       )
+    end
+
+    :ok
   end
 
   # -- invoke_agent --
@@ -187,7 +190,9 @@ defmodule Legion.OpenTelemetry.Handler do
     update(:iteration, &%{&1 | eval: :pending})
 
     attributes =
-      meta |> Attributes.execute_tool_start(iteration, config) |> with_session(current_session())
+      meta
+      |> Attributes.execute_tool_start(iteration, config)
+      |> with_session(current_session(meta))
 
     span = config[:tracer].start_span("execute_tool sandbox", attributes, config)
 
@@ -315,12 +320,13 @@ defmodule Legion.OpenTelemetry.Handler do
     end
   end
 
-  # The session of the running turn, or, for an eval outside one (an MCP
-  # call), the one the context carries.
-  defp current_session do
+  # The session of the running turn, or, for an eval outside one (an MCP call,
+  # a direct `Legion.eval/3`), the one the context carries, else the agent it
+  # runs in.
+  defp current_session(meta) do
     case find(:agent) do
       %{session: session} -> session
-      nil -> inherited_session()
+      nil -> inherited_session() || meta[:agent_id]
     end
   end
 

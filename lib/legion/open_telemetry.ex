@@ -124,10 +124,14 @@ defmodule Legion.OpenTelemetry do
       |> NimbleOptions.validate!(@schema)
       |> Keyword.update!(:adapter, &Vendor.module/1)
 
-    config = Keyword.put(config, :tracer, tracer(config[:adapter]))
+    config =
+      config
+      |> Keyword.delete(:vendor)
+      |> Keyword.put(:tracer, tracer(config[:adapter]))
+
+    detach()
 
     if config[:tracer].available?() do
-      detach()
       do_attach(config)
     else
       {:error, :opentelemetry_unavailable}

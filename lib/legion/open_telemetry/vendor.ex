@@ -45,8 +45,24 @@ defmodule Legion.OpenTelemetry.Vendor do
         check_traces_exporter!(adapter)
 
       _no_vendor ->
-        :ok
+        check_vendor_adapter!(config)
     end
+  end
+
+  defp check_vendor_adapter!(config) do
+    if Keyword.get(config, :vendor, []) != [] do
+      adapter = config |> Keyword.get(:adapter, Adapter.OTel) |> module()
+
+      raise ArgumentError, """
+      config :legion, Legion.OpenTelemetry carries :vendor settings, but its adapter \
+      #{inspect(adapter)} has no exporter config, so they are never used. The exporter \
+      takes its vendor from config, not from attach/1:
+
+          config :legion, Legion.OpenTelemetry, adapter: :datadog, vendor: [...]
+      """
+    end
+
+    :ok
   end
 
   defp vendor do
@@ -148,7 +164,7 @@ defmodule Legion.OpenTelemetry.Vendor do
   defp override(sources) do
     Enum.find_value(sources, fn {variable, key} ->
       cond do
-        System.get_env(variable) ->
+        System.get_env(variable) not in [nil, ""] ->
           variable
 
         Application.get_env(:opentelemetry_exporter, key) ->
