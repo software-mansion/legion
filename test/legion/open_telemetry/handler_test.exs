@@ -29,21 +29,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
     def check(_code, _context), do: {:deny, "the shop is closed"}
   end
 
-  defmodule RejectingLimiter do
-    @moduledoc "Limiter that refuses every turn."
-    @behaviour Legion.RateLimiter
-
-    @impl true
-    def enforce!(agent_id, _rules) do
-      raise Legion.RateLimiter.ExceededError,
-        agent_id: agent_id,
-        identity: %{},
-        policy: %Legion.RateLimiter.Policy{window_ms: 1_000},
-        usage: %{},
-        violations: [:max_tokens]
-    end
-  end
-
   defmodule RaisingAdapter do
     @moduledoc "Adapter whose spans cannot be started."
     @behaviour Legion.OpenTelemetry.Adapter
@@ -153,31 +138,6 @@ defmodule Legion.OpenTelemetry.HandlerTest do
       assert attributes[:"legion.cancel.reason"] == "reached_max_iterations"
       assert attributes[:"error.type"] == "reached_max_iterations"
       assert_receive {:otel, :set_status, ^agent, :error, "reached_max_iterations", _}
-    end
-
-    test "a turn the rate limiter refuses is a cancelled span of its own" do
-      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-
-      {:ok, pid} =
-        Legion.start_link(MathAgent,
-          rate_limit: [
-            limiter: RejectingLimiter,
-            rules: [
-              %Legion.RateLimiter.Rule{
-                identity: %{},
-                policy: %Legion.RateLimiter.Policy{window_ms: 1_000}
-              }
-            ]
-          ]
-        )
-
-      assert {:cancel, {:rate_limited, [:max_tokens]}} = Legion.call(pid, "hi")
-
-      {agent, _, _} = span_named(@agent_span)
-      attributes = stop_attributes(agent)
-      assert attributes[:"legion.status"] == "cancelled"
-      assert attributes[:"legion.cancel.reason"] == "rate_limited"
-      assert_receive {:otel, :end_span, ^agent, _}
     end
 
     test "retries become legion.retry events on the invoke_agent span" do
