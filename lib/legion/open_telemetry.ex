@@ -42,22 +42,10 @@ defmodule Legion.OpenTelemetry do
       :ok = Legion.OpenTelemetry.attach()
   """
 
-  require Logger
-
-  alias Legion.OpenTelemetry.Handler
+  alias Legion.OpenTelemetry.{Handler, Vendor}
 
   @req_llm_handler_id "legion-req-llm-otel"
   @config_key {__MODULE__, :config}
-
-  @endpoint_override [
-    {"OTEL_EXPORTER_OTLP_ENDPOINT", :otlp_endpoint},
-    {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", :otlp_traces_endpoint}
-  ]
-
-  @headers_override [
-    {"OTEL_EXPORTER_OTLP_HEADERS", :otlp_headers},
-    {"OTEL_EXPORTER_OTLP_TRACES_HEADERS", :otlp_traces_headers}
-  ]
 
   @schema NimbleOptions.new!(
             adapter: [
@@ -105,39 +93,6 @@ defmodule Legion.OpenTelemetry do
   @spec req_llm_handler_id() :: String.t()
   def req_llm_handler_id, do: @req_llm_handler_id
 
-  @doc false
-  # The vendor Legion.OpenTelemetry.Exporter sends spans to: the `:adapter` of
-  # `config :legion, Legion.OpenTelemetry` when it has exporter config, with
-  # that config's `:vendor` options. Shared by `attach/1` and the exporter,
-  # which the SDK starts from config alone.
-  @spec vendor() :: {:ok, nil | {module(), term()}} | {:error, String.t()}
-  def vendor do
-    config = Application.get_env(:legion, __MODULE__, [])
-
-    if Keyword.keyword?(config),
-      do: {:ok, vendor_in(config)},
-      else: {:error, "config :legion, Legion.OpenTelemetry must be a keyword list"}
-  end
-
-  defp vendor_in(config) do
-    adapter =
-      config
-      |> Keyword.get(:adapter, Legion.OpenTelemetry.Adapter.OTel)
-      |> adapter_module()
-
-    if exporter_config?(adapter), do: {adapter, Keyword.get(config, :vendor, [])}
-  end
-
-  defp adapter_module(:braintrust), do: Legion.OpenTelemetry.Adapter.Braintrust
-  defp adapter_module(:datadog), do: Legion.OpenTelemetry.Adapter.Datadog
-  defp adapter_module(:otel), do: Legion.OpenTelemetry.Adapter.OTel
-  defp adapter_module(adapter), do: adapter
-
-  defp exporter_config?(adapter) do
-    is_atom(adapter) and Code.ensure_loaded?(adapter) and
-      function_exported?(adapter, :exporter_config, 1)
-  end
-
   @doc """
   Attaches the OpenTelemetry integration. See the module docs for options.
 
@@ -159,16 +114,15 @@ defmodule Legion.OpenTelemetry do
               "it before attach/1 runs"
     end
 
-    # The exporter sends to the vendor in config, whatever adapter shapes the
-    # spans, so that vendor's setup is checked up front: a misconfiguration
-    # fails at boot instead of dropping traces.
-    with {adapter, vendor_opts} <- vendor_in(defaults), do: check_vendor!(adapter, vendor_opts)
+    # Checked up front, so a misconfiguration fails at boot instead of
+    # dropping traces.
+    Vendor.check!(defaults)
 
     config =
       defaults
       |> Keyword.merge(opts)
       |> NimbleOptions.validate!(@schema)
-      |> Keyword.update!(:adapter, &adapter_module/1)
+      |> Keyword.update!(:adapter, &Vendor.module/1)
 
     config = Keyword.put(config, :tracer, tracer(config[:adapter]))
 
@@ -187,111 +141,6 @@ defmodule Legion.OpenTelemetry do
     if Code.ensure_loaded?(adapter) and function_exported?(adapter, :start_span, 3),
       do: adapter,
       else: Legion.OpenTelemetry.Adapter.OTel
-  end
-
-  defp check_vendor!(adapter, vendor_opts) do
-    with {:ok, config} <- exporter_config(adapter, vendor_opts),
-         :ok <- check_endpoint_override(adapter, config.exporter) do
-      :ok
-    else
-      {:error, message} -> raise ArgumentError, message
-    end
-
-    if not (Code.ensure_loaded?(:opentelemetry_app) and
-              Code.ensure_loaded?(:opentelemetry_exporter)) do
-      raise ArgumentError, """
-      #{inspect(adapter)} exports through the OpenTelemetry SDK and OTLP exporter. \
-      Add them to your mix.exs deps:
-
-          {:opentelemetry, "~> 1.5"},
-          {:opentelemetry_exporter, "~> 1.8"}
-      """
-    end
-
-    case Application.get_env(:opentelemetry, :traces_exporter) do
-      {Legion.OpenTelemetry.Exporter, _opts} ->
-        :ok
-
-      other ->
-        raise ArgumentError, """
-        #{inspect(adapter)} is configured, but config :opentelemetry, traces_exporter: is \
-        #{exporter_name(other)}. Add it next to the vendor config in config/runtime.exs:
-
-            config :opentelemetry, traces_exporter: {Legion.OpenTelemetry.Exporter, []}
-        """
-    end
-  end
-
-  # Named, not quoted: another exporter's options hold its own credentials.
-  defp exporter_name({module, _opts}) when is_atom(module), do: inspect(module)
-  defp exporter_name(exporter) when is_atom(exporter), do: inspect(exporter)
-  defp exporter_name(_exporter), do: "neither an exporter module nor a tuple"
-
-  @doc false
-  # The vendor's exporter config, or an error that names the invalid options
-  # without their values, which can be secrets.
-  @spec exporter_config(module(), keyword()) :: {:ok, map()} | {:error, String.t()}
-  def exporter_config(adapter, opts) do
-    {:ok, adapter.exporter_config(opts)}
-  rescue
-    error -> {:error, "#{inspect(adapter)} options are invalid: " <> redacted(error)}
-  end
-
-  @doc false
-  # `otel_exporter_otlp:update_opts/6` replaces the vendor's endpoints with an
-  # override but keeps its headers, which would send them to that host.
-  @spec check_endpoint_override(module(), map()) :: :ok | {:error, String.t()}
-  def check_endpoint_override(adapter, exporter_config) do
-    endpoint = override(@endpoint_override)
-
-    if exporter_config[:headers] not in [nil, []] and not is_nil(endpoint) and
-         is_nil(override(@headers_override)) do
-      {:error,
-       "#{inspect(adapter)} authenticates with request headers, and #{endpoint} replaces its " <>
-         "endpoint without replacing them, so they would be sent to that host. Unset it, or " <>
-         "export through opentelemetry_exporter directly."}
-    else
-      :ok
-    end
-  end
-
-  # The source is named, never quoted: an endpoint URL can carry credentials.
-  defp override(sources) do
-    Enum.find_value(sources, fn {variable, key} ->
-      cond do
-        System.get_env(variable) ->
-          variable
-
-        Application.get_env(:opentelemetry_exporter, key) ->
-          "config :opentelemetry_exporter, #{inspect(key)}"
-
-        true ->
-          nil
-      end
-    end)
-  end
-
-  defp redacted(%NimbleOptions.ValidationError{key: key, value: value} = error) do
-    if is_nil(value),
-      do: Exception.message(error),
-      else: "invalid value for #{inspect(key)}"
-  end
-
-  defp redacted(error), do: "#{inspect(error.__struct__)} raised"
-
-  @doc false
-  # Logs `message` at `level` once per VM, for conditions the SDK or a
-  # restart would otherwise report over and over.
-  @spec log_once(Logger.level(), String.t()) :: :ok
-  def log_once(level, message) do
-    key = {__MODULE__, :logged, :erlang.phash2({level, message})}
-
-    if :persistent_term.get(key, false) == false do
-      :persistent_term.put(key, true)
-      Logger.log(level, message)
-    end
-
-    :ok
   end
 
   defp do_attach(config) do

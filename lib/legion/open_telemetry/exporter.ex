@@ -19,11 +19,13 @@ defmodule Legion.OpenTelemetry.Exporter do
   # Legion, so they are called through `apply/3` rather than referenced at
   # compile time.
 
+  require Logger
+
+  alias Legion.OpenTelemetry.Vendor
+
   @doc false
   def init(_opts) do
-    with {:ok, {adapter, opts}} <- vendor(),
-         {:ok, config} <- Legion.OpenTelemetry.exporter_config(adapter, opts),
-         :ok <- Legion.OpenTelemetry.check_endpoint_override(adapter, config.exporter),
+    with {:ok, config} <- Vendor.exporter_config(),
          :ok <- otlp_exporter() do
       # credo:disable-for-next-line Credo.Check.Refactor.Apply
       {:ok, inner} = apply(:opentelemetry_exporter, :init, [config.exporter])
@@ -61,20 +63,16 @@ defmodule Legion.OpenTelemetry.Exporter do
   # credo:disable-for-next-line Credo.Check.Refactor.Apply
   def shutdown(%{inner: inner}), do: apply(:opentelemetry_exporter, :shutdown, [inner])
 
-  defp vendor do
-    case Legion.OpenTelemetry.vendor() do
-      {:ok, nil} -> :no_vendor
-      other -> other
-    end
-  end
-
   # The SDK calls `init/1` again every few seconds after `:ignore`, so each
-  # reason is logged once.
+  # reason is logged once per VM.
   defp log(level, reason) do
-    Legion.OpenTelemetry.log_once(
-      level,
-      "Legion.OpenTelemetry.Exporter exports nothing: " <> reason
-    )
+    message = "Legion.OpenTelemetry.Exporter exports nothing: " <> reason
+    key = {__MODULE__, :logged, :erlang.phash2({level, message})}
+
+    if :persistent_term.get(key, false) == false do
+      :persistent_term.put(key, true)
+      Logger.log(level, message)
+    end
 
     :ignore
   end
