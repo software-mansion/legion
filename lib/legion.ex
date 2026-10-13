@@ -201,11 +201,11 @@ defmodule Legion do
       the keys Legion sets itself (`:agent_id`, `:parent_agent_id`,
       `:agent_module`, `:sandbox`, `:store`, `:rate_limit`, `:sub_agents`)
       are ignored
-    - `:require_agent` - an agent module; the call is refused like the
-      above unless the agent is one. For a caller that reaches an agent by
-      id and cannot know how it was started
-    - `:require_sandbox` - a sandbox module; the call is refused like the
-      above unless the agent runs it, for the same caller
+    - `:require_agent` - an agent module. If the agent was started from a
+      different module, the call returns `{:error, text}` and nothing runs
+      or is saved
+    - `:require_sandbox` - a sandbox module. If the agent runs a different
+      sandbox, the call is refused the same way
     - `:exclude_tools` - tool modules left out for this call only, or a
       function given each of the agent's tools that returns `true` for those
       to leave out: the code cannot call them and `Help` does not list them
@@ -265,14 +265,11 @@ defmodule Legion do
   end
 
   @doc """
-  Whether `pid` - typically one returned by `lookup/1` or recorded in persisted
-  run metadata - is alive. Accepts `nil` and returns `false`.
+  Whether `pid` - typically one returned by `lookup/1` - is alive.
+  Accepts `nil` and returns `false`.
 
   Checks local processes directly and processes on connected nodes through RPC.
   An unreachable remote node returns `false`.
-
-  A stored pid can outlive the VM that wrote it, so after a restart this remains
-  best-effort: a recycled pid value can collide with an unrelated live process.
 
   ## Examples
 
