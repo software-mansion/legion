@@ -118,6 +118,8 @@ defmodule Legion.OpenTelemetry.TraceTest do
     span(span, :span_id)
   end
 
+  defp await_turn(pid), do: :sys.get_state(pid)
+
   defp parent_ids(spans, name), do: Enum.map(Map.fetch!(spans, name), &span(&1, :parent_span_id))
 
   test "a sub-agent called from tool code nests under the execute_tool span" do
@@ -181,12 +183,13 @@ defmodule Legion.OpenTelemetry.TraceTest do
         span_id
       end
 
-    assert_receive {:span,
-                    span(
-                      name: "invoke_agent Legion.Test.Support.MathAgent",
-                      parent_span_id: ^outer_id
-                    )},
-                   5_000
+    await_turn(pid)
+
+    assert_received {:span,
+                     span(
+                       name: "invoke_agent Legion.Test.Support.MathAgent",
+                       parent_span_id: ^outer_id
+                     )}
   end
 
   test "the agent process forgets the caller's span and its own once the turn ends" do
