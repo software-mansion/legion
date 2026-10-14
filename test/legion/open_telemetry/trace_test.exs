@@ -185,7 +185,8 @@ defmodule Legion.OpenTelemetry.TraceTest do
                     span(
                       name: "invoke_agent Legion.Test.Support.MathAgent",
                       parent_span_id: ^outer_id
-                    )}
+                    )},
+                   5_000
   end
 
   test "the agent process forgets the caller's span and its own once the turn ends" do
