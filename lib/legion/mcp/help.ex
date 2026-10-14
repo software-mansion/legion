@@ -30,12 +30,13 @@ if Code.ensure_loaded?(Anubis.Server) do
         agent: server.__legion_agent__(),
         agent_id: Server.session_agent_id(frame),
         session_id: frame.context.session_id,
+        mcp_tool: "help",
         tool: name
       }
 
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
         text = Server.tool_help(server, name)
-        {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
+        {{:reply, Response.text(Response.tool(), text), frame}, %{success: true, result: text}}
       end)
     end
 

@@ -104,11 +104,11 @@ defmodule Legion.AgentServer do
   defp check_store!(_rate_limit, _store, _track_usage), do: :ok
 
   def call(agent, message, timeout \\ :infinity) do
-    GenServer.call(agent, {:message, message}, timeout)
+    GenServer.call(agent, with_otel_context({:message, message}), timeout)
   end
 
   def cast(agent, message) do
-    GenServer.cast(agent, {:message, message})
+    GenServer.cast(agent, with_otel_context({:message, message}))
   end
 
   @doc false
@@ -117,7 +117,16 @@ defmodule Legion.AgentServer do
   # Returns `{:ok, text}`, `{:error, text}` or `{:cancel, {:rate_limited, violations}}`.
   def eval(agent, code, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, :infinity)
-    GenServer.call(agent, {:eval, code, opts}, timeout)
+    GenServer.call(agent, with_otel_context({:eval, code, opts}), timeout)
+  end
+
+  # Without an OpenTelemetry context the request keeps its old shape, which
+  # agents on nodes running an earlier Legion still accept.
+  defp with_otel_context(request) do
+    case Telemetry.capture_context() do
+      nil -> request
+      ctx -> Tuple.insert_at(request, tuple_size(request), ctx)
+    end
   end
 
   def get_messages(agent) do
@@ -313,28 +322,40 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_call({:message, message}, _from, state) do
-    {reply, state} = handle_message(message, state)
+  def handle_call({:message, message, ctx}, _from, state) do
+    {reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:reply, reply, reset_idle(state)}
+  end
+
+  def handle_call({:message, message}, from, state) do
+    handle_call({:message, message, nil}, from, state)
   end
 
   # A call waits while the agent is busy. One whose caller gave up and died
   # meanwhile, as an MCP request does when it times out, is skipped: run now,
   # it would act for nobody, and the caller's retry would run it again.
   @impl true
-  def handle_call({:eval, code, opts}, {caller, _tag}, state) do
+  def handle_call({:eval, code, opts, ctx}, {caller, _tag}, state) do
     if node(caller) == node() and not Process.alive?(caller) do
       {:noreply, reset_idle(state)}
     else
-      {reply, state} = handle_eval(code, opts, state)
+      {reply, state} = Telemetry.with_context(ctx, fn -> handle_eval(code, opts, state) end)
       {:reply, reply, reset_idle(state)}
     end
   end
 
+  def handle_call({:eval, code, opts}, from, state) do
+    handle_call({:eval, code, opts, nil}, from, state)
+  end
+
   @impl true
-  def handle_cast({:message, message}, state) do
-    {_reply, state} = handle_message(message, state)
+  def handle_cast({:message, message, ctx}, state) do
+    {_reply, state} = Telemetry.with_context(ctx, fn -> handle_message(message, state) end)
     {:noreply, reset_idle(state)}
+  end
+
+  def handle_cast({:message, message}, state) do
+    handle_cast({:message, message, nil}, state)
   end
 
   # A tag no longer in the state is a timer a later call replaced.

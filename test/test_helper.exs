@@ -1,4 +1,5 @@
 Mimic.copy(ReqLLM)
+Mimic.copy(:opentelemetry_exporter)
 
 Legion.Telemetry.attach_default_logger()
 

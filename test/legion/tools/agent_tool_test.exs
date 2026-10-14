@@ -124,7 +124,7 @@ defmodule Legion.Tools.AgentToolTest do
     setup :set_mimic_global
 
     setup do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         {:ok,
          %ReqLLM.Response{
            id: "test",

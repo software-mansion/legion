@@ -18,4 +18,12 @@ defmodule Legion.TelemetryTest do
       assert log =~ "unhandled event"
     end
   end
+
+  describe "capture_context/0" do
+    # Agents on nodes running an earlier Legion accept only requests without
+    # a context, so none is sent when there is nothing to carry.
+    test "is nil without an OpenTelemetry context" do
+      assert Legion.Telemetry.capture_context() == nil
+    end
+  end
 end
