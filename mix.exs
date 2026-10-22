@@ -80,7 +80,7 @@ defmodule Legion.MixProject do
   defp deps do
     [
       {:ecto_sql, "~> 3.13"},
-      {:req_llm, "~> 1.20"},
+      {:req_llm, "~> 1.29"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
