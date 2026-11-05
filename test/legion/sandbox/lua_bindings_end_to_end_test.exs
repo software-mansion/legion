@@ -181,15 +181,11 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
   defp start_agent(agent_module, agent_id) do
     options = [store: Store, agent_id: agent_id, vault: [test_pid: self()]]
 
-    pid =
-      start_supervised!(%{
-        id: make_ref(),
-        start: {Legion, :start_link, [agent_module, options]},
-        restart: :temporary
-      })
-
-    Mimic.allow(ReqLLM, self(), pid)
-    pid
+    start_supervised!(%{
+      id: make_ref(),
+      start: {Legion, :start_link, [agent_module, options]},
+      restart: :temporary
+    })
   end
 
   # One turn: the scripted LLM answers the n-th request with the n-th chunk -

@@ -1,5 +1,4 @@
 defmodule Legion.RecoveryTest do
-  # Legion.recover/2 starts each agent itself, out of reach of a private-mode stub.
   use ExUnit.Case, async: false
   use Mimic
 

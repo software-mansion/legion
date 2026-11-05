@@ -15,16 +15,17 @@ defmodule Legion.Test.Support.LegionAgentsMigration do
   def down, do: Migration.down()
 end
 
+postgres_options = [
+  hostname: System.get_env("POSTGRES_HOST", "localhost"),
+  port: String.to_integer(System.get_env("POSTGRES_PORT", "5432")),
+  username: System.get_env("POSTGRES_USER", "postgres"),
+  password: System.get_env("POSTGRES_PASSWORD", "postgres"),
+  database: System.get_env("POSTGRES_DB", "postgres"),
+  log: false
+]
+
 # Shared connection and schema for the Legion.Store.Postgres database tests.
-{:ok, _} =
-  Legion.Test.Support.PostgresRepo.start_link(
-    hostname: System.get_env("POSTGRES_HOST", "localhost"),
-    port: String.to_integer(System.get_env("POSTGRES_PORT", "5432")),
-    username: System.get_env("POSTGRES_USER", "postgres"),
-    password: System.get_env("POSTGRES_PASSWORD", "postgres"),
-    database: System.get_env("POSTGRES_DB", "postgres"),
-    log: false
-  )
+{:ok, _} = Legion.Test.Support.PostgresRepo.start_link(postgres_options)
 
 Ecto.Migrator.up(
   Legion.Test.Support.PostgresRepo,
@@ -32,5 +33,13 @@ Ecto.Migrator.up(
   Legion.Test.Support.LegionAgentsMigration,
   log: false
 )
+
+# The pool a Phoenix app tests with, for tests of how agents reach its connections.
+{:ok, _} =
+  Legion.Test.Support.SandboxRepo.start_link(
+    Keyword.put(postgres_options, :pool, Ecto.Adapters.SQL.Sandbox)
+  )
+
+Ecto.Adapters.SQL.Sandbox.mode(Legion.Test.Support.SandboxRepo, :manual)
 
 ExUnit.start(exclude: [:integration])

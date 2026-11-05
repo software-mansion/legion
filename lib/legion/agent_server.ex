@@ -92,7 +92,22 @@ defmodule Legion.AgentServer do
     Legion.Agent.warn_unknown_keys(config)
     config = Map.put(config, :rate_limit, rate_limit)
 
-    {{agent_module, config, store, agent_id, persistence_frequency, track_usage, vault}, gen_opts}
+    callers = inherited_callers()
+
+    {{agent_module, config, store, agent_id, persistence_frequency, track_usage, vault, callers},
+     gen_opts}
+  end
+
+  # Runs in the starting process, and init/1 sets the result in the agent: what a
+  # Task does, so a test's Ecto sandbox connection and stubs reach the agent.
+  # Ancestors cover a supervisor the test started, which has no callers. One from
+  # outside the test breaks the chain, so its agents need an allowance or shared
+  # mode. The parent stays first: Vault follows the first caller.
+  defp inherited_callers do
+    ancestors =
+      for ancestor <- Process.get(:"$ancestors", []), pid = GenServer.whereis(ancestor), do: pid
+
+    [self() | Process.get(:"$callers", [])] ++ ancestors
   end
 
   defp check_store!(%{limiter: limiter, rules: rules}, store, track_usage)
@@ -140,7 +155,11 @@ defmodule Legion.AgentServer do
   # Server callbacks
 
   @impl true
-  def init({agent_module, config, store, agent_id, _frequency, _track_usage, _vault} = init_arg) do
+  def init(
+        {agent_module, config, store, agent_id, _frequency, _track_usage, _vault, callers} =
+          init_arg
+      ) do
+    Process.put(:"$callers", callers)
     stored = store && store.get(agent_id)
 
     case stored do
@@ -183,7 +202,8 @@ defmodule Legion.AgentServer do
   end
 
   defp start(
-         {agent_module, config, store, agent_id, persistence_frequency, track_usage, vault},
+         {agent_module, config, store, agent_id, persistence_frequency, track_usage, vault,
+          _callers},
          stored
        ) do
     parent_agent_id = Vault.get(:agent_id)
