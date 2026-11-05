@@ -28,7 +28,8 @@ defmodule Legion.OpenTelemetry do
       leaves it out, and a failed span's status then names only its
       `error.type`.
     * `:max_attribute_bytes` - longest content attribute on Legion's own spans,
-      cut on a UTF-8 boundary. Defaults to `20_000`.
+      cut on a UTF-8 boundary. Defaults to `100_000`, above the 40 KB an agent
+      shows the model per message by default.
     * `:iteration_spans` - `true` adds an `iteration N` span per executor
       iteration. Defaults to `false`.
     * `:conversation_traces` - `true` puts an agent's turns in one trace under
@@ -69,7 +70,7 @@ defmodule Legion.OpenTelemetry do
             ],
             max_attribute_bytes: [
               type: :pos_integer,
-              default: 20_000,
+              default: 100_000,
               doc: "Longest content attribute, in bytes."
             ],
             iteration_spans: [
