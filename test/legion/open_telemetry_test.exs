@@ -208,8 +208,8 @@ defmodule Legion.OpenTelemetryTest do
 
     test "attaching again replaces the earlier attachment" do
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
-      assert :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
-      assert OpenTelemetry.config()[:content] == :attributes
+      assert :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+      assert OpenTelemetry.config()[:content] == :none
 
       reply_with(return("done"))
       assert {:ok, "done"} = Legion.execute(MathAgent, "hi")

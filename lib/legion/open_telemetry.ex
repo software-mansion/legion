@@ -13,8 +13,8 @@ defmodule Legion.OpenTelemetry do
   > #### Message content is recorded by default {: .warning}
   >
   > Unlike `ReqLLM.OpenTelemetry`, Legion defaults to `content: :attributes`,
-  > so prompts, replies, generated code and tool results reach the tracing
-  > backend. Attach with `content: :none` to keep them out.
+  > so prompts, replies, generated code, tool results and error messages
+  > reach the tracing backend. Attach with `content: :none` to keep them out.
 
   ## Options
 
