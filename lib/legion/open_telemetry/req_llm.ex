@@ -7,13 +7,14 @@ defmodule Legion.OpenTelemetry.ReqLLM do
   JSON array string each, the form Braintrust parses.
   """
 
+  alias Legion.OpenTelemetry
   alias Legion.OpenTelemetry.Handler
 
   @behaviour ReqLLM.OpenTelemetry.Adapter
 
   @impl true
   def available? do
-    case Legion.OpenTelemetry.config() do
+    case OpenTelemetry.config() do
       nil -> false
       config -> config[:tracer].available?()
     end
@@ -34,13 +35,21 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     adapter(config).set_attributes(span, attributes, legion_config(config))
   end
 
+  # A provider's error message can quote the request, so without content it is
+  # left out and the span keeps only `error.type`.
   @impl true
   def add_event(span, name, attributes, config) do
+    attributes =
+      if OpenTelemetry.req_llm_content?(),
+        do: attributes,
+        else: Map.delete(attributes, :"exception.message")
+
     adapter(config).add_event(span, name, join_content(attributes), legion_config(config))
   end
 
   @impl true
   def set_status(span, status, message, config) do
+    message = if OpenTelemetry.req_llm_content?(), do: message
     adapter(config).set_status(span, status, message, legion_config(config))
   end
 

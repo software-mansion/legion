@@ -10,7 +10,7 @@ defmodule Legion.OpenTelemetryTest do
   alias Legion.Executor
   alias Legion.OpenTelemetry
   alias Legion.OpenTelemetry.Adapter.Datadog
-  alias Legion.Test.Support.{FakeOTelAdapter, MathAgent}
+  alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
 
   @span_name "chat gpt-4o-mini"
 
@@ -132,6 +132,26 @@ defmodule Legion.OpenTelemetryTest do
       refute Map.has_key?(attrs, :"gen_ai.input.messages")
       assert_receive {:otel, :set_attributes, _, attrs, _}
       refute Map.has_key?(attrs, :"gen_ai.output.messages")
+    end
+
+    test "content: :none keeps a provider's error text off chat spans" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+
+      ReqLLMTelemetry.emit_failed_request("openai:gpt-4o-mini", RuntimeError.exception("quoted"))
+
+      assert_receive {:otel, :set_status, span, :error, nil, _}
+      assert_receive {:otel, :add_event, ^span, :exception, attributes, _}
+      assert attributes[:"exception.type"]
+      refute Map.has_key?(attributes, :"exception.message")
+    end
+
+    test "content: :attributes keeps a provider's error text on chat spans" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+
+      ReqLLMTelemetry.emit_failed_request("openai:gpt-4o-mini", RuntimeError.exception("quoted"))
+
+      assert_receive {:otel, :set_status, span, :error, "quoted", _}
+      assert_receive {:otel, :add_event, ^span, :exception, %{"exception.message": "quoted"}, _}
     end
 
     test "req_llm: [adapter: ...] hands ReqLLM spans to the host's adapter instead" do

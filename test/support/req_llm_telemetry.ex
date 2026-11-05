@@ -1,6 +1,6 @@
 defmodule Legion.Test.Support.ReqLLMTelemetry do
   @moduledoc """
-  Emits the `[:req_llm, :request, :start | :stop]` events a real
+  Emits the `[:req_llm, :request, :start | :stop | :exception]` events a real
   `ReqLLM.generate_object/4` call would emit, from inside a Mimic stub.
 
   `opts` are the options the stubbed call received; their `:telemetry` entry
@@ -31,6 +31,18 @@ defmodule Legion.Test.Support.ReqLLMTelemetry do
     |> ReqLLM.Telemetry.new_context(opts)
     |> ReqLLM.Telemetry.start_request(nil)
     |> ReqLLM.Telemetry.stop_request(response)
+
+    :ok
+  end
+
+  def emit_failed_request(model_spec, error) do
+    opts = [operation: :object, context: ReqLLM.Context.new([ReqLLM.Context.user("hi")])]
+
+    model_spec
+    |> ReqLLM.model!()
+    |> ReqLLM.Telemetry.new_context(opts)
+    |> ReqLLM.Telemetry.start_request(nil)
+    |> ReqLLM.Telemetry.exception_request(error)
 
     :ok
   end
