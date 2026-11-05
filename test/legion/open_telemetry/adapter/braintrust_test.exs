@@ -51,10 +51,11 @@ defmodule Legion.OpenTelemetry.Adapter.BraintrustTest do
   end
 
   describe "exporter_config/1" do
-    test "sends to the US data plane by default" do
+    test "sends gzipped to the US data plane by default" do
       assert Braintrust.exporter_config(api_key: "key", project: "my_app") == %{
                exporter: %{
                  protocol: :http_protobuf,
+                 compression: :gzip,
                  endpoints: ["https://api.braintrust.dev/otel"],
                  headers: [
                    {"authorization", "Bearer key"},

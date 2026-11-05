@@ -57,6 +57,9 @@ defmodule Legion.OpenTelemetry.Adapter.Braintrust do
     %{
       exporter: %{
         protocol: :http_protobuf,
+        # Braintrust refuses a request over 10 MB, and the exporter then drops
+        # the whole batch; message content compresses well.
+        compression: :gzip,
         endpoints: [Map.fetch!(@endpoints, opts[:region])],
         headers: [
           {"authorization", "Bearer " <> opts[:api_key]},
