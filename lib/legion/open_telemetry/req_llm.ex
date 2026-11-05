@@ -35,18 +35,13 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     adapter(config).set_attributes(span, attributes, legion_config(config))
   end
 
-  # A provider's error message can quote the request, so without content it is
-  # left out and the span keeps only `error.type`.
   @impl true
   def add_event(span, name, attributes, config) do
-    attributes =
-      if OpenTelemetry.req_llm_content?(),
-        do: attributes,
-        else: Map.delete(attributes, :"exception.message")
-
-    adapter(config).add_event(span, name, join_content(attributes), legion_config(config))
+    attributes = attributes |> without_request_text() |> join_content()
+    adapter(config).add_event(span, name, attributes, legion_config(config))
   end
 
+  # The status repeats the error message `without_request_text/1` drops.
   @impl true
   def set_status(span, status, message, config) do
     message = if OpenTelemetry.req_llm_content?(), do: message
@@ -63,7 +58,11 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     adapter = adapter(config)
     legion_config = legion_config(config, Map.get(opts, :kind, :internal))
 
-    attributes = Handler.chat_attributes() |> Map.merge(attributes) |> join_content()
+    attributes =
+      Handler.chat_attributes()
+      |> Map.merge(attributes)
+      |> without_request_text()
+      |> join_content()
 
     if function_exported?(adapter, :start_child_span, 5),
       do: adapter.start_child_span(parent, name, attributes, opts, legion_config),
@@ -83,6 +82,16 @@ defmodule Legion.OpenTelemetry.ReqLLM do
     if function_exported?(adapter, :end_span_at, 3),
       do: adapter.end_span_at(span, end_time, legion_config(config)),
       else: adapter.end_span(span, legion_config(config))
+  end
+
+  # ReqLLM records these whatever its content mode, and both can quote the
+  # request: a provider's error message and a server-side tool's arguments.
+  @request_text [:"exception.message", :"gen_ai.tool.call.arguments"]
+
+  defp without_request_text(attributes) do
+    if OpenTelemetry.req_llm_content?(),
+      do: attributes,
+      else: Map.drop(attributes, @request_text)
   end
 
   @content_keys [

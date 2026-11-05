@@ -143,4 +143,6 @@ with, see `Legion.OpenTelemetry.Adapter`.
 
 Attaching `ReqLLM.OpenTelemetry` yourself as well gives two `chat` spans per
 request. Move your options under `req_llm: [...]`, or keep your attach and
-pass `req_llm: false`.
+pass `req_llm: false`. Your own attach or `req_llm: [adapter: ...]` gets `chat`
+spans' error text and server-side tool arguments unfiltered, whatever
+`:content` says.

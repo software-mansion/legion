@@ -34,7 +34,9 @@ defmodule Legion.OpenTelemetry do
     * `:conversation_traces` - `true` puts an agent's turns in one trace under
       a `conversation <agent>` root span. Defaults to `false`.
     * `:req_llm` - extra options for `ReqLLM.OpenTelemetry.attach/2`, or
-      `false` for hosts that attach it themselves.
+      `false` for hosts that attach it themselves. A host's own attach or
+      `:adapter` there gets `chat` spans' error text and server-side tool
+      arguments unfiltered, whatever `:content` says.
 
   ## Example
 

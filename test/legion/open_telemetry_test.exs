@@ -11,6 +11,7 @@ defmodule Legion.OpenTelemetryTest do
   alias Legion.OpenTelemetry
   alias Legion.OpenTelemetry.Adapter.Datadog
   alias Legion.Test.Support.{FakeOTelAdapter, MathAgent, ReqLLMTelemetry}
+  alias ReqLLM.{Context, Message, Response, ToolCall}
 
   @span_name "chat gpt-4o-mini"
 
@@ -67,6 +68,21 @@ defmodule Legion.OpenTelemetryTest do
       send(test_pid, {:llm_opts, opts})
       {:ok, response(return("done"))}
     end)
+  end
+
+  # A request whose reply holds a server-side tool call, with raw payloads as a
+  # host's `config :req_llm, telemetry:` can ask for on its own ReqLLM calls.
+  defp emit_web_search_request do
+    tool_call = ToolCall.new_builtin("call-1", "web_search", ~s({"query":"quoted"}))
+
+    ReqLLMTelemetry.emit_request("openai:gpt-4o-mini", [telemetry: [payloads: :raw]], %Response{
+      id: "resp-1",
+      model: "gpt-4o-mini",
+      context: Context.new([]),
+      usage: %{input_tokens: 3, output_tokens: 5, total_tokens: 8},
+      finish_reason: :stop,
+      message: %Message{role: :assistant, content: [], tool_calls: [tool_call]}
+    })
   end
 
   describe "attach/1" do
@@ -152,6 +168,25 @@ defmodule Legion.OpenTelemetryTest do
 
       assert_receive {:otel, :set_status, span, :error, "quoted", _}
       assert_receive {:otel, :add_event, ^span, :exception, %{"exception.message": "quoted"}, _}
+    end
+
+    test "content: :none keeps a server-side tool's arguments off its span" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+
+      emit_web_search_request()
+
+      assert_receive {:otel, :start_span, _, "execute_tool web_search", attributes, _}
+      assert attributes[:"gen_ai.tool.name"] == "web_search"
+      refute Map.has_key?(attributes, :"gen_ai.tool.call.arguments")
+    end
+
+    test "content: :attributes keeps a server-side tool's arguments on its span" do
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
+
+      emit_web_search_request()
+
+      assert_receive {:otel, :start_span, _, "execute_tool web_search", attributes, _}
+      assert attributes[:"gen_ai.tool.call.arguments"] == ~s({"query":"quoted"})
     end
 
     test "req_llm: [adapter: ...] hands ReqLLM spans to the host's adapter instead" do
