@@ -90,7 +90,6 @@ defmodule Legion.OpenTelemetry do
   @doc """
   Returns the handler id Legion attaches `ReqLLM.OpenTelemetry` under.
   """
-  @spec req_llm_handler_id() :: String.t()
   def req_llm_handler_id, do: @req_llm_handler_id
 
   @doc """
@@ -100,7 +99,6 @@ defmodule Legion.OpenTelemetry do
   on unknown options, and on an incomplete vendor setup in config (naming the
   option, never its value).
   """
-  @spec attach(keyword()) :: :ok | {:error, term()}
   def attach(opts \\ []) do
     defaults = Application.get_env(:legion, __MODULE__, [])
 
@@ -169,7 +167,6 @@ defmodule Legion.OpenTelemetry do
   @doc """
   Detaches the integration.
   """
-  @spec detach() :: :ok | {:error, :not_found}
   def detach do
     case config() do
       nil ->
@@ -186,13 +183,11 @@ defmodule Legion.OpenTelemetry do
   @doc """
   Returns the active configuration, or `nil` when not attached.
   """
-  @spec config() :: keyword() | nil
   def config, do: :persistent_term.get(@config_key, nil)
 
   @doc false
   # Whether Legion's ReqLLM handler records message content, which ReqLLM only
   # maps when a call's telemetry payloads are `:raw`.
-  @spec req_llm_content?() :: boolean()
   def req_llm_content? do
     case config() do
       nil -> false

@@ -19,14 +19,12 @@ defmodule Legion.OpenTelemetry.Vendor do
   ]
 
   @doc "The adapter a `:adapter` option names, resolving the shorthands."
-  @spec module(atom()) :: module()
   def module(:braintrust), do: Adapter.Braintrust
   def module(:datadog), do: Adapter.Datadog
   def module(:otel), do: Adapter.OTel
   def module(adapter), do: adapter
 
   @doc "The `opentelemetry_exporter` options and resource to export with."
-  @spec exporter_config() :: {:ok, map()} | :no_vendor | {:error, String.t()}
   def exporter_config do
     with {:ok, {adapter, opts}} <- vendor(),
          {:ok, config} <- build(adapter, opts),
@@ -36,7 +34,6 @@ defmodule Legion.OpenTelemetry.Vendor do
   end
 
   @doc "Raises when the vendor in `config` cannot export, naming no values."
-  @spec check!(keyword()) :: :ok
   def check!(config) do
     case vendor_in(config) do
       {:ok, {adapter, opts}} ->

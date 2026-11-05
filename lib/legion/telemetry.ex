@@ -222,7 +222,6 @@ defmodule Legion.Telemetry do
   @doc false
   # The calling process's OpenTelemetry context, to restore in another process
   # with `with_context/2`; `nil` without one or without `opentelemetry_api`.
-  @spec capture_context() :: term() | nil
   if @otel? do
     def capture_context do
       case OpenTelemetry.Ctx.get_current() do
@@ -237,7 +236,6 @@ defmodule Legion.Telemetry do
   @doc false
   # Runs `fun` with `ctx` from `capture_context/0` attached, detaching it even
   # if `fun` raises.
-  @spec with_context(term() | nil, (-> result)) :: result when result: term()
   def with_context(nil, fun), do: fun.()
 
   if @otel? do
