@@ -10,7 +10,7 @@ defmodule Legion.OpenTelemetry.AttributesTest do
   @config [content: :attributes, max_attribute_bytes: 20_000]
 
   describe "invoke_agent_start/2" do
-    test "an empty message list records no parts" do
+    test "an empty `{:multipart, []}` message, whose parts reach the span as is, records no parts" do
       meta = %{agent: __MODULE__, agent_id: "agent-id", message: []}
 
       attributes = Attributes.invoke_agent_start(meta, @config)
