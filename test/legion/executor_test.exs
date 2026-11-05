@@ -130,7 +130,7 @@ defmodule Legion.ExecutorTest do
         tool_usage: %{web_search: 1}
       }
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         {:ok,
          %ReqLLM.Response{
            id: "test",
@@ -160,7 +160,7 @@ defmodule Legion.ExecutorTest do
     test "keeps usage in request order, flagging the request whose action ran code as one eval" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -180,7 +180,7 @@ defmodule Legion.ExecutorTest do
     test "counts a failed evaluation as one eval" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -203,7 +203,7 @@ defmodule Legion.ExecutorTest do
     test "emits normalized usage in LLM request stop telemetry" do
       attach_llm_request_stop()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         {:ok,
          %ReqLLM.Response{
            id: "test",
@@ -239,7 +239,7 @@ defmodule Legion.ExecutorTest do
       attach_llm_request_stop()
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -260,7 +260,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "returns result for return action" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "return", "code" => "", "result" => "42"})
       end)
 
@@ -268,7 +268,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "returns nil for done action" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "done", "code" => "", "result" => ""})
       end)
 
@@ -276,7 +276,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "eval_and_complete executes code and returns result" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "eval_and_complete", "code" => "return 1 + 1", "result" => ""})
       end)
 
@@ -286,7 +286,7 @@ defmodule Legion.ExecutorTest do
     test "eval_and_continue chains into next iteration" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -302,7 +302,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "cancels after max_iterations" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "eval_and_continue", "code" => "return 1", "result" => ""})
       end)
 
@@ -311,7 +311,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "retries on code execution error and cancels after max_retries" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{
           "action" => "eval_and_complete",
           "code" => "error(\"boom\")",
@@ -325,7 +325,7 @@ defmodule Legion.ExecutorTest do
     test "eval_guard denial stops the code from running and reaches the agent" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -360,7 +360,7 @@ defmodule Legion.ExecutorTest do
       for {failure, expected_turn_usage} <- failures do
         call_count = :counters.new(1, [:atomics])
 
-        stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
           :counters.add(call_count, 1, 1)
 
           case :counters.get(call_count, 1) do
@@ -377,7 +377,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "third-party tool module without extra_allowed_modules/0 does not crash eval" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{
           "action" => "eval_and_complete",
           "code" => "Jason.encode!(%{a: 1})",
@@ -395,7 +395,7 @@ defmodule Legion.ExecutorTest do
       test_pid = self()
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -451,7 +451,7 @@ defmodule Legion.ExecutorTest do
       test_pid = self()
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -493,7 +493,7 @@ defmodule Legion.ExecutorTest do
     test "does not checkpoint a return action" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "return", "code" => "", "result" => "done"})
       end)
 
@@ -510,7 +510,7 @@ defmodule Legion.ExecutorTest do
     test "checkpoint failure exits before the next LLM request" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
         response(%{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""})
       end)
@@ -533,7 +533,7 @@ defmodule Legion.ExecutorTest do
     test "stamps each entry with the position of the message it produced" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -557,7 +557,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "an entry names no message when retries run out" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> response(nil, 7) end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts -> response(nil, 7) end)
 
       assert {:cancel, :reached_max_retries, messages, [], usage} =
                Executor.run(MathAgent, executor_messages("compute"), %{max_retries: 0})
@@ -571,7 +571,7 @@ defmodule Legion.ExecutorTest do
     test "truncates eval results and errors fed back to the LLM" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -611,7 +611,7 @@ defmodule Legion.ExecutorTest do
 
   describe "custom output_schema" do
     test "return action passes structured result through" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{
           "action" => "return",
           "code" => "",
@@ -624,7 +624,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "eval_and_complete returns code result, not the schema result field" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{
           "action" => "eval_and_complete",
           "code" => "return {summary = \"computed\", score = 42}",
@@ -645,7 +645,7 @@ defmodule Legion.ExecutorTest do
     test "a disallowed action is retried without running its code" do
       call_count = :counters.new(1, [:atomics])
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -662,7 +662,7 @@ defmodule Legion.ExecutorTest do
     test "recursively injects additionalProperties into nested objects and arrays" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, _messages, schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, schema, _opts ->
         send(test_pid, {:schema, schema})
 
         response(%{
@@ -691,7 +691,7 @@ defmodule Legion.ExecutorTest do
       call_count = :counters.new(1, [:atomics])
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _model, messages, schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, schema, _opts ->
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
@@ -732,7 +732,7 @@ defmodule Legion.ExecutorTest do
     end
 
     test "rejects code the selected sandbox cannot parse" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         response(%{"action" => "eval_and_complete", "code" => "1 + 1", "result" => ""})
       end)
 

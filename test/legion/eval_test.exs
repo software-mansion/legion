@@ -2,6 +2,7 @@ defmodule Legion.EvalTest do
   use ExUnit.Case, async: true
 
   alias Legion.Eval
+  alias Legion.Sandbox.Runner
 
   defmodule RecordingSandbox do
     @moduledoc "Sandbox that reports every call to the test process and answers by script."
@@ -72,7 +73,8 @@ defmodule Legion.EvalTest do
 
       assert {:ok, {_value, bindings}} = Eval.run(ExtraAgent, "x", config, [])
       assert {:error, error} = Eval.run(ExtraAgent, String.duplicate("y", 100), config, bindings)
-      assert error =~ "over the 30 byte limit"
+      assert error =~ "evaluation exceeded the 30 byte variable limit"
+      assert Runner.error_kind(error) == :limit
     end
 
     test "skips the max_bindings_bytes check under :iteration, which drops the variables" do

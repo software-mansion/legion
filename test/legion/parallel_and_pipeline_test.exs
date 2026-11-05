@@ -27,7 +27,7 @@ defmodule Legion.ParallelAndPipelineTest do
 
   describe "parallel/2" do
     test "collects every agent's result in task order" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         case messages |> List.last() |> Map.get(:content) do
           "What is 6 * 7?" -> llm_response("42")
           "Say hello" -> llm_response("hello")
@@ -42,7 +42,7 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "returns {:cancel, reason} if any agent is cancelled" do
-      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
         user_msg = messages |> Enum.find(&(&1[:role] == "user")) |> Map.get(:content)
 
         if user_msg == "quick task" do
@@ -67,7 +67,10 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "AgentTool.parallel accepts [agent, task] pairs from the Lua sandbox bridge" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("42") end)
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+        llm_response("42")
+      end)
+
       Vault.unsafe_put(AgentTool, agents: [MathAgent])
       Vault.unsafe_put(:sub_agents, %{max: 1})
 
@@ -75,7 +78,7 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "exits when the agents outlast the timeout" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         Process.sleep(:infinity)
       end)
 
@@ -87,7 +90,7 @@ defmodule Legion.ParallelAndPipelineTest do
     test "runs steps sequentially with static string tasks" do
       {:ok, counter} = Agent.start_link(fn -> 0 end)
 
-      stub(ReqLLM, :generate_object, fn _m, _msgs, _s ->
+      stub(ReqLLM, :generate_object, fn _m, _msgs, _s, _opts ->
         i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
         llm_response("step #{i + 1} done")
       end)
@@ -103,7 +106,7 @@ defmodule Legion.ParallelAndPipelineTest do
       {:ok, counter} = Agent.start_link(fn -> 0 end)
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _m, messages, _s ->
+      stub(ReqLLM, :generate_object, fn _m, messages, _s, _opts ->
         i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
         user_msg = messages |> List.last() |> Map.get(:content)
         send(test_pid, {:llm_user_msg, i, user_msg})
@@ -122,7 +125,7 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "halts on cancel and skips subsequent steps" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
         {:ok,
          %ReqLLM.Response{
            id: "cancel",
@@ -151,7 +154,7 @@ defmodule Legion.ParallelAndPipelineTest do
     test "chains after a successful result" do
       test_pid = self()
 
-      stub(ReqLLM, :generate_object, fn _m, messages, _s ->
+      stub(ReqLLM, :generate_object, fn _m, messages, _s, _opts ->
         user_msg = messages |> List.last() |> Map.get(:content)
         send(test_pid, {:then_msg, user_msg})
         llm_response("chained")
@@ -164,7 +167,7 @@ defmodule Legion.ParallelAndPipelineTest do
     end
 
     test "passes through cancel without executing" do
-      reject(&ReqLLM.generate_object/3)
+      reject(&ReqLLM.generate_object/4)
 
       assert {:cancel, :some_reason} =
                Legion.then({:cancel, :some_reason}, MathAgent, fn _ -> "ignored" end)

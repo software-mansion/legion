@@ -65,7 +65,7 @@ defmodule Legion.CallersTest do
     test_pid = self()
     {:ok, script} = Agent.start_link(fn -> objects end)
 
-    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
       send(test_pid, {:model_told, List.last(messages)[:content]})
       object = Agent.get_and_update(script, fn [next | rest] -> {next, rest} end)
 
