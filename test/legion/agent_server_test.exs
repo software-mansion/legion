@@ -278,11 +278,8 @@ defmodule Legion.AgentServerTest do
 
   @moduletag capture_log: true
 
-  # Agent processes have no `$callers`, so the test's ReqLLM stubs reach them
-  # only through an allowance.
   defp start_agent(agent_module, opts \\ []) do
     {:ok, pid} = Legion.start_link(agent_module, opts)
-    Mimic.allow(ReqLLM, self(), pid)
     pid
   end
 

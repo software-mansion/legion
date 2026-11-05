@@ -84,7 +84,6 @@ defmodule Legion.ExecutorTest do
 
   defp execute(agent_module, task, opts \\ []) do
     pid = start_supervised!({agent_module, opts})
-    allow(ReqLLM, self(), pid)
     Legion.call(pid, task)
   end
 

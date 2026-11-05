@@ -37,7 +37,6 @@ defmodule Legion.Store.StepPersistenceTest do
         sandbox: Legion.Sandbox.Elixir
       )
 
-    allow(ReqLLM, test_pid, pid)
     assert {:ok, "done"} = Legion.call(pid, "compute")
 
     assert_received {:before_first_request,
