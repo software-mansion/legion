@@ -131,7 +131,12 @@ spans through a collector.
 
 **Braintrust** shows one row per trace. To read a conversation, group the
 Logs by `session_id` (**Group by**, then **Custom** if it is not listed) and
-open the row in **Thread** view.
+open the row in **Thread** view. It refuses a request over 10 MB, and the SDK
+then drops that whole batch, logging it only at info level. Spans go out
+gzipped, but each `chat` span repeats the conversation so far, so an app that
+sends a lot should export more often than every 5 seconds, for smaller
+requests: `config :opentelemetry, bsp_scheduled_delay_ms: 1_000`
+(`OTEL_BSP_SCHEDULE_DELAY_MILLIS`).
 
 **Datadog** groups sessions by `gen_ai.conversation.id`, which the adapter
 sets to `session.id`, so a conversation and its sub-agents are one session.
