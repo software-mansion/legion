@@ -9,6 +9,17 @@ defmodule Legion.OpenTelemetry.AttributesTest do
 
   @config [content: :attributes, max_attribute_bytes: 20_000]
 
+  describe "invoke_agent_start/2" do
+    test "an empty message list records no parts" do
+      meta = %{agent: __MODULE__, agent_id: "agent-id", message: []}
+
+      attributes = Attributes.invoke_agent_start(meta, @config)
+
+      assert [%{"role" => "user", "parts" => []}] =
+               Jason.decode!(attributes[:"gen_ai.input.messages"])
+    end
+  end
+
   describe "execute_tool_stop/2" do
     test "a small result JSON cannot encode is recorded whole" do
       result = for i <- 1..60, do: {i, "name#{i}"}

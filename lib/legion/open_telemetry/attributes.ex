@@ -223,6 +223,8 @@ defmodule Legion.OpenTelemetry.Attributes do
 
   defp parts(content, max) when is_binary(content), do: [text_part(content, max)]
 
+  defp parts([], _max), do: []
+
   defp parts(content, max) when is_list(content) do
     budget = Kernel.max(div(max, length(content)), 1)
     Enum.map(content, &part(&1, budget))
