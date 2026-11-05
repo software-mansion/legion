@@ -15,6 +15,13 @@ defmodule Legion.OpenTelemetry do
   > Unlike `ReqLLM.OpenTelemetry`, Legion defaults to `content: :attributes`,
   > so prompts, replies, generated code, tool results and error messages
   > reach the tracing backend. Attach with `content: :none` to keep them out.
+  >
+  > That covers every ReqLLM call in the app: while attached, Legion sets
+  > `payloads: :raw` in `config :req_llm, telemetry:`, unless you set
+  > `:payloads` there, so your other handlers of ReqLLM's telemetry events
+  > receive raw prompts and replies too. `detach/0` puts your setting back. A
+  > call that passes its own `telemetry:` option needs `payloads: :raw` in
+  > it, since ReqLLM then reads that option instead of the config.
 
   ## Options
 
@@ -149,9 +156,12 @@ defmodule Legion.OpenTelemetry do
   end
 
   defp do_attach(config) do
+    content? = req_llm_content?(config)
+
     config =
       config
-      |> Keyword.put(:req_llm_content?, req_llm_content?(config))
+      |> Keyword.put(:req_llm_content?, content?)
+      |> Keyword.put(:req_llm_env, if(content?, do: enable_raw_payloads()))
       |> Keyword.put(:attachment, make_ref())
 
     :persistent_term.put(@config_key, config)
@@ -162,10 +172,49 @@ defmodule Legion.OpenTelemetry do
     else
       {:error, _} = error ->
         Handler.detach()
+        restore_req_llm_env(config[:req_llm_env])
         :persistent_term.erase(@config_key)
         error
     end
   end
+
+  # ReqLLM puts a call's messages on its `chat` span only when the call's
+  # payloads are raw, so they are turned on for every ReqLLM call in the app,
+  # unless the host set `:payloads` itself. Returns what `detach/0` restores.
+  defp enable_raw_payloads do
+    previous = Application.fetch_env(:req_llm, :telemetry)
+
+    if raw = with_raw_payloads(previous) do
+      Application.put_env(:req_llm, :telemetry, raw)
+      %{previous: previous, raw: raw}
+    end
+  end
+
+  # `nil` when the host set `:payloads`, or something that is not options.
+  defp with_raw_payloads(:error), do: [payloads: :raw]
+
+  defp with_raw_payloads({:ok, env}) when is_list(env) do
+    if Keyword.keyword?(env) and not Keyword.has_key?(env, :payloads),
+      do: Keyword.put(env, :payloads, :raw)
+  end
+
+  defp with_raw_payloads({:ok, env})
+       when is_map(env) and not is_map_key(env, :payloads) and not is_map_key(env, "payloads"),
+       do: Map.put(env, :payloads, :raw)
+
+  defp with_raw_payloads({:ok, _env}), do: nil
+
+  # Left alone when the host has changed the setting since.
+  defp restore_req_llm_env(%{previous: previous, raw: raw}) do
+    if Application.get_env(:req_llm, :telemetry) == raw do
+      case previous do
+        {:ok, env} -> Application.put_env(:req_llm, :telemetry, env)
+        :error -> Application.delete_env(:req_llm, :telemetry)
+      end
+    end
+  end
+
+  defp restore_req_llm_env(nil), do: :ok
 
   @doc """
   Detaches the integration.
@@ -178,6 +227,7 @@ defmodule Legion.OpenTelemetry do
       config ->
         Handler.detach()
         if config[:req_llm] != false, do: ReqLLM.OpenTelemetry.detach(@req_llm_handler_id)
+        restore_req_llm_env(config[:req_llm_env])
         :persistent_term.erase(@config_key)
         :ok
     end

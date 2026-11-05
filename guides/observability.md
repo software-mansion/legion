@@ -78,10 +78,14 @@ listed in `Legion.OpenTelemetry`.
 Content on Legion's own spans is cut to `max_attribute_bytes`; `chat` span
 content is sent whole; the only cap on it is the SDK's
 `attribute_value_length_limit` (`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT`),
-which cuts mid-JSON. For `chat` content, Legion passes `payloads: :raw` to its
-own ReqLLM calls unless you set `:payloads` in `config :req_llm, telemetry:`
-yourself; your app's other ReqLLM calls need
-`config :req_llm, telemetry: [payloads: :raw]`.
+which cuts mid-JSON. ReqLLM only puts messages on a `chat` span when the call
+has raw payloads, so while attached Legion sets `payloads: :raw` in
+`config :req_llm, telemetry:` for every ReqLLM call in the app, its own and
+yours, unless you set `:payloads` there yourself; `detach/0` puts your setting
+back. Your other handlers of ReqLLM's telemetry events receive raw prompts and
+replies too. A call that passes its own `telemetry:` option needs
+`payloads: :raw` in it, since ReqLLM then reads that option instead of the
+config.
 
 ## Conversations
 

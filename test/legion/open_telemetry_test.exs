@@ -229,15 +229,79 @@ defmodule Legion.OpenTelemetryTest do
       legion_ids = Enum.map(:telemetry.list_handlers([:legion]), & &1.id)
       refute "legion-otel" in legion_ids
     end
+
+    test "an attach that fails puts the host's ReqLLM telemetry config back" do
+      put_env(:req_llm, :telemetry, conversation_id: "kept")
+
+      assert OpenTelemetry.attach(
+               adapter: FakeOTelAdapter,
+               req_llm: [adapter: UnavailableAdapter]
+             ) ==
+               {:error, :opentelemetry_unavailable}
+
+      assert Application.get_env(:req_llm, :telemetry) == [conversation_id: "kept"]
+    end
+  end
+
+  describe "the app's ReqLLM telemetry config" do
+    test "an app's own ReqLLM call, outside any agent, gets its messages on the chat span" do
+      put_env(:req_llm, :telemetry, [])
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      ReqLLMTelemetry.emit_request("openai:gpt-4o-mini")
+
+      assert_receive {:otel, :start_span, _, @span_name, attrs, _}
+
+      assert [%{"role" => "user", "parts" => [%{"content" => "hi"}]}] =
+               Jason.decode!(attrs[:"gen_ai.input.messages"])
+    end
+
+    test "content is on while attached, and detach puts the host's setting back" do
+      put_env(:req_llm, :telemetry, conversation_id: "kept")
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      assert Application.get_env(:req_llm, :telemetry) == [
+               payloads: :raw,
+               conversation_id: "kept"
+             ]
+
+      :ok = OpenTelemetry.detach()
+      assert Application.get_env(:req_llm, :telemetry) == [conversation_id: "kept"]
+    end
+
+    test "with no setting, detach removes the one attach added" do
+      put_env(:req_llm, :telemetry, [])
+      Application.delete_env(:req_llm, :telemetry)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+
+      assert Application.get_env(:req_llm, :telemetry) == [payloads: :raw]
+
+      :ok = OpenTelemetry.detach()
+      assert Application.fetch_env(:req_llm, :telemetry) == :error
+    end
+
+    test "a :payloads the host set, content: :none and a host change after attach are left alone" do
+      put_env(:req_llm, :telemetry, payloads: :none)
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      assert Application.get_env(:req_llm, :telemetry) == [payloads: :none]
+
+      Application.put_env(:req_llm, :telemetry, [])
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :none)
+      assert Application.get_env(:req_llm, :telemetry) == []
+
+      :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter)
+      Application.put_env(:req_llm, :telemetry, payloads: :none)
+      :ok = OpenTelemetry.detach()
+      assert Application.get_env(:req_llm, :telemetry) == [payloads: :none]
+    end
   end
 
   describe "telemetry_opts/0" do
-    test "content: :attributes asks for raw payloads, leaving the host's config alone" do
+    test "content: :attributes asks for raw payloads" do
       put_env(:req_llm, :telemetry, [])
       :ok = OpenTelemetry.attach(adapter: FakeOTelAdapter, content: :attributes)
 
       assert Executor.telemetry_opts()[:payloads] == :raw
-      assert Application.get_env(:req_llm, :telemetry) == []
     end
 
     test "keeps a :payloads setting the host configured" do
