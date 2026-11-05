@@ -33,6 +33,7 @@ defmodule Legion.Sandbox.Runner do
   def run(eval_fun, timeout_ms, limits \\ [])
       when is_function(eval_fun, 0) and (is_integer(timeout_ms) or timeout_ms == :infinity) do
     parent = self()
+    callers = [parent | Process.get(:"$callers", [])]
 
     # 0 is ambiguous: "no limit" to the BEAM's max_heap_size flag, but a
     # budget here would floor at the VM minimum heap and kill nearly every
@@ -48,6 +49,9 @@ defmodule Legion.Sandbox.Runner do
 
     {pid, ref} =
       spawn_monitor(fn ->
+        # What a Task does: lets a tool reach whatever its caller owns, such as
+        # a test's Ecto sandbox connection or stubs.
+        Process.put(:"$callers", callers)
         kill_eval_when_parent_dies(parent)
 
         Process.flag(:priority, priority)
