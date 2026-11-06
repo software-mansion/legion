@@ -15,6 +15,10 @@ end
    To serve agents over MCP, add `{:anubis_mcp, "~> 2.0"}` too; see the
    [MCP guide](mcp.md).
 
+   Add `:legion` to `import_deps` in `.formatter.exs` so `mix format` keeps
+   the shape of tool functions that [bind Vault values in their
+   head](https://hexdocs.pm/legion/Legion.Tool.html#module-reading-from-vault).
+
 2. Legion instances are isolated supervision trees and should be included in
    your application's supervisor to run:
 
