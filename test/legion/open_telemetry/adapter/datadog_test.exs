@@ -21,8 +21,14 @@ defmodule Legion.OpenTelemetry.Adapter.DatadogTest do
       assert Datadog.exporter_config(api_key: "key", site: "datadoghq.eu", ml_app: "my_app") == %{
                exporter: %{
                  protocol: :http_protobuf,
+                 compression: :gzip,
                  endpoints: ["https://otlp.datadoghq.eu"],
-                 headers: [{"dd-api-key", "key"}, {"dd-otlp-source", "llmobs"}]
+                 headers: [
+                   {"dd-api-key", "key"},
+                   {"dd-otlp-source", "llmobs"},
+                   {"dd-llmobs-enabled", "true"},
+                   {"te", "trailers"}
+                 ]
                },
                resource: %{"service.name" => "my_app"}
              }

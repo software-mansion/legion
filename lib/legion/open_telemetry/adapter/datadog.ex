@@ -52,9 +52,15 @@ defmodule Legion.OpenTelemetry.Adapter.Datadog do
     %{
       exporter: %{
         protocol: :http_protobuf,
+        compression: :gzip,
         # A base URL: the exporter appends `/v1/traces`.
         endpoints: ["https://otlp.#{opts[:site]}"],
-        headers: [{"dd-api-key", opts[:api_key]}, {"dd-otlp-source", "llmobs"}]
+        headers: [
+          {"dd-api-key", opts[:api_key]},
+          {"dd-otlp-source", "llmobs"},
+          {"dd-llmobs-enabled", "true"},
+          {"te", "trailers"}
+        ]
       },
       # Datadog lists spans under the ML app named by `service.name`.
       resource: %{"service.name" => opts[:ml_app]}
