@@ -128,7 +128,7 @@ defmodule Legion.RecoveryTest do
 
     test_pid = self()
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       send(test_pid, {:recovering, self()})
 
       receive do
@@ -184,7 +184,7 @@ defmodule Legion.RecoveryTest do
 
     test_pid = self()
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       send(test_pid, {:recovering, self()})
 
       receive do
@@ -251,7 +251,7 @@ defmodule Legion.RecoveryTest do
 
     test_pid = self()
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       send(test_pid, {:recovering, self()})
 
       receive do
@@ -288,7 +288,7 @@ defmodule Legion.RecoveryTest do
 
     StoreState.put(RecoveryStoreOne, [interrupted_payload("limited")])
 
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       llm_response("recovered")
     end)
 

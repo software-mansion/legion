@@ -100,7 +100,9 @@ defmodule Legion.EvalGuard.LLM do
       Executor.message(:user, code)
     ]
 
-    case ReqLLM.generate_object(model, messages, @verdict_schema) do
+    case ReqLLM.generate_object(model, messages, @verdict_schema,
+           telemetry: Executor.telemetry_opts()
+         ) do
       {:ok, %{object: %{"verdict" => "allow"}}} -> :allow
       {:ok, %{object: %{"verdict" => "deny", "reason" => reason}}} -> {:deny, reason}
       {:ok, response} -> {:deny, "the review returned #{inspect(response)}"}

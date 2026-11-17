@@ -15,7 +15,7 @@ defmodule Legion.EvalGuard.LLMTest do
   @context %{agent: SomeAgent, agent_id: "conversation-1", tools: [SomeTool]}
 
   test "an allow verdict passes the code through" do
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       {:ok, %{object: %{"verdict" => "allow", "reason" => ""}}}
     end)
 
@@ -23,7 +23,7 @@ defmodule Legion.EvalGuard.LLMTest do
   end
 
   test "a deny verdict hands the model's reason back" do
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
       {:ok, %{object: %{"verdict" => "deny", "reason" => "that loops over checkout"}}}
     end)
 
@@ -32,7 +32,7 @@ defmodule Legion.EvalGuard.LLMTest do
   end
 
   test "a failed review request denies" do
-    stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> {:error, :timeout} end)
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts -> {:error, :timeout} end)
 
     assert {:deny, reason} = Legion.EvalGuard.check(Reviewer, "1 + 1", @context)
     assert reason =~ "timeout"
@@ -41,7 +41,7 @@ defmodule Legion.EvalGuard.LLMTest do
   test "the policy, agent and tools reach the model" do
     test_pid = self()
 
-    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
       send(test_pid, {:reviewed, messages})
       {:ok, %{object: %{"verdict" => "allow", "reason" => ""}}}
     end)
@@ -58,7 +58,7 @@ defmodule Legion.EvalGuard.LLMTest do
   test "a guard without a policy reviews against the default one" do
     test_pid = self()
 
-    stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+    stub(ReqLLM, :generate_object, fn _model, messages, _schema, _opts ->
       send(test_pid, {:reviewed, messages})
       {:ok, %{object: %{"verdict" => "allow", "reason" => ""}}}
     end)
