@@ -12,7 +12,7 @@ version:
 
 ```elixir
 # mix.exs
-{:legion, "~> 0.6"}
+{:legion, "~> 0.7"}
 
 # lib/my_shop/application.ex
 children = [MyShop.Repo, Legion, MyShopWeb.Endpoint]

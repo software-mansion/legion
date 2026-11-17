@@ -14,7 +14,7 @@ does not exist. Add it next to Legion:
 
 ```elixir
 # mix.exs
-{:legion, "~> 0.6"},
+{:legion, "~> 0.7"},
 {:anubis_mcp, "~> 2.0"}
 ```
 
