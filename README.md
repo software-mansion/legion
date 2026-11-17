@@ -28,7 +28,7 @@ Legion isn't a coding agent - it won't edit your codebase. Use Claude Code or Co
 
 ```elixir
 # mix.exs
-{:legion, "~> 0.6"}
+{:legion, "~> 0.7"}
 
 # lib/my_app/application.ex - after your Repo, if you have one
 children = [MyApp.Repo, Legion]

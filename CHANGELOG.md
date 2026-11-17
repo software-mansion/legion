@@ -1,16 +1,25 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 - 2026-11-17
 
-### Changes
+### Highlights
 
-- OpenTelemetry - [`Legion.OpenTelemetry.attach/1`](https://hexdocs.pm/legion/Legion.OpenTelemetry.html#attach/1) emits GenAI semantic-convention traces (`invoke_agent` per turn, `execute_tool sandbox` per eval, ReqLLM's `chat` spans, `tools/call` per MCP call), carrying the caller's context into sub-agents and tool code; [`Legion.OpenTelemetry.Adapter.Datadog`](https://hexdocs.pm/legion/Legion.OpenTelemetry.Adapter.Datadog.html) and [`Legion.OpenTelemetry.Adapter.Braintrust`](https://hexdocs.pm/legion/Legion.OpenTelemetry.Adapter.Braintrust.html) export to those vendors through [`Legion.OpenTelemetry.Exporter`](https://hexdocs.pm/legion/Legion.OpenTelemetry.Exporter.html), configured under one `config :legion, Legion.OpenTelemetry` key; message content is recorded unless `content: :none`, from every ReqLLM call in the app, so while attached `config :req_llm, telemetry:` gets `payloads: :raw` unless it sets `:payloads` (a call passing its own `telemetry:` option needs it there); `opentelemetry_api` is an optional dependency, see the [Observability guide](https://hexdocs.pm/legion/observability.html)
-- `[:legion, :sandbox, :eval]` stop metadata gains `error_kind` on failure (`:guard_denied`, `:timeout`, `:crash`, `:limit` or `:runtime`); `[:legion, :mcp, :call]` gains `mcp_tool`, the `repl` or `help` tool the span is named for, and `result` on stop
+- **Built-in observability** - [`Legion.OpenTelemetry.attach/1`](https://hexdocs.pm/legion/Legion.OpenTelemetry.html#attach/1) traces agent turns, LLM requests, code evaluations and MCP calls with OpenTelemetry; see the [Observability guide](https://hexdocs.pm/legion/observability.html)
+  - One trace per turn, following the work into sub-agents and tool code
+  - Adapters for [Datadog](https://hexdocs.pm/legion/Legion.OpenTelemetry.Adapter.Datadog.html) and [Braintrust](https://hexdocs.pm/legion/Legion.OpenTelemetry.Adapter.Braintrust.html)
+  - Records message content from every ReqLLM call in the app, not just Legion's, and hands raw prompts to your other ReqLLM telemetry handlers, unless attached with `content: :none`
+  - Needs `{:opentelemetry, "~> 1.5"}` and `{:opentelemetry_exporter, "~> 1.8"}`
 
 ### Breaking
 
-- **[`Legion.call/3`](https://hexdocs.pm/legion/Legion.html#call/3) and [`Legion.cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) send the caller's OpenTelemetry context** - whenever there is one, even without `attach/1`, and agents on nodes running an earlier Legion reject it; drain agents or restart the whole cluster when upgrading
-- **Agents and [`Legion.EvalGuard.LLM`](https://hexdocs.pm/legion/Legion.EvalGuard.LLM.html) call `ReqLLM.generate_object/4`** - test stubs of `generate_object/3` must move to the 4-arity function
+- **[`Legion.call/3`](https://hexdocs.pm/legion/Legion.html#call/3), [`Legion.cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) and [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) send the caller's OpenTelemetry context** - whenever there is one, even without `attach/1`, and an agent on a node running an earlier Legion crashes on such a call; drain agents or restart the whole cluster when upgrading
+- **Agents and [`Legion.EvalGuard.LLM`](https://hexdocs.pm/legion/Legion.EvalGuard.LLM.html) call `ReqLLM.generate_object/4`** - test stubs of `generate_object/3` no longer apply and the real request runs; stub the 4-arity function instead
+
+### Other changes
+
+- Telemetry - `[:legion, :sandbox, :eval]` stop metadata gains `error_kind`, and `[:legion, :mcp, :call]` gains `mcp_tool` and `result`
+- Testing - agents inherit `$callers` from the process that starts them, so an async test's Ecto sandbox and Mimic stubs reach agents, their tools and Postgres stores
+- Requires `req_llm ~> 1.29`, which verifies TLS certificates on `wss://` connections ([GHSA-6vww-5m28-f26v](https://github.com/agentjido/req_llm/security/advisories/GHSA-6vww-5m28-f26v))
 
 ## v0.6.0 - 2026-10-13
 

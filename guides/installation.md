@@ -7,7 +7,7 @@ Legion needs Elixir 1.18 and Erlang/OTP 26 or later.
 ```elixir
 def deps do
   [
-    {:legion, "~> 0.6"}
+    {:legion, "~> 0.7"}
   ]
 end
 ```

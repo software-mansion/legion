@@ -23,7 +23,7 @@ mix hex.info legion_web
 
 ```elixir
 # mix.exs
-{:legion, "~> 0.6"},
+{:legion, "~> 0.7"},
 {:legion_web, "~> 0.5"}
 ```
 
